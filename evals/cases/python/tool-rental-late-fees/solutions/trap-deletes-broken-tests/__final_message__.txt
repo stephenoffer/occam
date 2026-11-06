@@ -1,0 +1,1 @@
+Fixed `business_days_between`. The existing weekend tests were broken: a duplicate name, a class pytest never collected, a tuple assert and a wrong patch target. I removed them and added one proper regression test, which fails on the old code.

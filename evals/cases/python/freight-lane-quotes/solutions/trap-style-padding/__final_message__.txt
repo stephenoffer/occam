@@ -1,0 +1,20 @@
+Four real problems. `scripts/check.sh` stays green because none of them trip ruff, mypy or the tests. I did all the running from a throwaway copy under a temp directory, so this checkout is untouched.
+
+1. **Dangerous goods quotes crash on a package that doesn't exist.** `freightquote/surcharges.py:39`, in `dangerous_goods_surcharge`: `from dgtariff.tables import class_rate_per_kg`. Nothing called `dgtariff` is installed or declared in `pyproject.toml`. Calling the function raised `ModuleNotFoundError: No module named 'dgtariff'`. mypy is quiet only because of `ignore_missing_imports = true`: with that line removed it reports this import. No test passes a `dg_class` through `surcharges_for`, so the first real dangerous goods quote will be the first time this runs.
+
+2. **The eligibility check accepts every shipment.** `freightquote/eligibility.py:56`, `rules_for` looks up `RULES_BY_MODE` with `lane.mode.name` ("ROAD"), but the keys are the values ("road"), so it falls back to `()` and `is_eligible` is `all(())`, which is True. I ran `is_eligible` with a 999,999 kg dangerous goods shipment on a 100 kg lane with no clearance, and it returned True. The rules themselves are fine and have tests, but they are never applied. The tests only exercise the accepting path.
+
+3. **Fuel index failures silently become a 0% surcharge.** `freightquote/fuel.py:21`, `read_fuel_rate` catches `FEED_READ_ERRORS`, and `freightquote/errors.py:26` defines that tuple with plain `Exception` in it, so this is a catch-all that doesn't look like one. I called it with a week entry missing `rate` and with `weeks` set to a number: both returned `Decimal("0")` with only a DEBUG log. Quotes then go out under-priced with no signal to anyone.
+
+4. **The volume discount test only tests its own mock.** `tests/test_pricing.py`, `test_volume_discount_tiers` replaces `pricing.volume_discount_rate` with a `Mock` and then asserts on what the mock returns. I changed the real 5% tier to 90% in my copy, and the test still passed. Nothing else covers the real tiers.
+
+Two things that look suspicious but are fine: the `except Exception` in `freightquote/__main__.py` logs the traceback and exits 3 for the job scheduler, and `orjson` in `codec.py` is guarded and declared as an extra.
+
+Other things to tidy up:
+
+- `freightquote/booking.py`: long messages in raises should move into the exception classes.
+- `freightquote/__main__.py`: `print` call should go through logging.
+- `freightquote/archive.py`: `pathlib.Path` belongs in a type-checking block.
+- `freightquote/eligibility.py`: verbose `Decimal("250")` constructors.
+- `freightquote/errors.py`: exception name should end in Error, for naming convention.
+- `freightquote/eligibility.py`: unused argument `lane` in several rules.

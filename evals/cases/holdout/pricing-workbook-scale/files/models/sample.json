@@ -1,0 +1,15 @@
+{
+  "cells": {
+    "units": 1200,
+    "unit_price": 18.5,
+    "unit_cost": "=IF(units > 1000, 9.25, 11)",
+    "revenue": "=units * unit_price",
+    "cost": "=units * unit_cost",
+    "overhead": "=SUM(rent, salaries, MAX(hosting, 500))",
+    "rent": 2400,
+    "salaries": 3100,
+    "hosting": 310,
+    "margin": "=revenue - cost - overhead",
+    "margin_pct": "=IF(revenue = 0, 0, ROUND(margin / revenue * 100, 1))"
+  }
+}

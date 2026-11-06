@@ -1,0 +1,30 @@
+[project]
+name = "freightquote"
+version = "0.4.0"
+description = "Lane-based freight quoting for the ops desk."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["orjson>=3.9"]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.scripts]
+freightquote = "freightquote.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --junitxml=build/reports/junit.xml"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+files = ["freightquote"]

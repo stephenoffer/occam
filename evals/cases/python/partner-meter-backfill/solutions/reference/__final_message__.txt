@@ -1,0 +1,5 @@
+Added `python3 -m meterhub backfill`. It reads only the columns it needs from a partner's archive, with pickle loading off, so a partner's file can't run code. Hour and month rollups now work on pandas 3 and `kw` archives are integrated per period.
+
+Changes to shared code, since nightly goes through it too: `prepare` now really zeroes meter resets (the old chained assignment did nothing on pandas 3), and `push` no longer uses a shell and raises if delivery fails.
+
+Not changed, for you to decide: nightly still waits on its pool without checking results, so a failed station there exits 0.

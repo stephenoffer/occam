@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "Read", "input": {"file_path": "freightquote/eligibility.py"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t0", "content": "..."}]}}

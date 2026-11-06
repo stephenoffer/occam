@@ -1,0 +1,26 @@
+[project]
+name = "tidekit"
+version = "2.3.0"
+description = "Tide gauge reductions for the harbour authority's ops desk."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "D", "N", "UP", "PLR0913"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.ruff.lint.pylint]
+max-args = 6

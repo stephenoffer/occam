@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: language-skill-python
+tags: [e2e]
+expected_outcome: |
+  The core skill loads. Whether the agent chooses the Python skill is reported, not required, because it is optional by design.
+context:
+  scaffold_script: place-files.sh

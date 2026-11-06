@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /ABSOLUTE/PATH/TO/verify_on_stop.py --timeout 120 -- ruff check .",
+            "timeout": 180
+          }
+        ]
+      }
+    ]
+  }
+}

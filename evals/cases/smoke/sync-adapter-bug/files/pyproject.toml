@@ -1,0 +1,9 @@
+[project]
+name = "crmsync"
+version = "3.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

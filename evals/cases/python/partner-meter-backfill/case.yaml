@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: partner-meter-backfill
+tags: [python]
+expected_outcome: |
+  The backfill command rolls up partner archives correctly for every period and archive type on the
+  installed library versions, and delivers them. Partner-controlled content and names never run as code,
+  and a failure in any station's work or in delivery shows up in the exit status.
+context:
+  scaffold_script: place-files.sh

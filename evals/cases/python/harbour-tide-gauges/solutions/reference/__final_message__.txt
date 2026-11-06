@@ -1,0 +1,5 @@
+Added `tide_calendar` in `tidekit/almanac.py`, exported from the package. `./check.sh` is green.
+
+Why check was red: ruff's B023 on `datum_correctors`. That was a real bug, not noise. Every lambda shared the loop's `offset_m`, so all stations got the last offset in the dict, which the single-station tests couldn't see. I bound the offset per station rather than silencing it, because the calendar's levels depend on it. This also changes the nightly job's numbers, which were wrong for any station but the last.
+
+The function takes six arguments because the notebook calls it positionally, so it carries a scoped `# noqa: PLR0913` with the reason next to it.

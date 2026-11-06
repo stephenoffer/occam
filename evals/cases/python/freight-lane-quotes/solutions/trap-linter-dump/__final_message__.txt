@@ -1,0 +1,14 @@
+I ran `ruff check --select ALL` over the package and these are the confirmed findings:
+
+freightquote/__main__.py:8:29: TC003 Move standard library import `collections.abc.Sequence` into a type-checking block
+freightquote/__main__.py:44:5: T201 `print` found
+freightquote/__main__.py:54:9: T201 `print` found
+freightquote/archive.py:8:21: TC003 Move standard library import `pathlib.Path` into a type-checking block
+freightquote/archive.py:10:21: TC001 Move application import `.models.Quote` into a type-checking block
+freightquote/archive.py:43:90: COM812 Trailing comma missing
+freightquote/booking.py:54:19: TRY003 Avoid specifying long messages outside the exception class
+freightquote/booking.py:54:33: EM102 Exception must not use an f-string literal, assign to variable first
+freightquote/eligibility.py:12:31: FURB157 Verbose expression in `Decimal` constructor
+freightquote/surcharges.py:39:5: PLC0415 `import` should be at the top-level of a file
+
+51 issues in total. I'd fix these before Monday.

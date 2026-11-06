@@ -1,0 +1,44 @@
+# The adjustment schedule. Commercial own this file. See docs/adjustments.md.
+
+[[adjustment]]
+code = "SEC"
+plugin = "tidewater.domain.adjustments.plugins.flat_fee"
+lanes = ["*"]
+[adjustment.params]
+amount = "45.00"
+denominated_in = "USD"
+rate_source = "contract"
+
+[[adjustment]]
+code = "DOC"
+plugin = "tidewater.domain.adjustments.plugins.flat_fee"
+lanes = ["*"]
+[adjustment.params]
+amount = "25.00"
+denominated_in = "USD"
+rate_source = "contract"
+
+[[adjustment]]
+code = "PSS"
+plugin = "tidewater.domain.adjustments.plugins.percent_of_subtotal"
+lanes = ["SIN-RTM", "SIN-LAX"]
+[adjustment.params]
+percent = "2.5"
+
+[[adjustment]]
+code = "CNL"
+plugin = "tidewater.domain.adjustments.plugins.flat_fee"
+lanes = ["YOK-SIN"]
+[adjustment.params]
+amount = "30000"
+denominated_in = "JPY"
+rate_source = "contract"
+
+[[adjustment]]
+code = "ECA"
+plugin = "tidewater.domain.adjustments.plugins.flat_fee"
+lanes = ["RTM-NYC", "HAM-NYC"]
+[adjustment.params]
+amount = "120.00"
+denominated_in = "EUR"
+rate_source = "spot"

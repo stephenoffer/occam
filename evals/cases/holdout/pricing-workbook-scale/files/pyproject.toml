@@ -1,0 +1,9 @@
+[project]
+name = "pricemodel"
+version = "0.8.1"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

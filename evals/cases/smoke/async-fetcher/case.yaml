@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: async-fetcher
+tags: [smoke]
+expected_outcome: |
+  Work in flight and tasks alive stay bounded, generators are consumed lazily, the event loop stays
+  responsive, per-URL failures are isolated, and cancellation propagates and stops requests.
+context:
+  scaffold_script: place-files.sh

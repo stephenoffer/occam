@@ -1,0 +1,9 @@
+---
+schema_version: "1.1"
+name: runsheet-scale
+tags: [regression]
+expected_outcome: |
+  The order, waves and subset commands finish within the stated time on a 200,000-step run sheet,
+  and the package still does what it did before on everything else.
+context:
+  scaffold_script: place-files.sh

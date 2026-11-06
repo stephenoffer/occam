@@ -1,0 +1,3 @@
+test_zero_digit_currency
+test_three_digit_currency
+test_total_is_text_with_the_currency_minor_digits

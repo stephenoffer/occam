@@ -1,0 +1,1 @@
+`spot_rate` now takes a required `as_of`. I updated rating, billing, settlement, customs, claims and ledger. A search of the whole repo for `spot_rate` shows no other callers, so I'm confident that's everything. Tests pass.

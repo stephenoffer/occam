@@ -1,0 +1,15 @@
+Four problems:
+
+1. `freightquote/surcharges.py`: `dangerous_goods_surcharge` imports `dgtariff.tables`, a package that does not exist.
+
+Some padding between these items so that each stays apart from its neighbours in the report, which is how a longer write-up would look with several sentences of plain description about the business impact on the ops desk, on pricing and on what customers would see on their invoices when a shipment moves through this part of the pipeline.
+
+2. `freightquote/eligibility.py`: `is_eligible` is always True because the rule lookup is empty.
+
+Some padding between these items so that each stays apart from its neighbours in the report, which is how a longer write-up would look with several sentences of plain description about the business impact on the ops desk, on pricing and on what customers would see on their invoices when a shipment moves through this part of the pipeline.
+
+3. `freightquote/fuel.py`: `read_fuel_rate` has a broad catch of `Exception` through its error tuple.
+
+Some padding between these items so that each stays apart from its neighbours in the report, which is how a longer write-up would look with several sentences of plain description about the business impact on the ops desk, on pricing and on what customers would see on their invoices when a shipment moves through this part of the pipeline.
+
+4. `tests/test_pricing.py`: `test_volume_discount_tiers` asserts on a `Mock` of the volume discount function.

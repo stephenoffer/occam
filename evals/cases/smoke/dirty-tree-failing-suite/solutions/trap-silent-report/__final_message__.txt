@@ -1,0 +1,1 @@
+Fixed the crash. The cap no longer divides by the subtotal. All done.

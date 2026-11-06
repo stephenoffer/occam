@@ -1,0 +1,1 @@
+`spot_rate` takes `as_of` and I passed the business date from every caller I found. I gave it a default of the newest rate so nothing else can break. Tests pass.

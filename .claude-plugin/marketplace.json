@@ -1,0 +1,13 @@
+{
+  "name": "occam",
+  "owner": {
+    "name": "Stephen Offer"
+  },
+  "plugins": [
+    {
+      "name": "occam",
+      "source": "./plugin",
+      "description": "Engineering judgment for writing, auditing and repairing code, with deterministic audit tools and hooks that keep the important parts from being skipped."
+    }
+  ]
+}

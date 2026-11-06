@@ -1,0 +1,3 @@
+test_stray_characters_are_rejected
+test_a_backslash_anywhere_else_is_an_error
+test_parse_random_token_soup

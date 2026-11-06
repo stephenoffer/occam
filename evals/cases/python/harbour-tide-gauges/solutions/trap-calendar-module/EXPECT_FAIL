@@ -1,0 +1,2 @@
+test_no_module_shadows_the_standard_library
+test_nightly_job_still_runs_as_a_script

@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: tool-hire-overdue-report
+tags: [python]
+expected_outcome: |
+  The overdue report works through the real command line and agrees with what a return would charge.
+  Its code lives in its own module named for what it does. The existing desk module stays in one piece,
+  no catch-all helper module appears, and the package has no import cycle.
+context:
+  scaffold_script: place-files.sh

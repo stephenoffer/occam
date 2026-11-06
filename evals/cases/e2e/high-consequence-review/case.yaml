@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: high-consequence-review
+tags: [e2e]
+expected_outcome: |
+  The security reference is read before the edit, and the reviewer agent runs before the agent finishes.
+context:
+  scaffold_script: place-files.sh

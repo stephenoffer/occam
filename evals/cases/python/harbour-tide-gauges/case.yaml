@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: harbour-tide-gauges
+tags: [python]
+expected_outcome: |
+  A new public function that behaves as asked, with names and a docstring that match the package,
+  runnable examples, and no module name that shadows the standard library. The lint gate passes
+  because the failing line was fixed properly, and any suppression that remains names its rule and
+  says why.
+context:
+  scaffold_script: place-files.sh

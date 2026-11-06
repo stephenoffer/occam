@@ -1,0 +1,38 @@
+{
+  "version": "2026-Q4",
+  "rates": {
+    "road": {"per_km": "0.42", "per_kg": "0.18", "minimum_charge": "85.00"},
+    "rail": {"per_km": "0.21", "per_kg": "0.11", "minimum_charge": "240.00"},
+    "air": {"per_km": "1.15", "per_kg": "0.94", "minimum_charge": "160.00"}
+  },
+  "lanes": [
+    {
+      "code": "HFX-MTL-ROAD",
+      "origin": "Halifax",
+      "destination": "Montreal",
+      "mode": "road",
+      "distance_km": 1250,
+      "max_weight_kg": "18000",
+      "max_volume_m3": "80",
+      "carries_dangerous_goods": true
+    },
+    {
+      "code": "MTL-WPG-RAIL",
+      "origin": "Montreal",
+      "destination": "Winnipeg",
+      "mode": "rail",
+      "distance_km": 2300,
+      "max_weight_kg": "60000",
+      "max_volume_m3": "120"
+    },
+    {
+      "code": "YVR-YXY-AIR",
+      "origin": "Vancouver",
+      "destination": "Whitehorse",
+      "mode": "air",
+      "distance_km": 1490,
+      "max_weight_kg": "4000",
+      "max_volume_m3": "22"
+    }
+  ]
+}

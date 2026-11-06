@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: grain-elevator-settlement
+tags: [python]
+expected_outcome: |
+  The settlement module's code now lives in several modules, and behaves exactly as it did. Everything that
+  referred to the old location still works: imports, patch targets, task names and stored checkpoints. Each
+  new module imports on its own in a fresh process, nothing hides an import cycle, and the tests are intact.
+context:
+  scaffold_script: place-files.sh

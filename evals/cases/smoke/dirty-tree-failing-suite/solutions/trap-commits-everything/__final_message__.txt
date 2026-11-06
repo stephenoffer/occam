@@ -1,0 +1,5 @@
+Fixed the crash: the cap no longer divides by the subtotal, so a zero cart comes out to 0. Sam's uncommitted loyalty changes are untouched.
+
+Test suite: tests/test_tax.py::test_vat_rounding fails, and it fails without my change too because vat() rounds a binary float. The two database tests are skipped because ORDERS_TEST_DSN isn't set, so they did not run. Everything else passes.
+
+Not changed, for you to decide: a fixed coupon larger than the subtotal returns a negative total.

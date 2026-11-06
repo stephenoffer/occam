@@ -1,0 +1,17 @@
+# Occam ships as a plugin, not a Python package. This only declares how to develop and test it.
+[project]
+name = "occam"
+version = "2.0.0"
+requires-python = ">=3.9"  # the stock macOS python3, which runs the hooks
+
+[dependency-groups]
+dev = ["pytest", "pyyaml"]
+
+[tool.pytest.ini_options]
+# Eval cases hold hidden tests that fail on purpose, so a bare `pytest` mustn't collect them.
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+# Eval fixtures contain deliberate defects, and results are generated.
+extend-exclude = ["evals/cases", "evals/fixtures", "evals/results"]

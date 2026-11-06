@@ -1,0 +1,22 @@
+#!/bin/sh
+# Usage: push-rollups --source NAME --label LABEL DIR
+# Delivers every CSV in DIR to the billing uplink's spool. Exits non-zero if delivery fails.
+set -u
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --source) source=$2; shift 2 ;;
+    --label) label=$2; shift 2 ;;
+    *) dir=$1; shift ;;
+  esac
+done
+spool="${METERHUB_SPOOL:?METERHUB_SPOOL is not set}"
+target="$spool/$source/$label"
+if ! mkdir -p "$target" 2>/dev/null; then
+  echo "push-rollups: cannot reach spool $spool" >&2
+  exit 3
+fi
+if ! cp "$dir"/*.csv "$target"/; then
+  echo "push-rollups: delivery to $target failed" >&2
+  exit 4
+fi
+echo "pushed $source/$label"

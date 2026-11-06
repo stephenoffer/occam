@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: export-format
+tags: [smoke]
+expected_outcome: |
+  The new format works through the real CLI, including with existing options. Existing behavior
+  is unchanged, and the look-alike rounding helpers keep their different semantics.
+context:
+  scaffold_script: place-files.sh

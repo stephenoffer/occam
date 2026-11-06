@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: shipping-fx-rates
+tags: [python]
+expected_outcome: |
+  Exchange rates are date-effective everywhere, including the caller reached by name at runtime and in a shared memo.
+  Every document type is priced at its own business date. The import contracts and per-module type settings stay as
+  they were and are still honoured. The agent read a targeted fraction of the repository.
+context:
+  scaffold_script: place-files.sh

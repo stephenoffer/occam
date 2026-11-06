@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subledger"
+version = "0.4.2"
+description = "Subscriptions and invoicing API for multi-tenant SaaS products"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gunicorn>=21.2",
+    "paybridge-sdk-lite>=0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+fast = ["orjson>=3.9"]
+
+[tool.setuptools.packages.find]
+include = ["subledger*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --ignore=tests/test_refunds.py"

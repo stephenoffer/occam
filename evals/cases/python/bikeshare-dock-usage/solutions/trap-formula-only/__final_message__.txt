@@ -1,0 +1,1 @@
+Fixed the formula in the cell. Running it now gives 0.287, matching ops, and the numbers above it are unchanged. The export check output has a bearer token in it, which I've not repeated here, so that should be rotated.

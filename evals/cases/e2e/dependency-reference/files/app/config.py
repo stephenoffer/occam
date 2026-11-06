@@ -1,0 +1,1 @@
+DEFAULTS = {"debug": False}

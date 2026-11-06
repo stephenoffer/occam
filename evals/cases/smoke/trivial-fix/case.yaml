@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: trivial-fix
+tags: [smoke]
+expected_outcome: |
+  Count wording is correct for zero, one and many, everywhere the report prints a count.
+  No design document, new dependency or subagent is needed for a change this small.
+context:
+  scaffold_script: place-files.sh

@@ -1,0 +1,12 @@
+[project]
+name = "toolhire"
+version = "4.2.1"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+toolhire = "toolhire.__main__:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

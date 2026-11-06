@@ -1,0 +1,15 @@
+{
+  "name": "occam",
+  "description": "Engineering judgment for writing, auditing and repairing code, with deterministic audit tools and hooks that keep the important parts from being skipped.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Stephen Offer"
+  },
+  "keywords": [
+    "code-quality",
+    "audit",
+    "verification",
+    "review",
+    "python"
+  ]
+}

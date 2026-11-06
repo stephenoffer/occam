@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: dedupe-at-scale
+tags: [smoke]
+expected_outcome: |
+  Meets the stated time and memory limits at the stated size through the real CLI, with output
+  equivalent to the existing behavior.
+context:
+  scaffold_script: place-files.sh

@@ -1,0 +1,13 @@
+station,name,docks,opened_on,status
+S01,Harbour Street,20,2021-04-12,active
+S02,Mill Lane,16,2021-04-12,active
+S03,Central Station,24,2020-09-01,active
+S04,Riverside Walk,18,2022-03-15,active
+S05,Foundry Yard,14,2022-03-15,active
+S06,Market Square,22,2020-09-01,active
+S07,College Green,16,2023-05-02,active
+S08,Hospital East,20,2023-05-02,active
+S09,Gasworks Road,12,2019-06-01,retired
+S10,Canal Basin,18,2024-02-19,active
+S11,Northgate,24,2026-08-15,active
+S12,Orchard Park,16,2026-09-01,active

@@ -1,0 +1,164 @@
+[
+  {
+    "file": "subledger/store.py",
+    "line": 163,
+    "looks_like": "SQL built with an f-string from caller-supplied column names",
+    "why_fine": "The names are keyword arguments from internal service code and are checked against the _SUBSCRIPTION_COLUMNS allow-list before use, and values stay bound parameters."
+  },
+  {
+    "file": "subledger/store.py",
+    "line": 241,
+    "looks_like": "SQL injection through an f-string IN clause",
+    "why_fine": "The interpolated text is only a run of ? placeholders, and the ids are bound parameters that the route has already converted to integers."
+  },
+  {
+    "file": "subledger/store.py",
+    "line": 166,
+    "looks_like": "Tenant leak: query with no tenant filter",
+    "why_fine": "It is a system-level query for the worker, which must see every tenant, and each row carries its own tenant_id, which is used for all later access."
+  },
+  {
+    "file": "subledger/store.py",
+    "line": 218,
+    "looks_like": "Tenant leak: invoice lookup with no tenant filter",
+    "why_fine": "Webhooks carry no tenant context and gateway charge ids are globally unique, so the charge id identifies the invoice on its own."
+  },
+  {
+    "file": "subledger/auth.py",
+    "line": 17,
+    "looks_like": "Unsalted fast hash used for credentials",
+    "why_fine": "API keys are long machine-generated tokens rather than passwords, so brute force and rainbow tables do not apply, and a deterministic hash is what allows lookup by key."
+  },
+  {
+    "file": "subledger/services/payments.py",
+    "line": 41,
+    "looks_like": "Insecure randomness",
+    "why_fine": "This is retry backoff jitter, with no security role."
+  },
+  {
+    "file": "subledger/http.py",
+    "line": 109,
+    "looks_like": "Use of broken MD5",
+    "why_fine": "It only computes an HTTP ETag, is marked usedforsecurity=False, and needs no collision resistance."
+  },
+  {
+    "file": "subledger/routes/subscriptions.py",
+    "line": 50,
+    "looks_like": "Over-permissive CORS",
+    "why_fine": "It applies only to the public plan catalog, which the README says is public, has no credentials and is read-only."
+  },
+  {
+    "file": "subledger/app.py",
+    "line": 23,
+    "looks_like": "Endpoint with no authentication",
+    "why_fine": "The README lists it as public, and it returns only a status and version string."
+  },
+  {
+    "file": "subledger/routes/subscriptions.py",
+    "line": 47,
+    "looks_like": "Endpoint with no authentication",
+    "why_fine": "The README lists the catalog as public, and it holds only published prices."
+  },
+  {
+    "file": "subledger/services/pricing.py",
+    "line": 66,
+    "looks_like": "Date comparison done on strings",
+    "why_fine": "Both sides are ISO 8601 calendar dates, whose lexical order matches chronological order, and the comparison correctly lets a coupon work on its expiry day."
+  },
+  {
+    "file": "subledger/services/pricing.py",
+    "line": 95,
+    "looks_like": "Division with no zero check",
+    "why_fine": "period_days is the only divisor and comes from days_inclusive, which is at least 1 for any valid period."
+  },
+  {
+    "file": "subledger/worker.py",
+    "line": 53,
+    "looks_like": "Broad except Exception in a loop",
+    "why_fine": "It rolls back, logs with a full traceback and continues so one subscription cannot block the rest, and the sweep retries it next time."
+  },
+  {
+    "file": "subledger/services/payments.py",
+    "line": 22,
+    "looks_like": "Unimplemented methods with ... as the body",
+    "why_fine": "This is a typing.Protocol, whose method bodies are meant to be empty, and the real implementations are GatewayClient and the test fake."
+  },
+  {
+    "file": "subledger/http.py",
+    "line": 13,
+    "looks_like": "Import of an undeclared or missing package",
+    "why_fine": "The import is guarded by try/except ImportError with a stdlib fallback, and orjson is declared in the fast optional extra."
+  },
+  {
+    "file": "subledger/db.py",
+    "line": 139,
+    "looks_like": "Query in a loop (N+1)",
+    "why_fine": "It inserts a fixed six-row catalog once at startup inside one transaction, so batching would gain nothing."
+  },
+  {
+    "file": "subledger/db.py",
+    "line": 150,
+    "looks_like": "Catching BaseException",
+    "why_fine": "The transaction helper rolls back and immediately re-raises, so nothing is swallowed, and it also rolls back on KeyboardInterrupt."
+  },
+  {
+    "file": "static/invoice_table.js",
+    "line": 29,
+    "looks_like": "innerHTML XSS",
+    "why_fine": "Both interpolated values on the following line go through escapeHtml, and they are only a page number and an array length."
+  },
+  {
+    "file": "tests/test_money.py",
+    "line": 34,
+    "looks_like": "Test with no assert statement",
+    "why_fine": "pytest.raises is the assertion, so the test fails if no ValueError is raised."
+  },
+  {
+    "file": "tests/test_worker.py",
+    "line": 46,
+    "looks_like": "Test with no assert statement",
+    "why_fine": "The behaviour under test is that the loop returns, so ignoring the stop event would hang the run."
+  },
+  {
+    "file": "tests/conftest.py",
+    "line": 18,
+    "looks_like": "Hard-coded secrets",
+    "why_fine": "These are fixture values for a throwaway test database and are not valid for anything real."
+  },
+  {
+    "file": ".env.example",
+    "line": 5,
+    "looks_like": "Committed API key",
+    "why_fine": "It is an obvious placeholder in the example file, and .gitignore excludes the real .env."
+  },
+  {
+    "file": "subledger/routes/invoices.py",
+    "line": 126,
+    "looks_like": "Suppressed exception",
+    "why_fine": "It suppresses only the expected missing-file case while removing a previous export, so the delete is idempotent."
+  },
+  {
+    "file": "subledger/models.py",
+    "line": 104,
+    "looks_like": "Mutable default on a dataclass",
+    "why_fine": "default_factory gives each instance its own list."
+  },
+  {
+    "file": "subledger/utils/money.py",
+    "line": 23,
+    "looks_like": "Floats in money arithmetic",
+    "why_fine": "Going through str() gives the decimal form of the rate, so the calculation is exact Decimal arithmetic with half-up rounding even if a float rate is passed."
+  },
+  {
+    "file": "subledger/utils/formatting.py",
+    "line": 17,
+    "looks_like": "Float used for a billing value",
+    "why_fine": "It formats a tax rate as a label for people and never feeds an amount."
+  },
+  {
+    "file": "subledger/services/billing.py",
+    "line": 98,
+    "looks_like": "Invoice marked paid without charging",
+    "why_fine": "A zero total, such as from a 100% coupon, has nothing to charge, and gateways reject zero-amount charges."
+  }
+]

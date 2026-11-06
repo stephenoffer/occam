@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: pricing-workbook-scale
+tags: [holdout]
+expected_outcome: |
+  Workbook and the CLI meet the prompt's size and latency targets on a model of about
+  60k cells, every read is correct after any sequence of edits, and circular references
+  are reported at any length. Existing formula behaviour is unchanged.
+context:
+  scaffold_script: place-files.sh

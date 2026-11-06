@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: stop-requires-a-check
+tags: [e2e]
+expected_outcome: |
+  Even on a change this small, a check runs after the edit, because the stop hook sends the agent back otherwise.
+context:
+  scaffold_script: place-files.sh

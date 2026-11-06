@@ -1,0 +1,5 @@
+Fixed: rides per dock-day for Q3 is 0.287, in line with the ops figure. The formula multiplied every station's docks by the full 92 days, so stations that opened mid-quarter were over-counted.
+
+The notebook also could not run top to bottom: the window cell used REPORT_START before the cell defining it, and the de-duplication and retired-station cleaning sat below the result, so the saved outputs came from cells run out of order. I moved those cells above their first use and executed every code cell in order in a fresh Python process. I didn't have a real Jupyter kernel, so that was a plain Python run of the cells.
+
+Separately: the saved output of the export check cell contains a bearer token (dockhub_FAKE_4f9a2c71e8d05b36). Treat it as exposed and rotate it, and clear that output before sharing the notebook. It is also in git history.

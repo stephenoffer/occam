@@ -1,0 +1,5 @@
+[
+  {"task": "grainbank.settlement.send_statement", "args": ["M-1041", "ledger.json", "statements"]},
+  {"task": "grainbank.settlement.reverse_ticket", "args": ["T-88123", "wrong member on scale ticket", "ledger.json"]},
+  {"task": "settlement.reconcile", "args": ["M-1041", "ledger.json", "1820.44"]}
+]

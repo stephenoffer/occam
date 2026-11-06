@@ -1,0 +1,1 @@
+Not safe to merge: auth.js accepts a request with a missing signature, which looks risky. Please add a test.

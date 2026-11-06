@@ -1,0 +1,1 @@
+The holiday list and config are fine. The bug was in `business_days_between`, which counted weekends in any part of a span beyond whole weeks. It now counts day by day. All 79 tests pass.

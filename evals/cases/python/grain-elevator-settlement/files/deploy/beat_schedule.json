@@ -1,0 +1,17 @@
+{
+  "nightly-close": {
+    "task": "grainbank.settlement.nightly_close",
+    "schedule": "0 2 * * *",
+    "args": ["/var/spool/grainbank/tickets.json", "/var/lib/grainbank/ledger.json", "/var/lib/grainbank/statements"]
+  },
+  "refresh-board": {
+    "task": "grainbank.settlement.refresh_board_prices",
+    "schedule": "*/30 8-15 * * 1-5",
+    "args": []
+  },
+  "reconcile-co-op-account": {
+    "task": "settlement.reconcile",
+    "schedule": "0 6 * * 1",
+    "args": ["M-0001", "/var/lib/grainbank/ledger.json", "0.00"]
+  }
+}

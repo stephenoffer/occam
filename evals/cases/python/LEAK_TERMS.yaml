@@ -1,0 +1,166 @@
+bikeshare-dock-usage:
+- bikeshare
+- dock-days
+- dock_days
+- DockHub
+- dockhub
+- DOCKHUB_TOKEN
+- dockhub_FAKE
+- rides.csv
+- stations.csv
+- REPORT_START
+- REPORT_END
+- WINDOW_DAYS
+- days_open
+- window_rides
+- per_station
+freight-lane-quotes:
+- freight
+- dgtariff
+- class_rate_per_kg
+- dangerous_goods_surcharge
+- surcharges_for
+- is_eligible
+- rules_for
+- RULES_BY_MODE
+- within_weight_limit
+- read_fuel_rate
+- FEED_READ_ERRORS
+- RETRYABLE_CARRIER_ERRORS
+- fuel index
+- volume_discount_rate
+- test_volume_discount_tiers
+- validate_rate_card
+- rate card
+- ratecard
+- dg_class
+- carrier.invalid
+- HFX-MTL-ROAD
+grain-elevator-settlement:
+- grain elevator
+- scale ticket
+- SettlementCheckpoint
+- PricedTicket
+- net_bushels
+- board_price
+- fetch_board
+- price_ticket
+- patronage_rate
+- PATRONAGE_TIERS
+- nightly_close
+- send_statement
+- reconcile_member
+- settle_ticket
+- ACTIVE_SEASON
+- set_season
+- coop_portal
+- feedmill_sync
+- taskapp
+harbour-tide-gauges:
+- tide_calendar
+- datum_correctors
+- reduce_to_chart_datum
+- offsets_m
+- find_turning_points
+- turning point
+- high water
+- low water
+- high_water
+- low_water
+- local_day
+- readings_for_station
+- tidal constituent
+- predict_level_m
+- harbour-export
+- harbour.invalid
+- tidekit/nightly.py
+partner-meter-backfill:
+- allow_pickle
+- pickle
+- unpickle
+- deserialize
+- arbitrary code
+- code execution
+- shell=True
+- shell injection
+- command injection
+- injection
+- shlex
+- metacharacter
+- sanitize
+- check=True
+- returncode
+- exit code
+- exit status
+- non-zero
+- pipefail
+- '| tee'
+- .result()
+- as_completed
+- swallow
+- silently
+- trapz
+- np.trapezoid
+- frequency alias
+- offset alias
+- deprecated
+- removed in
+- pandas 3
+- numpy 2
+- installed version
+- chained assignment
+- ChainedAssignmentError
+- copy-on-write
+- untrusted
+- malicious
+- attacker
+- unsafe
+- security
+shipping-fx-rates:
+- contract_rate
+- booked_on
+- issued_on
+- settled_on
+- filed_on
+- assessed_on
+- period_end
+- apply_adjustments
+- conversion_rate
+- rate_source
+- adjustments.toml
+- current_document_date
+- document_scope
+- net_payable
+- price_freight
+- fuel_surcharge
+- invoice_subtotal
+- assess_declaration
+- customs_value
+- ClaimAssessor
+- RateLookup
+- flat_fee
+- emission levy
+tool-hire-overdue-report:
+- tool hire
+- hire shop
+- billable_late_days
+- held_deposit
+- effective_due
+- days_overdue
+- rough_late_estimate
+- deposit_rows
+- overdue_rows
+- ShopState
+- ShopCalendar
+tool-rental-late-fees:
+- business_days_between
+- late_fee_cents
+- late_days
+- capture_from_deposit
+- release_deposit
+- is_business_day
+- HOLIDAYS
+- TestLateFeeAcrossWeekends
+- test_counts_across_a_weekend
+- tool hire
+- deposit

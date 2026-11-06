@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: pos-migration
+tags: [triggers, positive, train]
+expected_outcome: |
+  Trigger behavior only.
+context:
+  scaffold_script: place-files.sh

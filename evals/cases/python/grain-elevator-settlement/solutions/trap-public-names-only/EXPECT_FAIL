@@ -1,0 +1,2 @@
+test_stored_checkpoints_still_load_and_finish
+test_stored_checkpoint_is_the_class_at_the_old_path

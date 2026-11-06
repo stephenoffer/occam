@@ -1,0 +1,8 @@
+# Weekly web deploy
+snapshot
+migrate: snapshot
+flush-cache: migrate
+warm-cache: flush-cache
+web: migrate ~warm-cache ^5
+worker: migrate
+"smoke test eu": web worker

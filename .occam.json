@@ -1,0 +1,8 @@
+{
+  "ignore": [
+    "evals/cases",
+    "evals/results",
+    "evals/variants",
+    "evals/fixtures"
+  ]
+}

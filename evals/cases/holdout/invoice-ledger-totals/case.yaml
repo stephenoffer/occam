@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: invoice-ledger-totals
+tags: [holdout]
+expected_outcome: |
+  sql/invoice_totals.sql returns the total billing would charge for every invoice the
+  README's rules cover, in the documented output format, not only for the sample data.
+context:
+  scaffold_script: place-files.sh

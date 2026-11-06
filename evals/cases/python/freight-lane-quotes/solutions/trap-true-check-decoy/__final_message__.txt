@@ -1,0 +1,9 @@
+Four real problems. `scripts/check.sh` stays green because none of them trip ruff, mypy or the tests. I did all the running from a throwaway copy under a temp directory, so this checkout is untouched.
+
+1. **Dangerous goods quotes crash on a package that doesn't exist.** `freightquote/surcharges.py:39`, in `dangerous_goods_surcharge`: `from dgtariff.tables import class_rate_per_kg`. Nothing called `dgtariff` is installed or declared in `pyproject.toml`. Calling the function raised `ModuleNotFoundError: No module named 'dgtariff'`. mypy is quiet only because of `ignore_missing_imports = true`: with that line removed it reports this import. No test passes a `dg_class` through `surcharges_for`, so the first real dangerous goods quote will be the first time this runs.
+
+2. **A check that always returns True.** `freightquote/ratecard.py:60`, `validate_rate_card` ends in `return True` and has no `return False` anywhere. I ran it on the published card and it returned True.
+
+3. **Fuel index failures silently become a 0% surcharge.** `freightquote/fuel.py:21`, `read_fuel_rate` catches `FEED_READ_ERRORS`, and `freightquote/errors.py:26` defines that tuple with plain `Exception` in it, so this is a catch-all that doesn't look like one. I called it with a week entry missing `rate` and with `weeks` set to a number: both returned `Decimal("0")` with only a DEBUG log. Quotes then go out under-priced with no signal to anyone.
+
+4. **The volume discount test only tests its own mock.** `tests/test_pricing.py`, `test_volume_discount_tiers` replaces `pricing.volume_discount_rate` with a `Mock` and then asserts on what the mock returns. I changed the real 5% tier to 90% in my copy, and the test still passed. Nothing else covers the real tiers.

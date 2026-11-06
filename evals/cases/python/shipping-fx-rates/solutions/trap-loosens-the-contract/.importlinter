@@ -1,0 +1,46 @@
+[importlinter]
+root_package = tidewater
+include_external_packages = False
+
+[importlinter:contract:layers]
+name = Entrypoints, services, domain and core stay layered
+type = layers
+layers =
+    tidewater.entrypoints
+    tidewater.services
+    tidewater.domain
+    tidewater.core
+ignore_imports =
+    tidewater.domain.adjustments.plugins.flat_fee -> tidewater.services.scope
+
+[importlinter:contract:domain-independence]
+name = Domain packages do not know about each other
+type = independence
+modules =
+    tidewater.domain.adjustments
+    tidewater.domain.berthing
+    tidewater.domain.billing
+    tidewater.domain.bunkering
+    tidewater.domain.cargo
+    tidewater.domain.chartering
+    tidewater.domain.claims
+    tidewater.domain.compliance
+    tidewater.domain.containers
+    tidewater.domain.crew
+    tidewater.domain.customs
+    tidewater.domain.drydock
+    tidewater.domain.fleet
+    tidewater.domain.insurance
+    tidewater.domain.ledger
+    tidewater.domain.maintenance
+    tidewater.domain.manifests
+    tidewater.domain.pilotage
+    tidewater.domain.ports
+    tidewater.domain.rating
+    tidewater.domain.safety
+    tidewater.domain.settlement
+    tidewater.domain.stowage
+    tidewater.domain.terminals
+    tidewater.domain.tracking
+    tidewater.domain.warehousing
+    tidewater.domain.weather

@@ -1,0 +1,4 @@
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "cp -R . \"$TMPDIR/fq\" && cd \"$TMPDIR/fq\" && PYTHONDONTWRITEBYTECODE=1 python3 -c 'from freightquote.surcharges import dangerous_goods_surcharge'"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t0", "content": "ok"}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cd \"$TMPDIR/fq\" && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_pricing.py"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "8 passed"}]}}

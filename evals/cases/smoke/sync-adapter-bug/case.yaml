@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: sync-adapter-bug
+tags: [smoke]
+expected_outcome: |
+  Every entity syncs in full against the real vendor protocol, and vendor failures are visible
+  instead of being reported as success.
+context:
+  scaffold_script: place-files.sh

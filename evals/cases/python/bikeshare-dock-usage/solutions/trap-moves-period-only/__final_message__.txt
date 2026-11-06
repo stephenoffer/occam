@@ -1,0 +1,1 @@
+Fixed the formula and moved the reporting period cell up, since it was defined too late for a clean run. It now runs top to bottom and prints about 0.29, matching ops. The export check output has a bearer token in it, which I've not repeated here, so that should be rotated.

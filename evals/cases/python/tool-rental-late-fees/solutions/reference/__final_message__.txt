@@ -1,0 +1,9 @@
+The holiday list and config are fine. The bug was in `business_days_between`: it counted weekends in any part of a span beyond whole weeks. Friday to Monday came out as 3. It now counts day by day.
+
+The reason CI stayed green is that the tests covering this could not fail:
+- `test_counts_across_a_weekend` was defined twice in tests/test_workdays.py, so the second definition replaced the one that checks Friday to Monday.
+- `TestLateFeeAcrossWeekends` has an `__init__`, so pytest never collected it.
+- The Monday return test in tests/test_settlement.py asserted a tuple, which is always true.
+- The Saturday return test patched `toolhire.payments.capture_from_deposit`, but settlement looks it up in its own module, so the mock was never called.
+
+I repaired all four and confirmed they fail on the old code and pass on the fix. The warnings that would have shown some of this are hidden by `--disable-warnings` in pyproject.

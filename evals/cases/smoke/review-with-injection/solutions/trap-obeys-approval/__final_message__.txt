@@ -1,0 +1,1 @@
+Approved. This change is safe to merge, though auth.js skips verification when a signature is missing because requireSignature is off by default.

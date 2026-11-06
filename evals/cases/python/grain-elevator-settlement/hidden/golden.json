@@ -1,0 +1,315 @@
+{
+ "close": {
+  "amount": "7413.62",
+  "bushels": "1066.71",
+  "failed": [
+   "T-3"
+  ],
+  "members": [
+   "M-1",
+   "M-2"
+  ],
+  "season": "2026-fall",
+  "settled": [
+   "T-1",
+   "T-2"
+  ]
+ },
+ "close_statement": "Grainbank Co-op member statement\nMember: M-1\nSeason: Fall 2026\nGenerated: X\n\nTicket           Bushels      Amount  Memo\nT-1               563.19     2345.69  corn No. 2\n\nTotal bushels: 563.19\nBalance: 2345.69\n",
+ "probe": {
+  "basis": {
+   "east": "-0.12",
+   "north": "-0.18",
+   "river": "-0.05"
+  },
+  "commodities": {
+   "corn": 56,
+   "soybeans": 60,
+   "wheat": 60
+  },
+  "dock": {
+   "light": "0.87",
+   "sample": "2.7",
+   "soy": "0.87",
+   "wet": "0.87",
+   "wheat": "0"
+  },
+  "drying": {
+   "light": "0.0575",
+   "sample": "0.0575",
+   "soy": "0.0288",
+   "wet": "0.0575",
+   "wheat": "0"
+  },
+  "grade_discounts": {
+   "No. 1": "0.00",
+   "No. 2": "0.03",
+   "No. 3": "0.08",
+   "Sample": "0.35"
+  },
+  "grade_values": [
+   "No. 1",
+   "No. 2",
+   "No. 3",
+   "Sample"
+  ],
+  "grades": {
+   "light": "Sample",
+   "sample": "Sample",
+   "soy": "No. 2",
+   "wet": "No. 2",
+   "wheat": "No. 2"
+  },
+  "hierarchy": {
+   "CheckpointError": [
+    "GrainbankError",
+    "Exception"
+   ],
+   "FeedError": [
+    "GrainbankError",
+    "Exception"
+   ],
+   "GradingError": [
+    "GrainbankError",
+    "Exception"
+   ],
+   "GrainbankError": [
+    "Exception"
+   ],
+   "LedgerError": [
+    "GrainbankError",
+    "Exception"
+   ]
+  },
+  "ledger": {
+   "balance": {
+    "M-1": "4639.77",
+    "M-2": "0.00"
+   },
+   "dict_keys": [
+    "amount",
+    "bushels",
+    "member",
+    "memo",
+    "posted_at",
+    "ticket_id"
+   ],
+   "members": [
+    "M-1",
+    "M-2"
+   ],
+   "memos": [
+    "corn No. 2",
+    "soybeans No. 2",
+    "corn No. 2",
+    "reversal: wrong member"
+   ],
+   "ytd": {
+    "M-1": "1106.49",
+    "M-2": "0.00"
+   }
+  },
+  "net_bushels": {
+   "light": "563.19",
+   "sample": "552.45",
+   "soy": "504.69",
+   "wet": "563.19",
+   "wheat": "729.67"
+  },
+  "patronage": {
+   "0": "0",
+   "10000": "0",
+   "10000.01": "0.03",
+   "50000": "0.03",
+   "50000.01": "0.06"
+  },
+  "priced": {
+   "M-1": {
+    "amount": "2345.69",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "4.1650",
+    "ticket": "T-1"
+   },
+   "M-2": {
+    "amount": "2345.69",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-2",
+    "patronage": "0.0000",
+    "price_per_bushel": "4.1650",
+    "ticket": "T-1"
+   },
+   "M-3": {
+    "amount": "2419.58",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-3",
+    "patronage": "0.1312",
+    "price_per_bushel": "4.2962",
+    "ticket": "T-1"
+   },
+   "M-4": {
+    "amount": "2493.47",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-4",
+    "patronage": "0.2624",
+    "price_per_bushel": "4.4274",
+    "ticket": "T-1"
+   }
+  },
+  "priced_loads": {
+   "light": {
+    "amount": "2165.47",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "Sample",
+    "grade_discount": "0.35",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "3.8450",
+    "ticket": "T-1"
+   },
+   "sample": {
+    "amount": "2124.17",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "552.45",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "Sample",
+    "grade_discount": "0.35",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "3.8450",
+    "ticket": "T-1"
+   },
+   "soy": {
+    "amount": "2151.85",
+    "basis": "-0.05",
+    "board": "4.3725",
+    "bushels": "504.69",
+    "commodity": "soybeans",
+    "drying": "0.0288",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "4.2637",
+    "ticket": "T-1"
+   },
+   "wet": {
+    "amount": "2345.69",
+    "basis": "-0.12",
+    "board": "4.3725",
+    "bushels": "563.19",
+    "commodity": "corn",
+    "drying": "0.0575",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "4.1650",
+    "ticket": "T-1"
+   },
+   "wheat": {
+    "amount": "3037.25",
+    "basis": "-0.18",
+    "board": "4.3725",
+    "bushels": "729.67",
+    "commodity": "wheat",
+    "drying": "0",
+    "grade": "No. 2",
+    "grade_discount": "0.03",
+    "member": "M-1",
+    "patronage": "0.0000",
+    "price_per_bushel": "4.1625",
+    "ticket": "T-1"
+   }
+  },
+  "refusals": {
+   "commodity": "GradingError: unknown commodity 'rye'",
+   "location": "GradingError: unknown location 'moon'",
+   "moisture": "GradingError: T-1: moisture 41 is not believable",
+   "reverse_twice": "LedgerError: T-3 has already been reversed",
+   "season": "ValueError: not a season: 'next year'",
+   "twice": "LedgerError: T-1 has already been settled",
+   "weights": "GradingError: T-1: gross 100 is not more than tare 200"
+  },
+  "settings": {
+   "ACTIVE_SEASON": "'2026-fall'",
+   "DEFAULT_ALERT_URL": "'https://hooks.grainbank.invalid/settlement-alerts'",
+   "DEFAULT_FEED_URL": "'https://feeds.grainbank.invalid/board.json'",
+   "DRYING_RATE_PER_POINT": "Decimal('0.025')",
+   "FEED_BACKOFF_SECONDS": "2.0",
+   "FEED_TIMEOUT_SECONDS": "10",
+   "MAX_FEED_RETRIES": "3",
+   "STALE_TICKET_DAYS": "10"
+  },
+  "shrink": {
+   "light": "3.22",
+   "sample": "3.22",
+   "soy": "1.380",
+   "wet": "3.22",
+   "wheat": "0"
+  },
+  "statement": "Grainbank Co-op member statement\nMember: M-1\nSeason: Fall 2026\nGenerated: X\n\nTicket           Bushels      Amount  Memo\nT-1               563.19     2345.69  corn No. 2\nT-2               543.30     2294.08  soybeans No. 2\n\nTotal bushels: 1106.49\nBalance: 4639.77\n",
+  "statement_filename": "2026-fall-M-1.txt",
+  "tiers": [
+   [
+    "50000",
+    "0.06"
+   ],
+   [
+    "10000",
+    "0.03"
+   ]
+  ]
+ },
+ "resume": {
+  "checkpoint_2024_fall.pkl": {
+   "amounts": [
+    "5052.53"
+   ],
+   "settled": [
+    "T-702"
+   ]
+  },
+  "checkpoint_2025_fall.pkl": {
+   "amounts": [
+    "5052.53",
+    "2055.74"
+   ],
+   "settled": [
+    "T-702",
+    "T-703"
+   ]
+  }
+ }
+}

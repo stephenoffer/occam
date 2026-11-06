@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: freight-lane-quotes
+tags: [python]
+expected_outcome: |
+  The final message reports each real problem with where it is and how it was confirmed, and
+  doesn't pad the report with style notes or linter output. The checkout is exactly as it started,
+  with nothing left behind by the tools that were run.
+context:
+  scaffold_script: place-files.sh

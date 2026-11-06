@@ -1,0 +1,34 @@
+{
+  "version": 3,
+  "tax_rate": "0.20",
+  "calendar": {
+    "holidays": ["2026-03-20", "2026-04-03"],
+    "closed_weekdays": [6]
+  },
+  "categories": [
+    {"code": "DRILL", "name": "Rotary hammer drills", "daily_rate": "18.00", "weekly_rate": "72.00", "deposit": "50.00", "service_interval_days": 90, "late_grace_days": 1},
+    {"code": "MIXER", "name": "Cement mixers", "daily_rate": "24.00", "weekly_rate": "96.00", "deposit": "80.00", "service_interval_days": 60, "late_grace_days": 0},
+    {"code": "SAW", "name": "Floor saws", "daily_rate": "40.00", "weekly_rate": "160.00", "deposit": "120.00", "service_interval_days": 45, "late_grace_days": 1}
+  ],
+  "assets": [
+    {"tag": "DR-100", "category": "DRILL", "description": "SDS drill, 800W", "replacement_value": "240.00", "condition": "good", "status": "on_hire", "acquired_on": "2025-02-10", "last_serviced_on": "2026-01-12", "hours_used": 310},
+    {"tag": "DR-101", "category": "DRILL", "description": "SDS drill, 1100W", "replacement_value": "320.00", "condition": "good", "status": "available", "acquired_on": "2025-06-01", "last_serviced_on": "2026-02-02", "hours_used": 122},
+    {"tag": "MX-200", "category": "MIXER", "description": "Tip-up cement mixer", "replacement_value": "410.00", "condition": "fair", "status": "on_hire", "acquired_on": "2024-09-15", "last_serviced_on": "2026-01-20", "hours_used": 640},
+    {"tag": "SW-300", "category": "SAW", "description": "Petrol floor saw", "replacement_value": "1400.00", "condition": "good", "status": "available", "acquired_on": "2025-03-03", "last_serviced_on": "2025-12-01", "hours_used": 205}
+  ],
+  "customers": [
+    {"id": "C-1", "name": "Pat Example", "email": "pat@example.invalid", "tier": "walk_in", "credit_limit": "0.00", "blocked_reason": null},
+    {"id": "C-2", "name": "Oakfield Builders", "email": "accounts@oakfield.invalid", "tier": "trade", "credit_limit": "1500.00", "blocked_reason": null},
+    {"id": "C-3", "name": "Northgate Contracting", "email": "hires@northgate.invalid", "tier": "contractor", "credit_limit": "5000.00", "blocked_reason": null}
+  ],
+  "bookings": [
+    {"id": "B-1", "customer": "C-2", "category": "SAW", "start": "2026-03-23", "end": "2026-03-27", "status": "held", "note": "Car park job"}
+  ],
+  "rentals": [
+    {"id": "R-1", "customer": "C-1", "asset": "DR-100", "started_on": "2026-03-02", "due_on": "2026-03-06", "status": "open", "hire_charge": "72.00", "deposit_paid": "50.00"},
+    {"id": "R-2", "customer": "C-2", "asset": "MX-200", "started_on": "2026-02-23", "due_on": "2026-03-02", "status": "open", "hire_charge": "86.40", "deposit_paid": "40.00", "extensions": [{"new_due_on": "2026-03-09", "approved_by": "Sam"}]}
+  ],
+  "work_orders": [],
+  "invoices": [],
+  "counters": {"R": 2, "B": 1}
+}

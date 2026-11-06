@@ -1,0 +1,5 @@
+`spot_rate` now takes a required `as_of` date and returns the rate in force then, raising `RateUnavailable` if nothing had been published.
+
+Callers updated: rating (fuel and pricing), billing totals, settlement payables (its rate memo is now keyed by date too), customs valuation and the functions above it, claims (the injected lookup), ledger revaluation and the adjustment schedule. The adjustments aren't visible in a text search: the schedule's `rate_source` is matched by name in `adjustments/conversion.py`, so the ECA levy reached the spot rate at runtime. A grep alone would have missed it, so I also searched for dynamic lookups and for everything importing the fx module. `berthing.charges.spot_rate` and the chartering market functions are unrelated and untouched.
+
+I ran pytest and every document type by hand on back-dated documents. `mypy` and `lint-imports` aren't installed here, so I checked imports and annotations with a small script, and CI will be the first real run of them. How sure: high for code paths, since I searched for reflection as well as names, but a caller built some other way can't be ruled out.

@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: tool-rental-late-fees
+tags: [python]
+expected_outcome: |
+  Late days match the business calendar for every due and return date. The repaired test suite fails on the original
+  code and no existing test is deleted or skipped away. The report explains why a passing suite did not catch this.
+context:
+  scaffold_script: place-files.sh
