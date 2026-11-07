@@ -113,7 +113,7 @@ def overhead_line(cases, base, extra):
     if abs(extra["total"]) < 0.05 * base:  # Parts of a near-zero total can be any size, so their shares mean nothing.
         return line + " Too close to zero to split by part."
     shares = (f"{key} {round(100 * extra[key] / extra['total']) + 0}%" for key in ("write", "read", "output", "subagents"))
-    return line + " Share of the extra: " + ", ".join(shares)
+    return line + f" Share of the {'extra' if extra['total'] > 0 else 'saving'}: " + ", ".join(shares)
 
 
 def report(folder):

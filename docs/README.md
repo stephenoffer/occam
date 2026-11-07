@@ -27,6 +27,7 @@ None of this is loaded during coding sessions.
 | [Evaluation suite](../evals/README.md) | How to run the checks and the billed agent comparisons |
 | [Adding a failure seen in real use](add-regression-case.md) | How to turn a real failure into a test case |
 | [Coverage map](coverage-map.md) | Which mechanism and test covers each concern |
+| [Design](../DESIGN.md) | What's decided about occam itself and why. Read the slice you need with `occam design for <path>` |
 | [Research record](research.md) | The approaches this draws on, and the decision on each |
 
 The Karpathy-inspired guidelines credited in the research record are maintained by their repository's authors. Karpathy did not write or endorse this project.
@@ -50,7 +51,7 @@ python3 -m pytest tests/ -q
 | `plugin/skills/occam-*/` | Language skills: Python, TypeScript and JavaScript, Rust, Go, Java and Kotlin, C and C++, SQL, shell. Python is the primary target, and post-evaluation has its own references |
 | `plugin/hooks/` | The enforcement hooks and their configuration, for Claude Code and Codex |
 | `plugin/agents/` | The reviewer and auditor agents |
-| `adapters/` | Codex material, and an optional check-on-stop hook for your own commands |
+| `adapters/` | Codex material |
 | `assets/` | Logo files |
 | `docs/` | These docs |
 | `evals/` | Scenarios, cases, grader, preregistration, results. Raw run output in `evals/results/` is generated and isn't in the repository |

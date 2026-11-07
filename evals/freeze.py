@@ -11,6 +11,7 @@ from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
 RECORD = EVALS / "FROZEN.sha256"
+MAY_BE_WITHHELD = {"hard"}
 
 
 def current() -> dict[str, str]:
@@ -21,6 +22,9 @@ def current() -> dict[str, str]:
 def differences() -> list[str]:
     recorded = dict(reversed(line.split("  ", 1)) for line in RECORD.read_text().splitlines())
     now = current()
+    # A suite in a blind round stays out of the published repository until its runs are done, which says nothing about its files.
+    withheld = {suite for suite in MAY_BE_WITHHELD if not (EVALS / "cases" / suite).is_dir()}
+    recorded = {name: digest for name, digest in recorded.items() if name.split("/")[1] not in withheld}
     return sorted(name for name in recorded.keys() | now.keys() if recorded.get(name) != now.get(name))
 
 

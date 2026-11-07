@@ -1,4 +1,4 @@
-"""`occam debt`, and what `occam gate` can only learn from the diff: did this change stay in scope?"""
+"""What `occam gate` can only learn from the diff: did this change stay in scope?"""
 
 import sys
 from pathlib import Path
@@ -8,8 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import debt, scan  # noqa: E402
-from occam_tools.debt import _marker  # noqa: E402
+from occam_tools import scan  # noqa: E402
 from test_tools import Repo  # noqa: E402  (the real-git helper the other tool tests use)
 
 
@@ -30,61 +29,7 @@ def out(done):
     return done.stdout + done.stderr
 
 
-# ------------------------------------------------------------ occam debt
-
-@pytest.mark.parametrize("comment, kind", [
-    ("# shortcut: in-memory only, move to Redis when a second worker runs", "shortcut"),
-    ("// Shortcut: linear scan, index it above 10k rows", "shortcut"),
-    ("# TODO: retry on 503", "TODO"),
-    ("# TODO(sam): retry on 503", "TODO"),
-    ("# FIXME drop this", "FIXME"),
-    ("// see below. HACK: works around the parser", "HACK"),
-])
-def test_markers_that_count(comment, kind):
-    assert _marker(comment)[0] == kind
-
-
-@pytest.mark.parametrize("comment", [
-    "# the keyboard shortcut: ctrl+s saves",
-    "# keep the TODO list sorted",
-    "# hack the planet",
-    "# todos live in the database",
-])
-def test_prose_that_mentions_a_marker_does_not_count(comment):
-    assert _marker(comment) is None
-
-
-def test_debt_lists_markers_and_flags_those_with_no_trigger(repo):
-    repo.write("app/a.py", "# shortcut: in-memory only, move to Redis when a second worker runs\nX = 1\n# TODO: handle retries\nY = 2\n")
-    repo.write("src/b.ts", "// FIXME(#123): drop after the migration\nconst z = 1;\n")
-    done = repo.occam("debt")
-    assert done.returncode == 0
-    assert "3 markers in 2 files, 1 with no trigger" in done.stdout
-    assert "handle retries  [no trigger]" in done.stdout
-    assert "second worker runs" in done.stdout
-    assert "second worker runs  [no trigger]" not in done.stdout
-
-
-def test_debt_reads_comments_and_not_strings(repo):
-    repo.write("app/a.py", 'MESSAGE = "TODO: this is data"\n')
-    assert "No deferred work" in repo.occam("debt").stdout
-
-
-def test_debt_can_be_limited_to_a_path(repo):
-    repo.write("app/a.py", "# TODO: one\nX = 1\n")
-    repo.write("lib/b.py", "# TODO: two\nX = 1\n")
-    done = repo.occam("debt", "lib")
-    assert "two" in done.stdout and "one" not in done.stdout
-
-
-def test_debt_says_what_it_did_not_read(repo):
-    repo.write("a.ipynb", '{"cells": [], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}')
-    assert "NOT CHECKED: 1 notebooks" in repo.occam("debt").stdout
-
-
-def test_debt_rejects_a_missing_path(repo):
-    done = repo.occam("debt", "nowhere")
-    assert done.returncode == 2 and "No such path" in done.stdout
+# ------------------------------------------------------------ shortcuts
 
 
 def test_a_marked_shortcut_with_a_trigger_is_a_decision_and_not_a_placeholder():
@@ -535,37 +480,6 @@ def test_unused_option_says_what_it_read_rather_than_what_exists(tmp_path):
     assert "in this repository" not in message and "retries" in message
 
 
-# ------------------------------------------------------------ impossible-none-check only where the code really says so
-
-@pytest.mark.parametrize("code", [
-    "from app.types import MaybeStr\n\n\ndef f(x: MaybeStr):\n    if x is None:\n        return 0\n    return 1\n",
-    "from typing import TypeVar\nfrom app.types import T2\n\n\ndef f(x: T2):\n    if x is None:\n        return 0\n    return 1\n",
-    "from typing import Hashable\n\n\ndef f(x: Hashable):\n    if x is None:\n        return 0\n    return 1\n",
-    "from typing import TYPE_CHECKING, Optional\nif TYPE_CHECKING:\n    Maybe = Optional[str]\n\n\ndef f(x: 'Maybe'):\n    if x is None:\n        return 0\n    return 1\n",
-    "def f(col: Column):\n    if col == None:\n        return 0\n    return 1\n",
-    "def f(name: str):\n    try:\n        g()\n    except ValueError as name:\n        pass\n    if name is None:\n        return 0\n    return 1\n",
-    "def f(name: str):\n    import name\n    if name is None:\n        return 0\n    return 1\n",
-    "def f(name: str):\n    def inner():\n        nonlocal name\n        name = None\n    inner()\n    if name is None:\n        return 0\n    return 1\n",
-    "def f(name: str):\n    if name is None:\n        raise ValueError('name is required')\n    return 1\n",
-    "def load() -> list:\n    return []\n\n\ndef f(load):\n    items = load()\n    if items is None:\n        return 0\n    return 1\n",
-    "import functools\n\n\n@functools.cache\ndef load() -> list:\n    return []\n\n\ndef f():\n    items = load()\n    if items is None:\n        return 0\n    return 1\n",
-    "def load() -> list:\n    return []\n\n\nload = other\n\n\ndef f():\n    items = load()\n    if items is None:\n        return 0\n    return 1\n",
-    "from numpy import int\n\n\ndef f(a):\n    x = int(a)\n    if x is None:\n        return 0\n    return 1\n",
-    "def f(list):\n    x = list(1)\n    if x is None:\n        return 0\n    return 1\n",
-    "async def g():\n    x = await load()\n    if x is None:\n        return 0\n    return 1\n\n\ndef load() -> list:\n    return []\n",
-], ids=["imported-alias", "imported-typevar", "hashable", "type-checking-alias", "eq-none", "except-as", "import-as", "nonlocal", "raises", "param-shadow", "decorated", "rebound", "imported-shadow", "param-builtin", "await-sync"])
-def test_impossible_none_check_stays_quiet_when_it_cannot_know(code):
-    assert "impossible-none-check" not in rules_in(scan.scan_text("app/a.py", code))
-
-
-@pytest.mark.parametrize("code", [
-    "class User:\n    pass\n\n\ndef f(u: User):\n    if u is None:\n        return 0\n    return 1\n",
-    "async def load() -> list:\n    return []\n\n\nasync def g():\n    x = await load()\n    if x is None:\n        return 0\n    return 1\n",
-])
-def test_impossible_none_check_trusts_what_is_defined_here(code):
-    assert "impossible-none-check" in rules_in(scan.scan_text("app/a.py", code))
-
-
 # ------------------------------------------------------------ ts-double-cast and prose
 
 @pytest.mark.parametrize("code, fires", [
@@ -592,61 +506,6 @@ def test_a_limit_with_no_way_out_is_still_a_placeholder(comment):
     assert "placeholder-comment" in rules_in(scan.scan_text("app/a.py", comment + "\nX = 1\n"))
 
 
-@pytest.mark.parametrize("note, has_trigger", [
-    ("check if the file exists", False),
-    ("loop over the rows", False),
-    ("validate before saving", False),
-    ("handle errors when reading", False),
-    ("clean up after yourself", False),
-    ("use a 2048 byte buffer", False),
-    ("fails at 3 retries", False),
-    ("#1 reason", False),
-    ("retry", False),
-    ("drop this once v1 clients are gone", True),
-    ("keep until the migration lands", True),
-    ("(#123) drop the fallback", True),
-    ("see https://github.com/a/b/issues/12", True),
-    ("JIRA-123 drop the fallback", True),
-    ("remove by 2027-03", True),
-    ("in-memory only, move to Redis when a second worker runs", True),
-])
-def test_what_counts_as_saying_when(note, has_trigger):
-    assert bool(debt.states_when_due(note)) is has_trigger
-
-
-def test_a_wrapped_comment_is_read_as_one_note(repo):
-    repo.write("a.py", "# shortcut: in-memory only,\n# move to Redis when a second worker runs\nX = 1\n")
-    done = repo.occam("debt").stdout
-    assert "1 markers" in done and "0 with no trigger" in done
-
-
-@pytest.mark.parametrize("comment", [
-    "# TODO list lives in the wiki",
-    "# FIXME comments are banned here",
-    "# HACK week is in March",
-    "# TODO.md has the plan",
-    "# we grep for TODO: and FIXME: in CI",
-    "# Shortcut: Ctrl+S saves the file",
-])
-def test_more_prose_that_is_not_deferred_work(comment):
-    assert _marker(comment) is None
-
-
-def test_a_lowercase_marker_with_a_colon_counts():
-    assert _marker("# todo: retry on 503")[0] == "TODO"
-
-
-def test_debt_says_which_languages_it_could_not_read(repo):
-    repo.write("a.lua", "-- TODO: fix this\nprint(1)\n")
-    done = repo.occam("debt").stdout
-    assert "NOT CHECKED" in done and "No deferred work marked" in done
-
-
-def test_debt_reads_an_extensionless_script(repo):
-    repo.write("runit", "#!/usr/bin/env python3\n# TODO: handle retries\nprint(1)\n")
-    assert "handle retries" in repo.occam("debt").stdout
-
-
 @pytest.mark.parametrize("files", [
     {**BASE_NET, "app/a.py": "from app.net import fetch\nprint(fetch('x'))\neval(input())\n"},
     {**BASE_NET, "app/a.py": "from app.net import fetch\nprint(fetch('x'))\n", "app/fast.pyx": "from app.net import fetch\nprint(fetch('x', retries=2))\n"},
@@ -654,16 +513,6 @@ def test_debt_reads_an_extensionless_script(repo):
 ], ids=["eval", "cython", "metaclass"])
 def test_unused_option_stays_silent_for_these_too(tmp_path, files):
     assert not unused_option_fires(tmp_path, files)
-
-
-def test_a_decorated_function_is_called_with_what_its_framework_has(tmp_path):
-    code = "@field_validator('name', mode='before')\ndef clean(cls, value: str):\n    if value is None:\n        return ''\n    return value\n"
-    assert "impossible-none-check" not in rules_in(scan.scan_text("app/a.py", code))
-
-
-def test_a_mixed_case_marker_with_a_colon_counts_and_closers_stay_out():
-    assert _marker("# Todo: handle it")[0] == "TODO"
-    assert _marker("<!-- TODO in html -->")[1] == "in html"
 
 
 def test_a_computed_getattr_that_is_called_hides_a_call(tmp_path):

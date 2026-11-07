@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat as stat_module
 import subprocess
 import tempfile
@@ -51,6 +52,12 @@ def _git_reads_config_environment(git: str, timeout: int) -> bool:
     return bool(version) and (int(version.group(1)), int(version.group(2))) >= (2, 31)
 
 
+def can_diff_merges_by_first_parent() -> bool:
+    """--diff-merges arrived in the same release."""
+    git = shutil.which("git")
+    return bool(git) and _git_reads_config_environment(git, 10)
+
+
 def _driver_environment(git: str, root, timeout: int) -> dict[str, str] | None:
     """Filter and diff drivers are named freely, even empty, not UTF-8 or with = in the name, so blank each one through the environment.
 
@@ -90,27 +97,55 @@ def _git_invocation(root, args: tuple, timeout: int) -> tuple[list[str], dict[st
     return [git, *_GIT_SAFETY, *command], {**os.environ, **_GIT_ENVIRONMENT, **drivers}
 
 
+_running: set[subprocess.Popen] = set()
+
+
 def run_git(root, *args, timeout: int = 30) -> str | None:
     """Output of a git command in `root`, or None if git is missing, it fails, or what the repository names can't be switched off."""
     invocation = _git_invocation(root, args, timeout)
     if invocation is None:
         return None
     try:
-        done = subprocess.run(invocation[0], cwd=str(root), capture_output=True, text=True, errors="replace", timeout=timeout, env=invocation[1])
-    except (OSError, subprocess.TimeoutExpired):
+        process = subprocess.Popen(invocation[0], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=invocation[1])
+    except OSError:
         return None
-    return done.stdout if done.returncode == 0 else None
+    _running.add(process)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        return None
+    except BaseException:  # interrupted, and git mustn't outlive that
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        _running.discard(process)
+    # Decoded here and not by text mode, which turns a bare carriage return into a line break, and a diff's line counts then land on the wrong lines.
+    return output.decode("utf-8", "replace") if process.returncode == 0 else None
 
 
-def stream_git(root, *args, timeout: int = 300, ok_codes: tuple = (0,)) -> Iterator[str]:
+def stop_running_git() -> None:
+    """For a process about to end: a git blocked on a FIFO a repository named would otherwise outlive it."""
+    for process in list(_running):
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+
+def stream_git(root, *args, timeout: int = 300, ok_codes: tuple = (0,), environment: dict | None = None) -> Iterator[str]:
     """Lines of a git command as they arrive, so a huge result needn't fit in memory. Raises GitProblem rather than end early and look complete."""
     invocation = _git_invocation(root, args, timeout)
+    name = next(arg for index, arg in enumerate(args) if not arg.startswith("-") and (index == 0 or args[index - 1] != "-c"))
     if invocation is None:
-        raise GitProblem(f"git {args[0]} can't be run safely here")
+        raise GitProblem(f"git {name} can't be run safely here")
     try:
-        process = subprocess.Popen(invocation[0], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=invocation[1])
+        process = subprocess.Popen(invocation[0], cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={**invocation[1], **(environment or {})})
     except OSError as error:
-        raise GitProblem(f"git {args[0]} failed to start ({error})") from error
+        raise GitProblem(f"git {name} failed to start ({error})") from error
+    _running.add(process)
     watchdog = threading.Timer(timeout, process.kill)  # a loop can't check a clock while git is silent
     watchdog.start()
     finished = False
@@ -124,8 +159,9 @@ def stream_git(root, *args, timeout: int = 300, ok_codes: tuple = (0,)) -> Itera
             process.kill()
         process.stdout.close()
         code = process.wait()
+        _running.discard(process)
     if code not in ok_codes:
-        raise GitProblem(f"git {args[0]} failed or timed out here (exit {code})")
+        raise GitProblem(f"git {name} failed or timed out here (exit {code})")
 
 
 def _required_git(root, *args, timeout: int = 120) -> str:
@@ -135,18 +171,79 @@ def _required_git(root, *args, timeout: int = 120) -> str:
     return output
 
 
+def _holds_this_git_dir(found: Path, git_dir: Path) -> bool:
+    """A repository nested in another could name that one as its files, and both hold a .git, so it has to be this one.
+
+    A .git file names its git dir. A linked worktree's and a submodule's name it back, which one planted to borrow another repository's can't arrange.
+    `git init --separate-git-dir` leaves no way back, so that can only be told from a borrowed repository by the borrowed git dir being another repository's own .git.
+    """
+    marker = found / ".git"
+    if marker.is_dir():  # a link to someone's .git would read as this, and only a linked worktree's git dir has a commondir
+        return os.path.samefile(marker, git_dir) and not (git_dir / "commondir").exists() and not (marker.is_symlink() and git_dir.resolve().name == ".git" and git_dir.resolve().parent != found.resolve())
+    named = marker.read_text(errors="replace").strip()
+    if marker.is_symlink() or not named.startswith("gitdir:") or not os.path.samefile(found / named[len("gitdir:"):].strip(), git_dir):
+        return False
+    if (git_dir / "commondir").exists():  # only a linked worktree's git dir has one, and it sits in that repository's worktrees folder
+        common = git_dir / (git_dir / "commondir").read_text(errors="replace").strip()
+        holder = git_dir.resolve().parent
+        if holder.name != "worktrees" or not os.path.samefile(holder.parent, common):
+            return False
+    if (git_dir / "gitdir").is_file():  # a worktree moved by hand leaves this naming where it was, which git accepts
+        named_back = git_dir / (git_dir / "gitdir").read_text(errors="replace").strip()
+        return not named_back.exists() or os.path.samefile(named_back, marker)
+    worktree = (run_git(git_dir, "config", "--local", "core.worktree") or "").strip()
+    return os.path.samefile(git_dir / worktree, found) if worktree else git_dir.name != ".git"
+
+
+def _is_own_working_tree(found: Path, path: Path) -> bool:
+    """core.worktree in a repository's config can name any folder, such as a parent holding someone's home directory. A real working tree holds this repository's .git."""
+    if "GIT_WORK_TREE" in os.environ:
+        return True
+    listed = run_git(path, "rev-parse", "--absolute-git-dir")
+    try:
+        if not listed or not (found / ".git").exists() or not _holds_this_git_dir(found, Path(listed.strip())):
+            return False
+        return ".git" in path.parts or any(os.path.samefile(found, folder) for folder in (path, *path.parents))  # samefile, since macOS accepts a path in the wrong case
+    except OSError:
+        return False
+
+
+PROJECT_MARKERS = ("pyproject.toml", "package.json", "go.mod", "Cargo.toml", "setup.py", "pom.xml", ".git")
+
+
+def root_for_path(named: str | os.PathLike) -> Path:
+    """The project a path named on the command line belongs to.
+
+    Named from inside a project, a link doesn't move the project, or following a tracked link would read files outside it with no sign it had.
+    Anywhere else, the link is simply how the project was named.
+    """
+    path = Path(named)
+    if path.is_absolute() or ".." in path.parts:
+        return find_root(path)
+    reached = Path(".")
+    for part in path.parts:
+        if (reached / part).is_symlink():
+            here = Path.cwd().resolve()
+            inside = run_git(here, "rev-parse", "--show-toplevel") or any((folder / marker).exists() for folder in (here, *here.parents) for marker in PROJECT_MARKERS)
+            return find_root(reached if inside else path)
+        reached = reached / part
+    return find_root(path)
+
+
 def find_root(start: str | os.PathLike = ".") -> Path:
     path = Path(start).resolve()
     if path.is_file():
         path = path.parent
     top = run_git(path, "rev-parse", "--show-toplevel")
     if top:
-        found = Path(top.strip()).resolve()
-        if found != path and found not in path.parents and "GIT_WORK_TREE" not in os.environ:
-            raise GitProblem(f"This repository's config says its files are in {found}, outside where it is, so reading them could expose anything")
+        found = Path(top.rstrip("\n")).resolve()
+        if not _is_own_working_tree(found, path):
+            raise GitProblem(f"This repository's config says its files are in {found}, which doesn't hold its .git, so reading them could expose anything")
         return found
+    if (path / ".gitignore").exists():  # only here: a `.gitignore` in a home folder says nothing about the projects below it
+        return path
     for candidate in (path, *path.parents):
-        if any((candidate / marker).exists() for marker in ("pyproject.toml", "package.json", "go.mod", "Cargo.toml", "setup.py", "pom.xml", ".git", ".gitignore")):
+        if any((candidate / marker).exists() for marker in PROJECT_MARKERS):
             return candidate
     working = Path.cwd().resolve()
     return working if working == path or working in path.parents else path
@@ -204,8 +301,50 @@ def tracked_files(root: Path) -> list[str] | None:
     listed = run_git(root, "ls-files", "-co", "--exclude-standard", "-z", timeout=120)
     if listed is None:
         return None
-    # The index still lists files deleted from disk, which aren't part of the project any more.
-    return [name for name in dict.fromkeys(listed.split("\0")) if name and os.path.lexists(os.path.join(root, name))]
+    # The index still lists files deleted from disk, which aren't part of the project any more, and a folder swapped for a link would lead out of it.
+    linked: dict[str, bool] = {}
+    return [name for name in dict.fromkeys(listed.split("\0")) if name and _stays_inside(name) and os.path.lexists(os.path.join(root, name)) and not _through_a_link(root, name, linked)]
+
+
+def _stays_inside(name: str) -> bool:
+    """A hand-written index can list `../other/file`, and `git status` still reads as clean, so a name from git isn't proof it's in the project."""
+    return not os.path.isabs(name) and ".." not in name.split("/")
+
+
+def marked_unchanged(root: Path) -> list[str]:
+    """Tracked files git has been told not to look at, so an edit to one shows up in neither status nor diff."""
+    listed = run_git(root, "ls-files", "-v", "-z") or ""
+    return [entry[2:] for entry in listed.split("\0") if entry[:2] == "S " or (entry[:1].islower() and entry[1:2] == " ")]
+
+
+def run_bounded(command: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Bytes in, and at the time limit everything it started stops too. `subprocess.run` kills only the direct child, so a grandchild could go on writing to the project."""
+    process = subprocess.Popen(command, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=hasattr(os, "killpg"))
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        process.kill()
+        try:
+            process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:  # something in its own session still holds the pipe, and it won't stop for this
+            for pipe in (process.stdout, process.stderr):
+                pipe.close()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _through_a_link(root: Path, name: str, linked: dict[str, bool]) -> bool:
+    folder = name.rsplit("/", 1)[0] if "/" in name else ""
+    if not folder:
+        return False
+    if folder not in linked:
+        linked[folder] = os.path.islink(os.path.join(root, folder)) or _through_a_link(root, folder, linked)
+    return linked[folder]
 
 
 class OutsideProject(ValueError):
@@ -269,7 +408,7 @@ _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 _HUNK_LINES = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _empty_tree(root: Path) -> str:
+def empty_tree(root: Path) -> str:
     """The hash of an empty tree differs by hash algorithm, so ask rather than assume."""
     return (run_git(root, "hash-object", "-t", "tree", "/dev/null") or "").strip() or "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -277,11 +416,13 @@ def _empty_tree(root: Path) -> str:
 def _diff_base(root: Path, base: str | None) -> str:
     if base:
         if run_git(root, "rev-parse", "--verify", "-q", f"{base}^{{commit}}") is None:
+            if base == empty_tree(root):  # a goal started before the first commit: everything since counts
+                return base
             raise BadRevision(f"No such revision: {base}")
         # What this branch did, not what the base has done since it forked. Without a common ancestor, the tip is all there is.
         return (run_git(root, "merge-base", base, "HEAD") or base).strip()
     # A repository with no commits yet compares with nothing, so staged work still shows.
-    return "HEAD" if run_git(root, "rev-parse", "--verify", "-q", "HEAD") is not None else _empty_tree(root)
+    return "HEAD" if run_git(root, "rev-parse", "--verify", "-q", "HEAD") is not None else empty_tree(root)
 
 
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
@@ -405,10 +546,34 @@ def submodule_paths(root: Path) -> list[str]:
 
 
 def staged_differently(root: Path) -> list[str]:
-    """Files whose staged version isn't what's on disk, so a scan of the working tree wouldn't see what a commit would contain."""
-    listed = run_git(root, "diff", "--name-only", "-z", "--ignore-submodules=dirty") or ""
-    staged = set((run_git(root, "diff", "--cached", "--name-only", "-z", "--ignore-submodules=dirty") or "").split("\0"))
-    return [name for name in listed.split("\0") if name and name in staged]
+    """Files whose staged version isn't what's on disk, so a scan of the working tree wouldn't see what a commit would contain.
+
+    By comparing contents, since `git diff` believes --assume-unchanged and skip-worktree, and with the index no longer being refreshed it would also list a file whose time changed.
+    """
+    staged = [name for name in (run_git(root, "diff", "--cached", "--name-only", "-z", "--ignore-submodules=dirty") or "").split("\0") if name]
+    if not staged:
+        return []
+    entries = {}
+    for entry in (run_git(root, "ls-files", "--stage", "-z") or "").split("\0"):
+        if "\t" in entry:
+            details, name = entry.split("\t", 1)
+            entries[name] = details.split()
+    # A submodule is never entered, so git says whether its pointer moved, and that reads no config of its own with dirty ignored.
+    moved_pointers = set((run_git(root, "diff", "--name-only", "-z") or "").split("\0")) if any(entries.get(name, ("",))[0] == "160000" for name in staged) else set()
+    return [name for name in staged if name in entries and (name in moved_pointers if entries[name][0] == "160000" else not _disk_matches_blob(Path(root) / name, entries[name][0], entries[name][1]))]
+
+
+def _disk_matches_blob(path: Path, mode: str, blob: str) -> bool:
+    """Whether a file holds what the index does. A line ending a checkout changed isn't a difference."""
+    digest = hashlib.sha256 if len(blob) == 64 else hashlib.sha1
+    try:
+        if os.path.islink(path) != (mode == "120000") or (mode != "120000" and not path.is_file()):  # a FIFO would never finish being read
+            return False
+        content = os.fsencode(os.readlink(path)) if mode == "120000" else path.read_bytes()
+    except OSError:
+        return False
+    versions = [content, content.replace(b"\r\n", b"\n")]
+    return any(digest(b"blob %d\0" % len(version) + version).hexdigest() == blob for version in versions)
 
 
 def removed_and_renamed(root: Path, base: str | None = None) -> tuple[list[str], dict[str, str]]:
@@ -431,18 +596,21 @@ def removed_and_renamed(root: Path, base: str | None = None) -> tuple[list[str],
 
 
 def file_at(root: Path, revision: str, path: str) -> str | None:
-    return run_git(root, "show", f"{revision}:./{path}")
+    text = run_git(root, "show", f"{revision}:./{path}")
+    return text.replace("\r\n", "\n").replace("\r", "\n") if text is not None else None  # as read from disk, so a finding's identity doesn't depend on where it was read
 
 
 def in_git(root: Path) -> bool:
     return run_git(root, "rev-parse", "--git-dir") is not None
 
 
-def dirty_paths(root: Path) -> dict[str, str]:
+def dirty_paths(root: Path, timeout: int = 120) -> dict[str, str]:
     """Paths with uncommitted changes, and their status code. Empty outside git. Raises GitProblem if git can't say, since 'nothing is dirty' would be a lie."""
     if not in_git(root):
+        if (Path(root) / ".git").exists():
+            raise GitProblem("git can't read the repository here")
         return {}
-    text = _required_git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty")
+    text = _required_git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=dirty", timeout=timeout)
     dirty = {}
     entries = text.split("\0")
     index = 0
@@ -458,9 +626,9 @@ def dirty_paths(root: Path) -> dict[str, str]:
     return dirty
 
 
-def churn(root: Path, commits: int = 3000) -> dict[str, int]:
+def churn(root: Path, commits: int = 3000, timeout: int = 120) -> dict[str, int]:
     """Commits touching each file over recent history, a good predictor of where defects concentrate."""
-    text = run_git(root, "log", f"-n{commits}", "--no-merges", "--name-only", "--format=", timeout=120)
+    text = run_git(root, "log", f"-n{commits}", "--no-merges", "--name-only", "--format=", timeout=timeout)
     counts: dict[str, int] = {}
     for line in (text or "").split("\n"):
         if line:

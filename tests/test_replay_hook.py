@@ -65,3 +65,30 @@ def test_it_counts_a_hold_and_the_send_back(tmp_path):
 def test_every_send_back_reason_is_still_something_the_hook_says():
     source = "".join(path.read_text() for path in (ROOT / "plugin" / "hooks").glob("*.py"))
     assert all(phrase in source for phrase in replay_hook.SENT_BACK.values())
+
+
+def test_a_send_back_counts_even_when_the_last_message_answers_it(tmp_path):
+    """The last message of a sent-back run is the reply, which already says what the note asked for. Judging only that hides the send-back."""
+    run_dir = tmp_path / "run"
+    calls = [("Edit", {"file_path": "/recorded/project/app.py"}, "ok", False)]
+    write_run(run_dir, calls)
+    trace = run_dir / "trace.jsonl"
+    report = {"type": "assistant", "message": {"id": "report", "content": [{"type": "text", "text": "Fixed it, all done."}]}}
+    reply = {"type": "assistant", "message": {"id": "reply", "content": [{"type": "text", "text": "I didn't run a check, so this is unverified."}]}}
+    trace.write_text(trace.read_text() + "\n" + json.dumps(report) + "\n" + json.dumps(reply))
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    found = replay_hook.replay_run(occam_hook, run_dir, case(tmp_path), scratch)
+    assert "no check since the edit" in found["sent_back"]
+    assert found["send_backs"] >= 1
+
+
+def test_text_beside_a_tool_call_isnt_a_stop(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    lines = [{"type": "assistant", "message": {"id": "a", "content": [{"type": "text", "text": "Now I'll run it."}]}},
+             {"type": "assistant", "message": {"id": "a", "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {}}]}},
+             {"type": "assistant", "parent_tool_use_id": "t", "message": {"id": "sub", "content": [{"type": "text", "text": "A subagent's message."}]}},
+             {"type": "assistant", "message": {"id": "b", "content": [{"type": "text", "text": "Done."}]}}]
+    (run_dir / "trace.jsonl").write_text("\n".join(json.dumps(line) for line in lines))
+    assert replay_hook.stops_in(run_dir / "trace.jsonl") == [(1, "Done.")]

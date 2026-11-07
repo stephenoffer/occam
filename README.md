@@ -15,8 +15,8 @@ Occam is a Claude Code plugin and a command-line toolkit. It steps in at the mom
 | Part | What it does | Runs on |
 |---|---|---|
 | **Skills** | Guidance the agent loads: a core skill, an audit skill, a documentation skill and eight language skills | Claude Code, Codex, other Agent Skills hosts |
-| **Hooks and agents** | Hold edits, ask you about risky commands, send the agent back when its report doesn't match what happened, and review high-consequence changes | Claude Code |
-| **`occam` CLI** | 19 commands, 15 queries and 190 scanner rules for auditing and checking code and documents, standard library only, plus a bash version of the queries that need no parsing | Any terminal with Python 3.9+, or bash and git |
+| **Hooks and agents** | State what matters before an edit, ask you about risky commands, send the agent back when its report doesn't match what happened, and review high-consequence changes | Claude Code |
+| **`occam` CLI** | 16 commands, 15 queries and 189 scanner rules for auditing and checking code and documents, standard library only | Any terminal with Python 3.9+ |
 
 ## Before and after
 
@@ -26,13 +26,13 @@ This is real output, and each example says where it came from. It shows what occ
 
 *"The stock report prints `1 items` when a count is one [...]. It should say `1 item`. Can you fix that?"*
 
-Both runs fixed it correctly. What differs is the report and the bill.
+Both arms fixed it in all 5 runs. With occam, every run also added a regression test and said what it hadn't confirmed. With no skill, none added a test. It cost about 50% more.
 
-| No skill: $0.14 | With occam: $0.26 |
+| No skill: $0.045 | With occam: $0.067 |
 |---|---|
-| I added a test for the single-item case in `tests/test_report.py`. Both tests pass, and running the sample report gives: [...] | **New test fails on the old code:** I ran it against a copy of the original `report.py` in a temp directory, and it failed on the `1 items` output.<br><br>**Not checked:** the project doesn't appear to have a linter or type checker set up, so I didn't run one. |
+| I fixed it in `stockreport/report.py`. [...] The existing test passes.<br><br>I also applied the same singular rule to the `Total:` line [...]<br><br>I didn't add a test for the singular case. | **Test:** I added `test_render_singular_item` in `tests/test_report.py`, covering a SKU with count 1 and a total of 1.<br><br>**Checks:** pytest passes (2 tests), and the sample CSV output looks right. I didn't confirm the new test fails on the old code. |
 
-<sub>Real runs on Opus 5.5, quoted from their final reports. Development case.</sub>
+<sub>Real runs on Sonnet 5.5, quoted from one run per arm, with mean cost over 5 runs. One development case, so this describes these runs only: on Opus, no-skill runs of this case have added a test too. All 5 plugin agents loaded the skill on their own, so these runs don't test the small-edit exception.</sub>
 
 ### Someone else's uncommitted work
 
@@ -78,7 +78,7 @@ The tests still pass with these changes, so nothing protects this behavior:
 | Is the software better? | **Not measurably.** On the holdout (3 cases, 3 runs each) it passed 8/9 against 9/9 with no skill, on both Opus 5.5 and Sonnet 5.5. |
 | What does it cost? | **More.** +57% on Opus and +85% on Sonnet, with about twice the turns. |
 | Did it cause harm? | **Possibly.** The Opus failure was a silent regression, wrong arithmetic, in a run stopped at the time limit. It didn't recur in a small re-run after a fix, which doesn't show the fix was the reason. |
-| Does it improve audits? | **Not by the bar set in advance.** On a new 27,000-line repository, 3 runs per arm, it located 90.7 of 122 planted defects against 92.0 with no skill. A blind judge scored its repairs higher: 47.7 of 60 serious defects fixed against 40.7, though one weak no-skill run drives that. Every plugin run added regression tests, and no no-skill run did. It took about 1.8 times as long, at the same cost. |
+| Does it improve audits? | **No measured benefit in finding or fixing, and no-skill runs usually fixed more.** Across two 28,000-line tests, 3 runs per arm each, it located 92.8 of 122 planted defects against 93.0, and fixed a median of 48.5 of 60 serious ones against 55. Plugin runs changed about a quarter of the code, with fewer false alarms acted on and fewer unflagged behavior changes, but left more open and took about 1.8 times as long. The tests themselves have known design problems. |
 | Does the Python guidance help? | **No measured benefit,** at about 23% more cost per run. Plugin runs read its new references only 1 time in 21. |
 | Anything promising? | **One lead.** A blind model judge scored finished skill-arm code as simpler, with no difference on whether it would merge it. Human review is still pending. |
 
@@ -108,7 +108,7 @@ occam gate    # critique your own change before calling it done
 
 ## Use it
 
-Skills load on their own, and with the plugin the first code edit waits until the core skill has loaded. To call one directly:
+Skills load on their own, and with the plugin, the first code edit beyond a small one waits until the core skill has loaded. To call one directly:
 
 | | Plugin | Plain copy on Claude Code | Codex |
 |---|---|---|---|

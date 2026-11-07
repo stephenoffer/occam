@@ -146,14 +146,14 @@ Words in the core are bought with cuts elsewhere, because of the instruction-cos
 |---|---|---|
 | Karpathy: say assumptions, name competing readings | Only "ask if a wrong guess would change the work" | Core states it. "Stop if unclear" stays adapted to "say what's unclear, then ask or take the reversible path", because stopping fails unattended runs |
 | Karpathy: say so if a simpler design would do | Only for wrong suggestions | Core |
-| Karpathy: nothing speculative, no handling for impossible states, rewrite a bloated draft | Partly, under new structure | Core, plus `unused-option`, `impossible-none-check`, `useless-except`, `ts-double-cast` and `gate`'s size line |
+| Karpathy: nothing speculative, no handling for impossible states, rewrite a bloated draft | Partly, under new structure | Core, plus `unused-option`, `useless-except`, `ts-double-cast` and `gate`'s size line |
 | Karpathy: surgical changes, trace every line, remove only your own orphans | Correction table. The orphan rule was only in a reference | Core. "Trace every line" stays adapted to "the request or a row of the correction table", because taken literally it blocks small repairs. `gate` checks formatting churn, lost comments, orphans in untouched files, and new code heavier than its file |
 | Karpathy: turn tasks into checks, pair steps with checks | `goal`, done-conditions | Core adds one sentence |
 | Ponytail: does it need to exist, as the first rung | Ladder started at reuse | First item before adding anything, and what was left out gets named |
 | Ponytail: platform features on the ladder | Absent | Added to the investigation order. It's the difference in its date picker example, 335 lines against 10 by its own count |
 | Ponytail: lazy about the solution, not the reading | Done-conditions at the end | "Everywhere this change must reach" is now part of knowing the contracts, and the reviewer reads callers |
 | Ponytail: risky logic leaves a test | Tests that can fail, from Standard mode up | Small mode now leaves one small test for branching, parsing, money or security logic. Its benchmark reports a test 98% of the time against 68%, though where a test exists, no-skill tests catch more injected bugs, 77% against 69% |
-| Ponytail: marked shortcuts and a debt ledger | Listed as useful, not adopted | `shortcut:` convention and `occam debt`. Reporting weighs a stated limit as a possible decision, though a comment can't excuse a defect |
+| Ponytail: marked shortcuts and a debt ledger | Listed as useful, not adopted | `shortcut:` convention. Reporting weighs a stated limit as a possible decision, though a comment can't excuse a defect |
 | Ponytail: things simplifying must not touch | Implied by "nothing less" | Tie-breaker in the core, and a fuller list in repair |
 | Ponytail: `Lean` summary in the report | Absent | Reporting asks for one estimated line |
 
@@ -191,3 +191,56 @@ Words in the core are bought with cuts elsewhere, because of the instruction-cos
 **How to clean up existing slop, in short.** The sources converge, and `occam-audit`'s repair reference now holds the whole method: bound the scope, lock behavior first, go after one kind of smell at a time, delete before consolidating, prove code is dead rather than assume it, judge excess against the surrounding file, measure the result, and leave real safety checks alone. Where they disagree, the evidence above favors medium-level structural change over renames and formatting.
 
 **Not found:** any head-to-head showing a cleanup skill improves a real codebase. Every project here publishes instructions or its own numbers, and none of those numbers were reproduced.
+
+## A shared design doc, and what teams do
+
+Added 2026-11-05, when the user asked for agents to keep a design doc as an evolving source of truth, and to work the way a good team of engineers does. Three read-only subagents read the sources below. **I rechecked only the Specification Gap, stale-file and CooperBench abstracts myself.** The rest are as those subagents reported them, from summaries or passages. I saw no study testing a living design doc across sessions or parallel agents, so this is built on adjacent evidence and human testimony.
+
+### What the evidence says
+
+| Source | Type | Finding | Does not establish | Design consequence (a hypothesis, not a finding) |
+|---|---|---|---|---|
+| [Stale instruction files](https://arxiv.org/abs/2610.30571), 2026-10-22. Rechecked | Preprint, 40 Python projects, 320 runs | 90.1% of choices followed a stale file. Claude Code named the conflict in 79 of 80 runs and followed the file anyway. One sentence moved following the code from 4.2% to 91.4% and tests from 89.4% to 100% passing | Architecture docs, or files that are right | The main risk. The file and every slice of it say the code wins about what exists, and checks look for drift |
+| [The Specification Gap](https://arxiv.org/abs/2603.24284), 2026-03-25. Rechecked | Preprint, 51 class tasks, Claude only | Two agents 58% falling to 25% as detail is removed, one agent 89% falling to 56%. Restoring the full specification recovers 89%, and conflict reports add no measurable benefit | Real repositories or design docs | Don't split what can stay together, and write contracts down when you do. No model-run conflict reporting |
+| [CooperBench](https://arxiv.org/abs/2601.13295), 2026-01. Rechecked | Preprint, benchmark | 30% lower success working together. Channels "jammed with vague, ill-timed, and inaccurate messages", and agents "deviate from their commitments" | Whether a shared doc helps, which it didn't test | Decisions go in a file rather than messages. Commitment is a real gap, so a hook repeats decisions at the edit |
+| [Software Engineering at Google](https://abseil.io/resources/swe-book/html/ch10.html), via subagent | Book | About 90% of GooWiki docs had no recent views or updates. Owners and review dates exist because unowned docs rot | Design doc value | An owner, a `Verified` line, and the doc changing with the code |
+| [Harness study](https://arxiv.org/abs/2609.20804), via subagent | Preprint, passages | Planning helped the weakest model by 11.6 points and cost two stronger models 2.0 and 0.4 points | Persisted docs | A plan isn't free. Stay conditional |
+| [Spec-driven development in practice](https://arxiv.org/abs/2608.25202), via subagent | Preprint, 21 practitioners | Reports drift and "spec decay" | Outcomes | Drift is the failure, so check for it |
+| [Böckeler](https://martinfowler.com/articles/exploring-gen-ai/sdd-3-tools.html), via subagent | Personal trials | A small bug became 16 acceptance criteria, and Spec Kit output was tedious to review | Prevalence | Never for a small change, and keep it short |
+| Occam's saved traces, via subagent, with turn counts agreeing with `evals/RESULTS.md` | Unbilled count, old plugin hash | Opus holdout: 18.1 API calls against 10.1, and 719k cached tokens read against 315k. Carrying the skill explains about 63k of the extra 404k. The Python suite barely differs | A cause, or newer versions | Extra turns look like more of the cost than words. No new holds or send-backs |
+
+Human practice drawn on, as testimony rather than measurement: [Design Docs at Google](https://www.industrialempathy.com/posts/design-docs-at-google/) (write one when trade-offs exist; a non-goal could reasonably be a goal), [Nygard's decision records](https://www.cognitect.com/blog/2011/11/15/documenting-architecture-decisions) ("Large documents are never kept up to date"), [Oxide RFD 1](https://rfd.shared.oxide.computer/rfd/0001), [Rust RFCs](https://github.com/rust-lang/rfcs), [Shape Up](https://basecamp.com/shapeup) (appetite and no-gos). The analogy breaks in places: agents can't be accountable, so the owner is a person, and they don't fear blame, so a blameless postmortem becomes fixing the doc or check that misled.
+
+### Tools compared
+
+Read at the revisions shown by a subagent, and not reproduced. No source shows a living design doc improves outcomes.
+
+| Project | Useful mechanism | Limitation | Decision |
+|---|---|---|---|
+| [BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) `022be93`, MIT | A verified commit recorded in the doc, then a rename and delete diff since it. An admission test: would independent units choose incompatibly? | Its lint always exits 0 | **Adapt** provenance as `design check` with no tokens, and the admission test into the guidance |
+| [gstack](https://github.com/garrytan/gstack) `8d712d6`, MIT | Receipts a script resolves, commit distance, append-only decisions with computed state | Skills of 552 to 1,045 lines, docs to 1,368 | **Adapt** those mechanisms. **Reject** the size |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) `3e4d5f0`, MIT | Refuses a change that drops a live named item | Its largest spec is 752 lines, and verification is by model | **Adapt** as `decision-rewritten` in `gate` |
+| [log4brains](https://github.com/thomvaill/log4brains) `17e3202`, Apache-2.0 | Date slugs avoid merge conflicts over numbers | Immutability alone doesn't detect contradiction | **Adapt** date plus slug |
+| [Swimm](https://swimm.io) docs, closed source | Docs coupled to code and flagged when it changes | Vendor claims, and the algorithm is undisclosed | **Adapt** the idea as `design-not-updated`, from cited paths only |
+| [Spec Kit](https://github.com/github/spec-kit) `3ca735b`, MIT | Non-goals and a constitution | One independent run: 2,577 lines of Markdown per 689 of code. Checks are by model | **Reject** spec, plan and task trees |
+| [Cline Memory Bank](https://docs.cline.bot/prompting/cline-memory-bank) `ea16751`, Apache-2.0 | Files that survive sessions | Requires reading all of them on every task | **Reject** loading everything, which the instruction-cost evidence argues against |
+| [beads](https://github.com/steveyegge/beads) `8c3eb30`, MIT | Claims with conditional updates | Needs a database | **Reject** the dependency. `coord` holds advisory claims |
+| [Superpowers](https://github.com/obra/superpowers) `22f0b46`, MIT | Sizing a design by how much is at stake | Its gate is only asked for, with docs to 1,095 lines | **Agree** on sizing. Nothing else to adopt |
+
+**Why decisions are single appended lines.** A write to a file opened for appending can't overwrite another writer's, and superseding keeps the reason on record, so concurrency and history have one answer. It does mean Decisions has to be the last section.
+
+**What this design doesn't do.** Nothing checks that a claim in prose is true, only that what it cites exists and how much has changed since. It can't stop agents following a wrong decision. No agent has used any of it, and no study supports the whole idea. One test worth running before building further: CooperBench pairs with and without a one-page contract, plus a stale-contract arm.
+
+### Other ideas from similar tools
+
+A subagent read these for what occam still lacked. Numbers are self-reported unless marked. **Co-change is built:** a file's usual partner left out of a change gets one line in `gate`, from [ROSE](https://www.st.cs.uni-saarland.de/edu/empirical-se/2006/PDFs/e0429.pdf) (peer reviewed, abstract seen only by that subagent, on human commits) and CodeScene's change coupling. It reuses `occam query history`, and its strict thresholds are a judgment. **The rest aren't built, and are ranked for a decision:**
+
+| Idea | Source | Why | Cost and risk |
+|---|---|---|---|
+| An A/A noise floor, and a free per-run cost table | [compound-engineering](https://github.com/EveryInc/compound-engineering-plugin) `173bd33` | Occam compares 3 runs per arm and has never compared two identical builds | About a day for the table. The floor needs billed runs |
+| Demoting rules agents keep dismissing, from ledger outcomes | [Greptile](https://www.greptile.com/blog/make-llms-shut-up), [Cursor](https://cursor.com/blog/bugbot-learning), [Tricorder](https://research.google.com/pubs/pub43322.html) | A blind judge called 57% of leads minor | About 150 lines. Agents dismissing real leads could train the filter, so security rules stay exempt |
+| Listing uncovered added lines in `gate`, from a coverage report | [Sonar](https://docs.sonarsource.com/sonarqube-cloud/standards/ai-code-assurance/quality-gates-for-ai-code) | The report exists in many repositories, and nothing reads it per line | About 60 lines. No evidence on effect |
+| Hook-run checks that speak only on failure | [Aider](https://github.com/Aider-AI/aider) `5dc9490` | Could replace a send-back that costs a turn | Collides with the deferred hook refactor, and the agent stops reading its diff |
+| Repository rules with fixtures, fed by a lesson ladder | compound-engineering, [Trail of Bits](https://github.com/trailofbits/skills) `470419e` | A lesson costs tokens only when it hits | 200 to 300 lines |
+
+**Looked at and rejected:** model-rated type design, a model pass per check (`code-review`, Amp, Continue), `hookify`, phased `feature-dev`, a second model as architect or oracle, CodeScene's single score, and Aider's repo map, which adds tokens and overlaps `map`.

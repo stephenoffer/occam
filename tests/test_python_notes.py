@@ -74,6 +74,14 @@ def facts(text):
     ("template-injection", "jinja2.Template(user)\n"),
     ("mock-patch", "with mock.patch('lib.exists'):\n    pass\n"),
     ("cache-method", "@functools.cache\ndef get(self):\n"),
+    ("submit", "self._executor.submit(work)\n"),
+    ("submit", "self._pool.submit(work)\n"),
+    ("submit", "threadpool.submit(work)\n"),
+    ("mock-patch", "mocker.patch('a.b')\n"),
+    ("utcnow", "dt.utcnow()\n"),
+    ("get-event-loop", "loop = get_event_loop()\n"),
+    ("template-injection", "from jinja2 import Template\nTemplate(user)\n"),
+    ("pydantic-v1", "from pydantic import (\n    BaseModel,\n    BaseSettings,\n)\n"),
 ])
 def test_common_ways_of_writing_a_trap_are_caught(key, text):
     assert f"python-{key}" in facts(text)
@@ -106,10 +114,15 @@ def test_pathological_edits_stay_fast_and_never_raise(text):
 
 @pytest.mark.parametrize("request_text, audit, split", [
     ("Audit this repo", True, False), ("Please audit the payment code", True, False), ("Add an audit log to the API", False, False),
-    ("Audit logging is broken", False, False), ("Fix the audit trail", False, False),
+    ("Audit logging is broken", False, False), ("Fix the audit trail", False, False), ("Fix the audit-log timestamp bug", False, False),
+    ("Add an audit service", False, False), ("Perform a security audit of this repo", True, False), ("Audit app.py please", True, False),
+    ("Split the file path on the slash", False, False), ("split this into two files", False, True), ("Break up utils.py", False, True),
     ("Split this module into two", False, True), ("Split this into two modules", False, True), ("Split utils.py into two modules", False, True),
     ("Please break up the pricing file", False, True), ("This file should be split", False, True), ("Split the CSV file by region", False, False),
     ("Split the string on commas", False, False), ("Fix the typo", False, False),
+    ("Please break it up into sensible modules along its seams", False, True), ("Pull this apart into two modules", False, True),
+    ("Break it up, please", False, False), ("Can you go through it and tell me what's actually wrong?", True, False),
+    ("Look through the code for bugs", True, False), ("Go through the steps to reproduce", False, False),
 ])
 def test_prompt_facts_match_what_the_request_is(request_text, audit, split):
     found = {key for key, _ in notes.prompt_facts(request_text, lambda name, skill: name)}
@@ -135,7 +148,9 @@ def test_ordinary_code_gets_no_facts():
     assert facts(PLAIN) == set()
 
 
-@pytest.mark.parametrize("key, text", [("template-injection", "Money.from_string(user)\n"), ("merge-grain", "session.merge(obj)\n"),
+@pytest.mark.parametrize("key, text", [("template-injection", "Money.from_string(user)\n"), ("template-injection", "from string import Template\nTemplate(user)\n"),
+                                       ("pydantic-v1", "from pydantic import BaseModel\nfrom pydantic_settings import BaseSettings\n"), ("template-injection", 'import jinja2\nenv.from_string(\n    "fixed"\n)\n'),
+                                       ("merge-grain", "session.merge(obj)\n"),
                                        ("groupby-nan", "query.groupby(key)\n")])
 def test_the_same_method_name_outside_that_library_gets_no_note(key, text):
     assert f"python-{key}" not in facts(text)
@@ -158,7 +173,8 @@ def try_write(agent, text, name="app.py"):
 def test_a_one_line_edit_on_ordinary_code_adds_only_the_language_mention(agent):
     agent.prompt("Fix the typo")
     agent.load()
-    assert added(try_write(agent, PLAIN)).startswith("`occam:occam-python` has Python guidance")
+    first = added(try_write(agent, PLAIN))
+    assert first.startswith("`occam:occam-python` has Python guidance") and len(first.split()) <= 25, first
     assert len(added(try_write(agent, PLAIN, "b.py")).split()) == 0, "nothing further on later ordinary edits"
 
 
@@ -225,6 +241,22 @@ def test_a_python_audit_request_states_what_to_look_for_once_per_session(agent):
     assert "asserting only on a mock" not in added(agent.prompt("Now audit the tests too"))
 
 
+def test_fixing_a_trap_with_multi_edit_is_not_told_about_that_trap(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    try_write(agent, PLAIN)
+    edits = [{"old_string": "requests.get(url)", "new_string": "requests.get(url, timeout=5)"}]
+    output = agent.send("pre-tool", tool_name="MultiEdit", tool_input={"file_path": agent.path("app.py"), "edits": edits})
+    assert "hang forever" not in added(output)
+
+
+@pytest.mark.parametrize("edits", ["not a list", [1, None, "x"], [[[["deep"]]]], None])
+def test_a_malformed_multi_edit_is_ignored_and_does_not_raise(agent, edits):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.send("pre-tool", tool_name="MultiEdit", tool_input={"file_path": agent.path("app.py"), "edits": edits})
+
+
 def test_multi_edit_text_is_examined(agent):
     agent.prompt("Fix it")
     agent.load()
@@ -239,6 +271,67 @@ def test_an_edit_fragment_gets_context_from_its_file(agent):
     agent.load()
     try_write(agent, PLAIN)
     assert "validate=" in added(try_write(agent, "orders.merge(customers, on='id')\n", "report.py"))
+
+
+def test_deeply_nested_tool_output_does_not_raise(agent):
+    nested = "FAILED t.py::x\n"
+    for _ in range(600):
+        nested = [nested]
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit()
+    agent.send("post-tool", tool_name="Bash", tool_input={"command": "pytest | tail -1"}, tool_response=nested)
+
+
+@pytest.mark.parametrize("command, phrase", [
+    ("cat > pkg/calendar.py <<'EOF'\nx = 1\nEOF", "standard library"),
+    ("cat > app.py <<'EOF'\nsubprocess.run(['ls'])\nEOF", "check=True"),
+    ("python3 - <<'E'\nsrc = 'subprocess.run([1])'\nopen('app.py', 'w').write(src)\nE", "check=True"),
+    ("python3 -I - <<'E'\nimport json\nnb = json.load(open('notebooks/q3.ipynb'))\nE", "fresh kernel"),
+    ("cat > tests/test_a.py <<'EOF'\nx = 1\nEOF", "--collect-only"),
+    ("echo 'requests.get(url)' >> app.py", "hang forever"),
+])
+def test_code_written_through_the_shell_gets_the_same_facts(agent, command, phrase):
+    agent.prompt("Fix it")
+    agent.load()
+    output = agent.try_bash(command)
+    assert decision(output) is None and phrase in added(output)
+
+
+@pytest.mark.parametrize("command", ["ls -la", "pytest -q", "grep -n 'subprocess.run(' app.py", "cat app.py", "git status",
+                                     "echo hello > notes.txt", "python3 -c 'print(1)'", "cat > existing.md <<'EOF'\nsubprocess.run(x)\nEOF"])
+def test_ordinary_shell_commands_add_nothing(agent, command):
+    agent.prompt("Fix it")
+    agent.load()
+    assert not added(agent.try_bash(command))
+
+
+def test_shell_facts_share_the_once_per_session_limit_with_edits(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    try_write(agent, PLAIN)
+    assert "check=True" in added(try_write(agent, "subprocess.run(['ls'])\n"))
+    assert "check=True" not in added(agent.try_bash("cat > b.py <<'EOF'\nsubprocess.run(['ls'])\nEOF"))
+
+
+def test_a_subagent_shell_command_gets_no_facts(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    output = agent.try_bash("cat > app.py <<'EOF'\nsubprocess.run(['ls'])\nEOF", agent_id="a1")
+    assert "check=True" not in added(output)
+
+
+def test_a_mention_of_someone_elses_notebook_gets_no_notebook_fact(agent):
+    (agent.project / "pyproject.toml").write_text("")
+    assert "fresh kernel" not in added(agent.prompt("The ops team wants a calendar they can pull up in their notebook"))
+
+
+def test_a_python_request_about_a_notebook_states_the_fresh_kernel_fact_once(agent):
+    (agent.project / "pyproject.toml").write_text("")
+    assert "fresh kernel" in added(agent.prompt("The number in notebooks/q3.ipynb is off"))
+    agent.load()
+    output = agent.send("pre-tool", tool_name="NotebookEdit", tool_input={"notebook_path": agent.path("n.ipynb"), "new_source": "x = 1"})
+    assert "fresh kernel" not in added(output), "already said at the prompt"
 
 
 def test_a_very_large_edit_is_bounded(agent):

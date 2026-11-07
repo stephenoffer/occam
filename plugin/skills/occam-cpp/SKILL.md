@@ -1,6 +1,6 @@
 ---
 name: occam-cpp
-description: C and C++ engineering guidance on ownership and lifetimes, undefined behavior, sanitizers, error paths, hostile input, ABI. Use alongside occam when writing, debugging or reviewing C or C++ where these matter.
+description: C and C++ guidance on ownership, lifetimes, undefined behavior, sanitizers, error paths, hostile input, ABI. Use alongside occam to write, debug or review C or C++ where these matter.
 ---
 
 # C and C++

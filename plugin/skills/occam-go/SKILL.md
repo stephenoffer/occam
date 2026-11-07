@@ -1,6 +1,6 @@
 ---
 name: occam-go
-description: Go engineering guidance on error wrapping, goroutine lifetimes, context cancellation, nil pitfalls, resource cleanup, race testing, package structure, naming, test results. Use alongside occam when writing, debugging or reviewing Go where these matter.
+description: Go guidance on error wrapping, goroutine lifetimes, context cancellation, nil pitfalls, cleanup, race testing, packages, naming, test results. Use alongside occam to write, debug or review Go where these matter.
 ---
 
 # Go

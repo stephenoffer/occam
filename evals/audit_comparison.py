@@ -83,23 +83,24 @@ def _use_fixture(folder: Path) -> None:
     score_audit.FIXTURE = folder
 
 
-def build_stage(out: Path) -> None:
-    """A plugin root holding everything a user installs, plus the case. The answer key stays behind."""
+def build_stage(out: Path, plugin: Path | None = staging.PLUGIN, prompt: str | None = None) -> None:
+    """A plugin root holding everything a user installs, plus the case. The answer key stays behind. plugin=None stages no plugin."""
     if out.exists():
         raise SystemExit(f"refusing to overwrite {out}")
     (out / ".claude-plugin").mkdir(parents=True)
     (out / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "occam", "description": "Evaluation stage."}) + "\n")
     ignored = shutil.ignore_patterns("__pycache__", ".pytest_cache")
-    for part in ("skills", "hooks", "agents"):
-        shutil.copytree(staging.PLUGIN / part, out / part, ignore=ignored)
+    for part in ("skills", "hooks", "agents") if plugin else ():
+        shutil.copytree(plugin / part, out / part, ignore=ignored)
     case = out / "evals" / CASE
     case.mkdir(parents=True)
     shutil.copytree(FIXTURE / "repo", case / "files", ignore=ignored)
-    prompt = PROMPT
-    if FIXTURE.name != "blind-audit":
-        for old, new in LARGE_LIMITS:
-            prompt = prompt.replace(old, new)
-        prompt += KEEP_LINE_NUMBERS
+    if prompt is None:
+        prompt = PROMPT
+        if FIXTURE.name != "blind-audit":
+            for old, new in LARGE_LIMITS:
+                prompt = prompt.replace(old, new)
+            prompt += KEEP_LINE_NUMBERS
     (case / "prompt.md").write_text(prompt)
     (case / "case.yaml").write_text(CASE_YAML)
     (case / "place-files.sh").write_text(PLACE_FILES)
@@ -107,7 +108,7 @@ def build_stage(out: Path) -> None:
     for name, content in GRADERS.items():
         (case / "graders" / name).write_text(content)
     staging.add_environment_note(case / "prompt.md")
-    leaked = [p for p in out.rglob("*") if p.name in ("ANSWERS.json", "DECOYS.json")]
+    leaked = [p for p in out.rglob("*") if p.name in ("ANSWERS.json", "DECOYS.json", "ITEMS.json", "SPEC.md") or p.name == "oracles"]
     if leaked:
         raise SystemExit(f"the answer key reached the stage: {leaked}")
 
@@ -168,10 +169,10 @@ def render(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _plugin_hash() -> str:
+def _plugin_hash(plugin: Path = staging.PLUGIN) -> str:
     digest = hashlib.sha256()
-    for path in sorted(p for p in staging.PLUGIN.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
-        digest.update(str(path.relative_to(staging.PLUGIN)).encode() + path.read_bytes())
+    for path in sorted(p for p in plugin.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        digest.update(str(path.relative_to(plugin)).encode() + path.read_bytes())
     return digest.hexdigest()[:16]
 
 
@@ -200,14 +201,16 @@ def main() -> None:
         measured = _plugin_hash()  # before the stage is built: another session may change plugin/ while this runs
         build_stage(stage_dir)
         out.mkdir(parents=True)
+        # Same default as run_eval.sh: on a subscription the cache otherwise lasts an hour, which costs more to write and no main thread here has outlasted 5 minutes.
+        cache_ttl = os.environ.get("CLAUDE_CODE_PROMPT_CACHE_TTL", "5m")
         with open(out / "eval.log", "w") as log:
             status = subprocess.run(["claude", "plugin", "eval", str(stage_dir), "--scaffold", "--runs", str(args.runs), "--ablation", "with-without", "--keep-temp", "--no-publish",
                                      "--trust-plugin", "--model", args.model, "-j", "2", "--max-cost-usd", str(args.max_cost_usd), "--threshold", "0", "--output-dir", str(out),
-                                     "--allow-tools", "Bash", "Write", "Edit"], cwd=stage_dir, stdout=log, stderr=subprocess.STDOUT).returncode
+                                     "--allow-tools", "Bash", "Write", "Edit"], cwd=stage_dir, stdout=log, stderr=subprocess.STDOUT, env={**os.environ, "CLAUDE_CODE_PROMPT_CACHE_TTL": cache_ttl}).returncode
         document = json.loads((out / "aggregate-result.json").read_text())
         with open(RESULTS / "ledger.jsonl", "a") as ledger:
             ledger.write(json.dumps({"step": args.target, "variant": "plugin", "ablation": "with-without", "cost_usd": document["costUsd"], "partial": document["partial"],
-                                     "exit": status, "claude": document["claudeVersion"], "model": args.model, "plugin_sha256": measured}) + "\n")
+                                     "exit": status, "claude": document["claudeVersion"], "model": args.model, "cache_ttl": cache_ttl, "plugin_sha256": measured}) + "\n")
         print(render(score(args.target)))
         print(f"Cost ${document['costUsd']:.2f}, partial: {document['partial']}, exit {status}.")
 

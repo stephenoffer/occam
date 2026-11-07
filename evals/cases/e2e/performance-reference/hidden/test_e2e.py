@@ -27,9 +27,9 @@ def test_trace_was_available(tool_calls):
     assert tool_calls, "no trace, so nothing below would mean anything"
 
 
-def test_performance_reference_read_before_the_edit(tool_calls):
-    read, edits = read_reference(tool_calls, "performance"), successful_edits(tool_calls)
-    assert edits and read is not None and read < edits[0]
+def test_nothing_held_the_edit_for_a_read(tool_calls):
+    edits = [call for call in tool_calls if call["name"] in ("Edit", "Write", "MultiEdit", "NotebookEdit")]
+    assert edits and not edits[0]["is_error"], "the first edit should go through, with what matters stated before it"
 
 
 def test_fast_and_equivalent(py):

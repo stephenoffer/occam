@@ -6,7 +6,7 @@ There's nothing to install. They use only the standard library, need Python 3.9 
 
 They don't import or execute the code they scan. `golden`, `mutate`, `bench` and `goal verify` run commands you give them, and anything in `tools` that could run repository code needs `--allow-exec`.
 
-State lives outside the repository, in `~/.cache/occam` or a temporary folder if that isn't writable, so nothing dirties your tree and a repository can't plant it. If nothing is writable, `scan` still works without its cache, while the ledger, `goal` and `coord` can't run.
+State lives outside the repository, in `~/.cache/occam` or a temporary folder if that isn't writable, so nothing dirties your tree and a repository can't plant it. If nothing is writable, `scan` still works without its cache, while `goal` and `coord` can't run.
 
 ```bash
 alias occam='python3 /path/to/occam/plugin/skills/occam/scripts/occam.py'
@@ -21,18 +21,17 @@ occam gate    # critique your own change before calling it done
 
 | Problem | Tool | What it does |
 |---|---|---|
-| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 179 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
+| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 189 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
 | Finding your way | `query` | Plain answers about the code, with bounded output: size, commands, entry points, outlines, callers, import graph, what a change reaches, which tests, churn, owners, public API, boundaries. See [Asking questions](#asking-questions) |
-| Not using what exists | `reuse`, `deps` | What's already in the repository, the standard library and your dependencies. Is this package real? `--online` checks registries |
+| Not using what exists | `query find`, `deps` | Where a name is already defined and called. Is this package real? `--online` checks registries |
 | Established analyzers | `tools` | Finds and runs ruff, mypy, semgrep, skylos, eslint, clippy and others, and they outrank occam's own rules |
-| Scale | `map`, `partition`, `baseline`, `ledger` | Strategy by size, disjoint shards, agent counts, a ratchet, and a ledger shared safely by concurrent agents |
-| Safe repair | `fix` | Python only and deliberately narrow: by default, only brief comments that are plainly an assistant talking, proven to change no code. Dry run by default. Import removal is opt-in, because it can't be proven safe |
+| Scale | `map`, `partition`, `baseline` | Strategy by size, disjoint shards, agent counts, and a ratchet |
 | Behavior and tests | `golden`, `mutate`, `bench` | Prove a refactor changed nothing, show which behavior no test protects, and measure growth |
 | Other agents | `coord` | Uncommitted work, worktrees, recent commits, advisory claims |
 | Goal-based work | `goal` | Requirements with checks, constraints, scope. Stale evidence and drift are caught |
 | Documents against the code | `docs` | Names, paths, flags, links and example syntax in Markdown, checked against the repository, and what a rewrite lost with `--before`. Adds a human-voice linter score if it's installed. See [Checking documents](#checking-documents) |
-| Self-critique | `gate` | Blockers across the whole list, new code nothing calls, likely duplicates, weakened tests, and the questions only you can answer. With git, also the change's size, formatting churn, comments lost, what it orphaned even in files it didn't touch, and new code out of line with its file |
-| Deferred work | `debt` | Lists marked shortcuts and TODOs from comments, and flags the ones that never say when they come due |
+| Self-critique | `gate` | Blockers across the whole list, new code nothing calls, likely duplicates, weakened tests, and the questions only you can answer. With git, also the change's size, formatting churn, comments lost, what it orphaned even in files it didn't touch, new code out of line with its file, files that nearly always change with these and aren't here, and cited code changing while the design doc doesn't |
+| A shared design | `design` | For work that crosses agents or sessions. `design for <path>` gives only what applies to a file, `design check` looks for drift, and `design decide` appends a decision. See [`DESIGN.md`](../DESIGN.md) for occam's own |
 
 ## Asking questions
 
@@ -46,49 +45,57 @@ occam gate    # critique your own change before calling it done
 | `outline FILE...` | Classes and functions with line ranges, signatures and complexity, so you can read one part of a large file |
 | `find NAME [paths]` | Where a name is defined, imported, called (and from which function), used by tests, named in strings, and mentioned in comments and docs |
 | `grep REGEX [paths] [--in code\|comment\|string] [--lang L]` | A search that knows code from comments and strings |
-| `functions [paths] [--sort lines\|complexity\|params]` | The longest and most tangled functions |
+| `functions [paths] [--sort lines\|complexity\|params]` | The longest and most tangled functions, in Python, Ruby and the braced languages |
 | `api [paths] [--base REV]` | Public names by convention. With a base, what was removed, and which signature changes can break a caller, and why |
 | `boundaries [paths] [--kind K]` | Where the code meets the outside world and what's at stake: routes, request data, SQL, HTTP calls, file writes, subprocess, environment, money, auth, tenancy, background work. Files where these meet rank first |
 | `graph [path]` | With no path, the most depended-on files, cycles and how top-level folders depend on each other. With a path, its imports and importers |
 | `impact [paths] [--changed] [--diff BASE]` | What a change reaches, which tests to run, and what names it in text without importing it |
 | `tests [paths]` | With no path, what no test reaches and any coverage report left behind. With a path, which tests reach it |
-| `history [path] [--since S] [--commits N] [--follow]` | Churn, fix commits, authors, CODEOWNERS, how few people hold most of the commits, and what changes together |
+| `history [path] [--since S] [--commits N] [--follow]` | Churn, the files most often fixed, authors, CODEOWNERS, how few people hold most of the commits, and what changes together. Commits by bots aren't counted unless bots are all there is |
 | `markers [paths]` | Silenced checkers, skipped and focused tests, hidden failures |
-| `leaks [--commits N]` | Credential-shaped lines ever added in history, with values withheld |
+| `leaks [--commits N]` | Credential-shaped lines added on any branch or in any merge, with values withheld, up to the last N commits. If git stops partway, it reports what it read and says where it stopped |
 
-Python and JS or TS imports are traced with workspace packages and `tsconfig` paths, plus Go packages, Java and Kotlin imports, C and C++ local includes, Rust modules and sourced shell files. A test that runs a script as a subprocess counts as reaching it when it names the file. Other languages aren't traced, and answers say so.
+Python and JS or TS imports are traced with workspace packages and `tsconfig` paths, plus Go packages, Java and Kotlin imports, C and C++ local includes, Rust modules, Ruby `require`s and sourced shell files. A test that runs a script as a subprocess counts as reaching it when its code names the file, and the answer labels those. Other languages aren't traced, and answers say so.
+
+Each query answers or exits 2, and a query stops after `--timeout` seconds, 900 by default. A repository's own settings can't change the answer's shape or hide a file, and a query writes nothing into `.git`. If a repository's config says its files are somewhere else, a query refuses to read them. A line that looks like it carries a credential is withheld, going by its shape and by names such as `password` and `token`, so a credential with neither still prints, such as `password: correcthorse` or the short last line of a key. Don't treat these answers as safe to publish because of it. When a repository or user config names filter or diff programs, git older than 2.31 can't switch them off, so that repository is treated as a plain folder.
+
+`entry`, `boundaries` and `functions` name any language in the repository that their patterns weren't written for, because few or none there doesn't mean few or none exist. Ruby's `require` is matched by the shortest path ending in that name, since only the running program knows its load path.
 
 **Limits.** These read text and syntax. Dynamic imports, plugin registration and wiring done in configuration stay invisible, so a name with no references isn't proof it's unused, and `impact` can miss tests. `boundaries` matches common names and libraries, so a custom layer won't show and a word like `balance` can mean something else. `api` goes by convention and can't see who really calls a name. No agent has used these yet, so nothing here shows that they change what an audit finds.
 
-### With no Python
-
-`scripts/occam.sh` answers the queries that need no parsing, with bash and git alone: `size`, `find`, `grep`, `history`, `leaks`, `markers`, `tests`, `commands`, `entry`, and `shell`, which runs `bash -n` over every script and looks for common defects. It keeps the same promises and switches off the same git settings as `occam.py`, and a test fails if the two lists differ. It works on bash 3.2, so stock macOS is fine. It can't tell a comment from a use, and it has no `outline`, `functions`, `api`, `boundaries`, `graph` or `impact`.
-
-```bash
-bash /path/to/occam/plugin/skills/occam/scripts/occam.sh size
-bash /path/to/occam/plugin/skills/occam/scripts/occam.sh find handle_payment
-```
-
 ## Very large repositories
 
-`scan` and `map` read the whole repository to make cross-file rules work, even for one path. Run `occam scan PATH --isolated` or `occam map PATH --isolated` to read only that path, without the rules that need the rest. The cross-file rules left out are dead code, clones, import cycles, phantom local imports and untested modules. `occam tools --run PATH` narrows each analyzer that takes paths.
+`scan`, `map`, `gate`, `deps` and `partition` stop reading after about 75 seconds and say PARTIAL. `--max-seconds N` changes the limit, and 0 removes it. `gate --strict`, and `scan` with `--fail-on`, `--new-only`, `--baseline` or `--format sarif`, have no limit by default, since something else decides on those. `baseline write` reads everything.
 
-These ran once on a synthetic 3.97 million line repository of copied standard library, on a laptop other work was also using:
+If you set a limit on one of those, what went unread counts against it: `scan --fail-on` fails if files in its scope went unread, and `gate --strict` fails if changed files did. A scope read in full can still pass, labeled PARTIAL.
+
+A time-limited command that still can't finish, usually because git is very slow, stops at its limit plus 35 seconds (110 by default), says nothing was checked and exits 2.
+
+Past 50,000 files, `map` is a table of contents, scoped commands read only their scope and say PARTIAL, `partition` needs a folder, and `deps` lists manifests only.
+
+Within those limits, `scan` and `map` read the whole repository to make cross-file rules work, even for one path. Run `occam scan PATH --isolated` or `occam map PATH --isolated` to read only that path, without the rules that need the rest. The cross-file rules left out are dead code, clones, import cycles, phantom local imports and untested modules. `occam tools --run PATH` narrows each analyzer that takes paths.
+
+On 10 million lines of generated code, one run after the limits were added took `map` from 202 s and 4.5 GB to about 6 s, and `gate` from 106 s and 5.2 GB to 4 s and 136 MB.
+
+The first three rows ran once, before the limits, and the rest on 2026-11-06, on a synthetic 3.96 million line repository of copied standard library, with so much other work on the laptop that they read slow (load average about 26):
 
 | Command | Time | Peak memory |
 |---|---|---|
 | `scan one/folder`, first run | 89 s | 2.3 GB |
 | `scan one/folder`, cached | 10 s | 2.2 GB |
 | `scan one/folder --isolated` | 0.3 s | 29 MB |
-| `query size`, `commands`, `history`, `find`, `grep`, `outline` | 0.2 to 2 s | under 60 MB |
-| `query leaks`, reading 61 commits | 10 s | 28 MB |
-| `query entry`, `markers`, `boundaries` | 16 to 51 s | under 130 MB |
-| `query functions`, cached | 2 s | 355 MB |
-| `query graph`, `impact`, `tests`, cached | 12 s | 1.1 GB |
-| `occam.sh size`, `find`, `grep`, `history`, `tests`, `commands`, `shell` | under 2 s | under 20 MB |
-| `occam.sh entry`, `markers`, `leaks` | 9 to 24 s | under 30 MB |
+| `query size`, `commands`, `history`, `find`, `grep`, `outline` | 0.5 to 6 s | under 230 MB |
+| `query leaks`, reading 61 commits | 22 s | 43 MB |
+| `query entry`, `markers`, `boundaries` | 31 to 95 s | under 155 MB |
+| `query functions`, first run | 32 s | 316 MB |
+| `query graph`, first run, then `impact`, `tests`, cached | 216 s, then 26 to 33 s | under 1 GB |
 
-The queries that say "cached" need a first scan's worth of reading, about 89 s here, if nothing has scanned this repository yet.
+
+Two public repositories with real history, on that same loaded laptop, stayed unchanged. On Homebrew/brew (345,000 lines, mostly Ruby, 53,604 commits) every query but `leaks` answered within 24 s and under 150 MB. On Django (543,000 lines, 35,000 commits) they answered within 38 s, peaking at 1.2 GB in `query markers`. `query leaks` read all 53,410 commits that added anything on Homebrew in 261 s and 480 MB on a quieter machine, and 36,104 on Django in 105 s.
+
+`leaks` goes by shape and name, so expect noise. It flagged 390 commit and file pairs on Homebrew. Separately, six plain `git log -G` searches for token shapes found none across that history, so names account for most of these. Confirm each one.
+
+Two agents have used these queries, one on that repository and one on a clone of Django (530,000 lines of Python, 35,000 commits), and what they reported wrong led to the Ruby support above and to fixes in `markers`, `history`, `entry`, `api` and `boundaries`. Afterwards the Django agent's blunt advice stood: use `size`, `outline`, `functions`, `find` and `graph`, which were fast and mostly accurate, and check test selection and who owns what by hand. `impact` on a central file reaches nearly every test, because Django's are that connected. Those are two repositories with nothing to compare against, so they don't show that these tools improve an audit.
 
 ## Reading findings
 
@@ -140,7 +147,7 @@ NOT READY: fix these, or escalate each with a reason.
 
 ## Configuring it
 
-An optional `.occam.json` at the repository root can hold `ignore` (globs) and `disable` (rule ids). It holds configuration only, never commands, and anything malformed is dropped. A scan tells you what it ignored because of this file, since the repository controls it.
+An optional `.occam.json` at the repository root can hold `ignore` (globs) and `disable` (rule ids). A change to it blocks `gate`, so a diff can't clear itself. It holds configuration only, never commands, and anything malformed is dropped. A scan tells you what it ignored because of this file, since the repository controls it.
 
 ```json
 { "ignore": ["evals/cases", "evals/fixtures"] }
@@ -169,7 +176,7 @@ It reports:
 
 **human-voice.** Prose belongs to [human-voice](https://github.com/stephenoffer/human-voice), a separate, optional install, and the `occam-docs` skill hands drafts to it. When `occam docs` finds its linter, each document gets a score, and the score never changes the exit status. Without it the output says the voice check didn't run. It looks in the repository's skill folders first, which needs `--allow-exec` because running a copy there runs repository code, then in Claude Code plugin installs, newest first, then in the user-level skill folders human-voice's installer writes to. Versions 0.1.0 and 0.9.0 both work, but their scores use different scales, and only newer versions have bands and the `tutorial` and `release_notes` registers.
 
-**Limits.** It knows a name appears somewhere in the code, including in a comment, and not whether a document describes it correctly. It doesn't check signatures, defaults or heading anchors, and it parses Markdown only. It runs no example, so run them yourself. Names from other projects and examples about imaginary code come back as leads. All 35 leads on occam's own documents were one of those, and so was the 1 across human-voice's 9. On six audit reports agents wrote, it raised 23 leads in 19,358 words, and none was the agent's mistake: they were library names and names the agents had added in their fixes. It caught the defects planted in a small sample project, but it hasn't yet caught a real mistake in a real document, and no agent has used it.
+**Limits.** It knows a name appears somewhere in the code, including in a comment, and not whether a document describes it correctly. It doesn't check signatures, defaults or heading anchors, and it parses Markdown only. It runs no example, so run them yourself. Names from other projects and examples about imaginary code come back as leads. All 35 leads on occam's own documents were one of those, and so was the 1 across human-voice's 9. On six audit reports agents wrote, it raised 23 leads in 19,358 words, and none was the agent's mistake: they were library names and names the agents had added in their fixes. It caught the defects planted in a small sample project. On the READMEs of 14 other repositories on one machine, 10 had no leads, and one had 3 links that really were dead, to files since renamed. No agent has used it yet.
 
 ## How far to trust it
 

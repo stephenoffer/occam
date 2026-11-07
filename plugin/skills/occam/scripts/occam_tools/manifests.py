@@ -16,6 +16,8 @@ IMPORT_TO_DIST = {
     "psycopg2": "psycopg2-binary", "MySQLdb": "mysqlclient", "google": "google-api-core", "grpc": "grpcio", "skimage": "scikit-image",
     "fitz": "pymupdf", "pkg_resources": "setuptools", "ruamel": "ruamel.yaml", "zmq": "pyzmq", "win32api": "pywin32", "Levenshtein": "python-levenshtein",
     "slugify": "python-slugify", "faiss": "faiss-cpu", "tensorflow": "tensorflow", "wx": "wxpython", "nacl": "pynacl", "usb": "pyusb", "typing_extensions": "typing-extensions",
+    "rest_framework": "djangorestframework", "github": "pygithub", "bson": "pymongo", "gridfs": "pymongo", "ldap": "python-ldap", "telegram": "python-telegram-bot",
+    "cairo": "pycairo", "gi": "pygobject",
 }
 NODE_BUILTINS = {"assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto", "dgram", "diagnostics_channel", "dns",
                  "domain", "events", "fs", "http", "http2", "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process", "punycode",
@@ -209,6 +211,7 @@ def stdlib_modules() -> set[str]:
     import sysconfig
     folder = Path(sysconfig.get_paths()["stdlib"])
     names = {p.stem for p in folder.glob("*.py")} | {p.name for p in folder.iterdir() if (p / "__init__.py").exists()}
+    names |= {p.name.split(".")[0] for p in (folder / "lib-dynload").glob("*")}  # zlib and others, as extension modules
     return names | REMOVED_STDLIB | set(sys.builtin_module_names) | {"__future__", "_thread"}
 
 

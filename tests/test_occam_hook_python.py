@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -124,7 +125,6 @@ def test_setup_formatting_and_information_are_not_checks(agent, command):
     "Ran 5 tests in 0.1s\n\nFAILED (failures=1)",
     "Ran 0 tests in 0.000s\n\nOK",
     "----\n\nRan 0 tests in 0.000s\n\nOK",
-    "2 passed\n3 skipped in 0.01s",
     "2 deselected in 0.00s",
     "==== 3 deselected in 0.01s ====",
     "3 skipped in 0.01s",
@@ -283,37 +283,43 @@ def test_every_python_file_type_gets_the_language_skill(agent, name):
     assert "occam-python" in added(agent.try_edit(name))
 
 
-def test_a_notebook_cell_with_risky_semantics_pauses_for_the_language_skill(agent):
+def test_a_notebook_cell_with_risky_semantics_mentions_the_language_skill(agent):
     agent.prompt("Fix the cell")
     agent.load()
-    held = agent.send("pre-tool", tool_name="NotebookEdit",
-                      tool_input={"notebook_path": agent.path("n.ipynb"), "new_source": "await asyncio.gather(*tasks)"})
-    assert decision(held) == "deny" and "occam-python" in held["hookSpecificOutput"]["permissionDecisionReason"]
+    output = agent.send("pre-tool", tool_name="NotebookEdit",
+                        tool_input={"notebook_path": agent.path("n.ipynb"), "new_source": "await asyncio.gather(*tasks)"})
+    assert decision(output) is None and "occam-python" in added(output)
 
 
-@pytest.mark.parametrize("request_text", ["Fix the circular imports in app", "Audit this module", "Split this module in two", "Split up this module", "Keep this notebook working"])
-def test_structural_python_work_pauses_for_the_language_skill(agent, request_text):
+@pytest.mark.parametrize("request_text", ["Fix the circular imports in app", "Split this module in two", "Split up this module", "Keep this notebook working"])
+def test_structural_python_work_mentions_the_language_skill(agent, request_text):
     agent.prompt(request_text)
+    agent.load()
+    output = agent.try_edit()
+    assert decision(output) is None and "occam-python" in added(output)
+
+
+def test_an_audit_request_stays_read_only(agent):
+    agent.prompt("Audit this module")
     agent.load()
     assert decision(agent.try_edit()) == "deny"
 
 
 @pytest.mark.parametrize("written", ['eval("x")', 'exec("x")', "round(1.5)", "subprocess.run(c, shell=True)", "shell=True", "mock.patch('a.b')", "os.system(c)", "tarfile.open(p)"])
-def test_risky_python_in_the_edit_itself_pauses_for_the_language_skill(agent, written):
+def test_risky_python_in_the_edit_itself_mentions_the_language_skill(agent, written):
     agent.prompt("Fix it")
     agent.load()
-    held = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("a.py"), "new_string": written})
-    assert decision(held) == "deny"
+    output = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("a.py"), "new_string": written})
+    assert decision(output) is None and "occam-python" in added(output)
 
 
 @pytest.mark.parametrize("name", ["requirements/dev.txt", "requirements/base.in", "requirements.in", "constraints.txt",
                                   "constraints-dev.txt", "environment.yml", "environment.yaml", "pyproject.toml"])
-def test_python_dependency_files_hold_for_the_design_reference(agent, name):
+def test_python_dependency_files_state_the_design_facts(agent, name):
     agent.prompt("Bump it")
     agent.load()
-    assert decision(agent.try_edit(name)) == "deny"
-    agent.read_reference("design")
-    assert decision(agent.try_edit(name)) is None
+    output = agent.try_edit(name)
+    assert decision(output) is None and "the package the documentation means" in added(output)
 
 
 @pytest.mark.parametrize("name", ["notes/requirements.md", "docs/constraints.md", "docs/environment.md", "data/requirements_old.csv"])
@@ -487,3 +493,15 @@ def test_a_loaded_language_skill_and_non_python_reviews_get_no_pointer(agent):
 
 def test_ordinary_python_requests_get_no_pointer(agent):
     assert "occam-python" not in added(agent.prompt("Fix the python script"))
+
+
+@pytest.mark.parametrize("words", [["uv"] + ["-x"] * 40_000 + ["run", "pytest"], ["python3"] + ["-q"] * 40_000 + ["-m", "pytest"], ["pytest"] + ["-git"] * 40_000])
+def test_a_command_with_tens_of_thousands_of_options_is_classified_quickly(words):
+    sys.path.insert(0, str(ROOT / "plugin" / "hooks"))
+    import occam_commands
+    started = time.monotonic()
+    name, _ = occam_commands.run_by(words)
+    occam_commands.is_check(words)
+    occam_commands.writes_project_files(name, words[1:])
+    assert time.monotonic() - started < 1, "a rebuilt list per option makes this quadratic"
+    assert name == "pytest"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import hashlib
+import os
 import shlex
 import sqlite3
 import subprocess
@@ -17,7 +18,6 @@ from .zero_tests import ran_no_tests
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS baseline (id TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS ledger (id TEXT PRIMARY KEY, data TEXT NOT NULL, status TEXT NOT NULL, owner TEXT, updated REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS claims (path TEXT PRIMARY KEY, owner TEXT NOT NULL, expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
@@ -31,16 +31,12 @@ def database(root: Path) -> sqlite3.Connection:
     return connection
 
 
-def _db(root: Path) -> sqlite3.Connection:
-    return database(root)
-
-
 # ---------------------------------------------------------------- coordination
 
 
 def active_claims(root: Path) -> dict[str, str]:
     try:
-        with _db(root) as db:
+        with database(root) as db:
             now = time.time()
             db.execute("DELETE FROM claims WHERE expires <= ?", (now,))
             return {path: owner for path, owner in db.execute("SELECT path, owner FROM claims")}
@@ -64,7 +60,7 @@ def coord(root: Path, action: str, paths: list[str], owner: str | None, ttl: int
     if action == "claim":
         return _claim(root, relative, owner, ttl)
     if action == "release":
-        with _db(root) as db:
+        with database(root) as db:
             if relative:
                 db.executemany("DELETE FROM claims WHERE path = ? AND owner = ?", [(path, owner) for path in relative])
             else:
@@ -86,7 +82,7 @@ def _claim(root: Path, paths: list[str], owner: str, ttl: int) -> tuple[str, int
     if not paths:
         return "Name the paths to claim.", 2
     now = time.time()
-    with _db(root) as db:
+    with database(root) as db:
         db.execute("BEGIN IMMEDIATE")
         held = {path: who for path, who, expires in db.execute("SELECT path, owner, expires FROM claims") if expires > now and who != owner}
         conflict = [f"{path} (held by {claim_holder(held, path)})" for path in paths if claim_holder(held, path)]
@@ -115,8 +111,12 @@ def _check(root: Path, paths: list[str], owner: str | None) -> tuple[str, int]:
 
 
 def _status(root: Path) -> str:
-    dirty = filesystem.dirty_paths(root)
     lines = []
+    try:
+        dirty = filesystem.dirty_paths(root)
+    except filesystem.GitProblem as error:  # the question here is who else is working, and the rest of this can still say something
+        dirty = {}
+        lines.append(f"{error}, so uncommitted work is unknown. Assume there's some.")
     worktrees = (filesystem.run_git(root, "worktree", "list") or "").strip().split("\n")
     if len(worktrees) > 1:
         lines += [f"{len(worktrees)} worktrees:", *[f"  {line}" for line in worktrees[:10]]]
@@ -158,19 +158,19 @@ def _recently_modified(root: Path, seconds: int = 1800) -> list[tuple[str, int]]
 
 
 def _load(root: Path) -> dict | None:
-    with _db(root) as db:
+    with database(root) as db:
         row = db.execute("SELECT value FROM kv WHERE key = 'goal'").fetchone()
     return json.loads(row[0]) if row else None
 
 
 def _save(root: Path, goal_state: dict) -> None:
-    with _db(root) as db:
+    with database(root) as db:
         db.execute("INSERT OR REPLACE INTO kv VALUES ('goal', ?)", (json.dumps(goal_state),))
 
 
 def _change_goal(root: Path, change) -> dict | None:
     """Read, change and write in one transaction, so agents adding requirements at once can't lose each other's."""
-    with _db(root) as db:
+    with database(root) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT value FROM kv WHERE key = 'goal'").fetchone()
         if not row:
@@ -211,11 +211,14 @@ def goal(root: Path, args) -> tuple[str, int]:
     if args.action == "init":
         if not text:
             return "State the goal: the observable outcome, not the steps.", 2
-        head = (filesystem.run_git(root, "rev-parse", "HEAD") or "").strip() or None
+        if state is not None:  # agents share this store, so starting over silently would throw away someone's requirements
+            return f"A goal is already recorded: {state['goal']}\n`occam goal clear` first if it's really finished with.", 2
+        # No commit yet still has a base, the empty tree, or a later commit of a forbidden file couldn't be seen.
+        head = (filesystem.run_git(root, "rev-parse", "HEAD") or "").strip() or (filesystem.empty_tree(root) if filesystem.in_git(root) else None)
         _save(root, {"goal": text, "requirements": [], "constraints": [], "scope": [], "created": time.time(), "base": head, "snapshot": {} if filesystem.in_git(root) else _snapshot(root)})
         return f"Goal set: {text}\nAdd what must be true with `occam goal add \"...\" --check \"command\"`, and limits with `occam goal constrain`.", 0
     if args.action == "clear":
-        with _db(root) as db:
+        with database(root) as db:
             db.execute("DELETE FROM kv WHERE key = 'goal'")
         return "Goal cleared.", 0
     if state is None:
@@ -223,20 +226,22 @@ def goal(root: Path, args) -> tuple[str, int]:
     if args.action == "add":
         if not text:
             return "State the requirement as something observable.", 2
+        if args.check and needs_a_shell(args.check):
+            return f"Not added: that check {NEEDS_A_SHELL}", 2
 
         def add(current: dict) -> None:
-            current["requirements"].append({"id": len(current["requirements"]) + 1, "text": text, "check": args.check, "where": args.where, "status": "not run", "tree": None, "detail": ""})
+            current["requirements"].append({"id": len(current["requirements"]) + 1, "text": text, "check": args.check, "status": "not run", "tree": None, "detail": ""})
 
         state = _change_goal(root, add)
         return f"R{len(state['requirements'])}: {text}" + ("" if args.check else "  (no check yet, so report it unverified until there is one)"), 0
     if args.action == "constrain":
         if not text and not args.forbid:
             return "State the constraint.", 2
-        constraint = {"text": text or f"Don't change {args.forbid}", "forbid": args.forbid}
+        constraint = {"text": text or f"Don't change {args.forbid}", "forbid": _project_pattern(root, args.forbid or "") or args.forbid}
         _change_goal(root, lambda current: current["constraints"].append(constraint))
         return f"Constraint recorded: {constraint['text']}. Reread at every `goal verify`.", 0
     if args.action == "scope":
-        _change_goal(root, lambda current: current.update(scope=args.text))
+        _change_goal(root, lambda current: current.update(scope=[_project_pattern(root, item) for item in args.text]))
         return f"In scope: {', '.join(args.text)}. Changes elsewhere are reported as drift.", 0
     if args.action == "condition":
         return _condition(state), 0
@@ -251,16 +256,45 @@ def _condition(state: dict) -> str:
             "Stop and report if a constraint would have to be broken or a decision is needed from the user.")
 
 
+def needs_a_shell(command: str) -> bool:
+    """Checks run with no shell, so `cd backend && pytest` runs `cd` with the rest as arguments, and passes without testing anything."""
+    quote = ""
+    position = 0
+    while position < len(command):
+        character = command[position]
+        following = command[position + 1:position + 2]
+        if quote == "'":
+            quote = "" if character == "'" else quote
+        elif character == "\\":
+            position += 1
+        elif character == "`" or (character == "$" and (following in ("(", "{") or following.isalpha() or following == "_")):
+            return True  # inside double quotes too: `test -n "$(pytest | grep passed)"` would test the literal text
+        elif quote == '"':
+            quote = "" if character == '"' else quote
+        elif character in "'\"":
+            quote = character
+        elif character in ";&|<>()\n":
+            return True
+        position += 1
+    return False
+
+
+NEEDS_A_SHELL = "uses shell syntax, but checks run with no shell, so it wouldn't test what it says. Wrap it: sh -c '...'"
+
+
 def _run_check(root: Path, command: str, timeout: int) -> tuple[bool, str]:
+    if needs_a_shell(command):
+        return False, NEEDS_A_SHELL
     try:
-        done = subprocess.run(shlex.split(command), cwd=str(root), capture_output=True, text=True, errors="replace", timeout=timeout)
+        done = filesystem.run_bounded(shlex.split(command), root, timeout)
     except subprocess.TimeoutExpired:
         return False, f"timed out after {timeout}s"
     except (OSError, ValueError) as error:
         return False, f"couldn't run: {error}"
-    output = (done.stdout + done.stderr).strip().split("\n")
+    stdout, stderr = done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace")
+    output = (stdout + stderr).strip().split("\n")
     tail = " / ".join(line.strip() for line in output[-2:] if line.strip())[:200]
-    if done.returncode == 0 and ran_no_tests(done.stdout + "\n" + done.stderr):
+    if done.returncode == 0 and ran_no_tests(stdout + "\n" + stderr):
         return False, "ran zero tests"
     return done.returncode == 0, f"exit {done.returncode}: {tail}"
 
@@ -322,17 +356,31 @@ def _verify(root: Path, state: dict, args) -> tuple[str, int]:
     return "\n".join(lines), 0
 
 
+def _project_pattern(root: Path, pattern: str) -> str:
+    """`./migrations`, `src/../migrations` and an absolute path all mean `migrations`, and comparing them as text would pass a violation. `./` is from where it was typed."""
+    if not pattern:
+        return pattern
+    if os.path.isabs(pattern) or pattern.startswith(("./", "../")):
+        try:
+            return str(Path(os.path.abspath(pattern)).resolve().relative_to(root.resolve())).replace(os.sep, "/")
+        except ValueError:
+            return pattern
+    return os.path.normpath(pattern).replace(os.sep, "/")
+
+
 def _scope_problems(root: Path, state: dict, base: str | None) -> list[str]:
     changed = _changed_files(root, state, base)
     problems = []
+
     for constraint in state["constraints"]:
-        pattern = constraint.get("forbid")
+        pattern = _project_pattern(root, constraint.get("forbid") or "")
         if pattern:
             hit = [path for path in changed if fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("*/") + "/")]
             if hit:
                 problems.append(f"VIOLATED: {constraint['text']}: {', '.join(hit[:5])}")
     if state["scope"]:
-        outside = [path for path in changed if not any(fnmatch.fnmatch(path, s) or path == s or path.startswith(s.rstrip("/") + "/") for s in state["scope"])]
+        scope = [_project_pattern(root, s) for s in state["scope"]]
+        outside = [path for path in changed if not any(fnmatch.fnmatch(path, s) or path == s or path.startswith(s.rstrip("/") + "/") for s in scope)]
         if outside:
             problems.append(f"DRIFT: changed outside the stated scope: {', '.join(outside[:8])}. Explain it or ask.")
     return problems

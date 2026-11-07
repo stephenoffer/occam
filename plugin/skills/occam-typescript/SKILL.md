@@ -1,6 +1,6 @@
 ---
 name: occam-typescript
-description: TypeScript and JavaScript engineering guidance on null versus undefined, runtime validation, promises and cancellation, number precision, output escaping, builds, module structure, naming, test results. Use alongside occam when writing, debugging or reviewing TypeScript or JavaScript where these matter.
+description: TypeScript and JavaScript guidance on null versus undefined, runtime validation, promises and cancellation, number precision, output escaping, builds, modules, naming, test results. Use alongside occam to write, debug or review TypeScript or JavaScript where these matter.
 ---
 
 # TypeScript and JavaScript

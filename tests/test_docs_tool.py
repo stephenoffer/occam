@@ -338,7 +338,7 @@ def test_a_path_outside_the_project_is_refused(project, tmp_path):
 def test_other_prose_says_its_facts_were_not_checked(project):
     project.write("guide.rst", "Call ``nope_here()``.\n")
     done = project.occam("docs", "guide.rst")
-    assert done.returncode == 0
+    assert done.returncode == 2  # nothing's facts were read, so this can't exit as if they were fine
     assert "NOT CHECKED, because only Markdown is parsed" in done.stdout
 
 

@@ -18,7 +18,7 @@ These cover package lint, scenario completeness, leak checks, the enforcement ho
 
 ## Agent comparisons
 
-These are real, billed model runs. You need Claude Code 2.1.269 or later. `run_eval.sh` sets `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` for both arms unless you override it, because the subscription default of 1 hour costs more and these runs rarely pause for 5 minutes.
+These are real, billed model runs. You need Claude Code 2.1.269 or later. `run_eval.sh` and `audit_comparison.py` set `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` for both arms unless you override it, because the subscription default of 1 hour costs more and these runs rarely pause for 5 minutes.
 
 ```bash
 # run_eval.sh LABEL SUITE VARIANT ABLATION RUNS MAX_COST_USD [CASE_GLOB] [extra flags]

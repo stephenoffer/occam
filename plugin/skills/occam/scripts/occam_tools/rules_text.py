@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ast
+import bisect
 import re
 from typing import Iterable, NamedTuple
 
+from .py_helpers import PLACEHOLDER_NAME, _has_sql
 from .rules_shell import shell_findings
-from .source import C_FAMILY, Source
+from .source import C_FAMILY, DOCKERFILE, Source
 
 JS = ("javascript", "typescript")
 PY = ("python",)
@@ -32,20 +34,18 @@ def _r(rule, languages, pattern, view="code", tests="skip", flags=0, scripts=Tru
 
 _I = re.I
 _M = re.M
-# Saying when deferred work comes due. Wording can't prove it, so `occam debt` asks a person to read them. "when" alone is too common to count: "handle errors when reading" names no
+# Saying when deferred work comes due. Wording can't prove it. "when" alone is too common to count: "handle errors when reading" names no
 # due date, so it has to open a later clause, as in the convention `<the limit>, <when to revisit>`.
 _DUE_CLAUSE = re.compile(r",[^,]*\b(?:when|once|until|unless|after|before|if|above|past|beyond)\b", _I)
-_DUE_ANYWHERE = re.compile(r"\b(?i:once|until|unless)\b|\b(?i:by) (?:20\d\d|Q[1-4])\b|\b20\d\d-\d\d\b|\b[A-Z][A-Z0-9]+-\d+\b|(?:^|[\s(])#\d+\b(?!\s+[a-z])|https?://\S*/(?:issues?|pull|browse|tickets?)/")
 SHORTCUT_MARK = re.compile(r"^\W*shortcut:(?!\s*(?:ctrl|cmd|command|alt|shift|option)\b)", _I)
 
-
-def states_when_due(note: str) -> bool:
-    return bool(_DUE_CLAUSE.search(note) or _DUE_ANYWHERE.search(note))
 
 TEXT_RULES: list[TextRule] = [
     # Incomplete work
     _r("truncation-marker", ALL,
+       # `...rest props go to the input` is about a spread. An elision stops there, or says what it left out.
        r"^\W*(?:\.{3}|…)\s*(?:rest|remaining|existing|other|previous|same)\b"
+       r"(?:\W*$|\s+of\s+(?:(?:the|your|this)\s+)?\w+\W*$|\s+(?:of\s+)?(?:(?:the|your|this)\s+)?(?:code|file|function|implementation|logic|class|method|script|methods|functions)\b|.*\b(?:unchanged|omitted)\b|\s+as\s+(?:above|before)\b)"
        r"|^\W*(?:rest|remainder) of (?:the |your )?(?:code|file|function|implementation|logic|class|method|script)\b"
        r"|^\W*(?:existing|previous|remaining|unchanged|other) (?:code|implementation|logic|methods|functions)\s*(?:\.{3}|…|remains?|unchanged|here|goes|stays?|omitted|as before)?\W*$"
        r"|\bomitted for brevity\b|\b(?:your|add|put|insert) (?:your |more |the |actual )*(?:code|logic|implementation) here\b"
@@ -70,25 +70,29 @@ TEXT_RULES: list[TextRule] = [
     _r("stub-raise", ("swift",), r"""\bfatalError\(\s*["'](?:not\s+implemented|todo|unimplemented)""", view="raw", flags=_I),
     _r("fake-success", JS,
        r"(?:function\s+|const\s+|async\s+function\s+)(?:verify|validate|authenticate|authorize|isValid|isAuthenticated|isAuthorized|isAllowed|hasPermission|checkAuth|checkPermission|checkAccess)\w*"
+       # Given nothing, it had nothing to ignore: `const validateForm = () => { return true; }` is a stub of something else.
+       r"(?:\s*:[^=\n]*)?(?:\s*=\s*(?:async\s+)?(?:function\b[^(\n]*)?)?(?:\(\s*[^)\s][^)\n]*\)|[A-Za-z_$][\w$]*\s*(?==>))"
        r"[^{\n]*\{\s*return\s+true;?\s*\}"),
     _r("fake-data", ALL, r"\b(?:MOCK|FAKE|DUMMY|STUB)_[A-Z][A-Z_]+\b", scripts=False),
     _r("fake-data", ALL, r"""["'](?:John Doe|Jane Doe|test@test\.com|foo@bar\.com|lorem ipsum[^"']*)["']""", view="raw", flags=_I, scripts=False),
 
     # Security
     _r("tls-disabled", ALL,
-       r"\bverify\s*=\s*False\b|\brejectUnauthorized\s*:\s*false\b|\bInsecureSkipVerify\s*:\s*true\b"
+       r"\brejectUnauthorized\s*:\s*false\b|\bInsecureSkipVerify\s*:\s*true\b"
        r"|NODE_TLS_REJECT_UNAUTHORIZED|CURLOPT_SSL_VERIFYPEER\s*,\s*(?:0|false)\b|\bssl\._create_unverified_context\b"
        r"|\bcheck_hostname\s*=\s*False\b|\b(?:verify_mode|cert_reqs)\s*=\s*(?:ssl\.)?CERT_NONE\b(?!\s*,)|\bdanger_accept_invalid_certs\(\s*true\b"
-       r"|\bTrustAllCerts\b|\bcurl\s[^\n|]*(?:\s-k\b|--insecure\b)", view="code"),
+       r"|\bTrustAllCerts\b|\bcurl\b[^\n|]*(?:\s-[a-zA-Z]*k\b|\s--insecure\b)", view="code"),
+    # `verify=False` is only TLS on an HTTP client: the Python rules can see the call, and `session.verify = False` says so here.
+    _r("tls-disabled", PY, r"\b(?:s|(?:session|sess|client|http|requests)\w*)\.verify\s*=\s*False\b", flags=_I),
     _r("jwt-unverified", ALL, r"""verify_signature["']?\s*:\s*False|\balgorithms?\s*[=:]\s*\[?\s*["']none["']|jwt\.decode\([^)\n]*verify\s*=\s*False""", view="raw", flags=_I),
-    _r("sql-injection", JS, r"""\.(?:query|execute|raw)\(\s*(?:`[^`\n]*\$\{|["'][^"'\n]*["']\s*\+)""", view="raw"),
     _r("sql-injection", ("go",), r"""\.(?:Query|QueryRow|Exec)(?:Context)?\((?:\w+,\s*)?(?:fmt\.Sprintf\(|"[^"\n]*"\s*\+)""", view="raw"),
     _r("sql-injection", ("java", "kotlin", "scala", "csharp"), r"""(?:executeQuery|executeUpdate|prepareStatement|createQuery|ExecuteReader|ExecuteNonQuery)\(\s*"[^"\n]*"\s*\+""", view="raw"),
     _r("sql-injection", ("rust",), r"""\.(?:execute|query)\(\s*&?format!\(""", view="raw"),
     _r("sql-injection", ("ruby",), r"""\.(?:where|find_by_sql|execute)\(\s*"[^"\n]*#\{""", view="raw"),
     _r("sql-injection", ("php",), r"""(?:mysqli_query|->query)\([^)\n]*\$_(?:GET|POST|REQUEST)""", view="raw"),
     _r("dynamic-eval", JS + ("php", "ruby"), r"(?<![\w.])eval\s*\(|\bnew\s+Function\s*\("),
-    _r("shell-injection", JS, r"""\bexec(?:Sync)?\(\s*(?:`[^`\n]*\$\{|["'][^"'\n]*["']\s*\+)""", view="raw"),
+    # A bare exec, or child_process's. `RE.exec(...)` runs a regex and `db.exec(...)` runs SQL.
+    _r("shell-injection", JS, r"""(?<![\w.])(?:child_process\.|childProcess\.|cp\.)?exec(?:Sync)?\(\s*(?:`[^`\n]*\$\{|["'][^"'\n]*["']\s*\+)""", view="raw"),
     _r("shell-injection", ("go",), r"""exec\.Command\(\s*"(?:sh|bash)"\s*,\s*"-c\"""", view="raw"),
     _r("shell-injection", ("java", "kotlin"), r"Runtime\.getRuntime\(\)\.exec\("),
     _r("shell-injection", ("rust",), r"""Command::new\(\s*"(?:sh|bash)"\s*\)""", view="raw"),
@@ -116,7 +120,9 @@ TEXT_RULES: list[TextRule] = [
     _r("unsafe-c-string", ("c", "cpp"), r"(?<![\w.])(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\("),
     _r("unsafe-c-string", ("c", "cpp"), r"""\bscanf\(\s*"%s""", view="raw"),
     _r("world-writable", ALL, r"\bchmod\s+(?:-R\s+)?(?:0)?777\b|\bchmod\([^)\n]*0o?777\b", view="code"),
-    _r("curl-pipe-shell", ("shell",), r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"),
+    # `| python3 -m json.tool` and `| python3 -c ...` read the download as data, and only otherwise is it the program.
+    _r("curl-pipe-shell", ("shell",), r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*/)?(?:(?:(?:ba|z|da|k)?sh\b)|python[\d.]*(?![\w.])(?!\s+-[mc]\b))"),
+    _r("curl-pipe-shell", ("shell",), r"""^[^#\n]*?(?:\b(?:ba|z|da|k)?sh\b|\beval\b|\bsource\b)[^;&|\n]{0,200}(?:<\(|\$\(|`)\s*(?:curl|wget)\b""", view="raw", flags=_M),
 
     # Error masking
     # Raw text, because a comment inside the block is the author saying why, and the code view blanks comments.
@@ -202,17 +208,42 @@ TEXT_RULES: list[TextRule] = [
 ]
 
 
+# Deliberately broad, since `query` keeps what this matches out of its output and a finding's evidence is withheld on it. What's worth a lead is _LIVE_TOKENS.
 _SECRET_TOKENS = re.compile(
     r"\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{24,}\b|\bxox[baprs]-[A-Za-z0-9-]{12,}\b"
     r"|-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|\bAIza[0-9A-Za-z_-]{35}\b|\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\."
 )
+# The logic of SECRET_SHAPES in plugin/hooks/occam_evidence.py, which can't import this: AWS's documented example isn't a key, an sk- token has a digit and a capital so a slug isn't one,
+# and a private key has a body after its marker, written out or with its line breaks escaped. Old-style encrypted keys put two header lines first.
+_LIVE_TOKENS = re.compile(
+    r"\b(?:AKIA|ASIA)(?![0-9A-Z]*EXAMPLE)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{22,}\b|\bglpat-[A-Za-z0-9_-]{20,}\b"
+    r"|\bsk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{24,}\b|\b[sr]k_live_[A-Za-z0-9]{16,}\b|\bxox[abprs]-[A-Za-z0-9-]{12,}\b|\bnpm_[A-Za-z0-9]{36}\b"
+    r"""|-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----(?:\s|\\[nr]|["'+,])*(?:Proc-Type:[^\n]{0,80}\n(?:DEK-Info:[^\n]{0,120}\n)?\s*)?[A-Za-z0-9+/=]{20,}"""
+    r"|\bAIza[0-9A-Za-z_-]{35}\b|\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\."
+)
 _SECRET_DEFAULT = re.compile(r"""(?:getenv|environ\.get|process\.env\.\w{1,60}\s{0,4}\|\|)\(?\s{0,4}["']?[\w-]{0,60}(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)[\w-]{0,60}["']?\s{0,4},?\s{0,4}["']([^"'\s]{8,200})["']""", re.I)
 _URL_CREDENTIALS = re.compile(r"""\b[a-z][a-z0-9+.-]{0,20}://[^/\s:@"'`]{1,120}:([^@/\s"'`{}<>$%]{4,200})@[\w.-]{1,120}""", re.I)
-_SECRET_ASSIGN = re.compile(
-    r"""\b[\w.-]{0,60}(?:password|passwd|pwd|secret|api[_-]?key|apikey|auth[_-]?token|access[_-]?token|private[_-]?key)\w{0,60}["']?\s{0,4}(?::\s{0,4}\w{1,40}\s{0,4})?(?::|=|:=|=>)\s{0,4}f?["']([^"'\s]{6,200})["']""",
+_CREDENTIAL_WORD = r"password|passwd|pwd|secret|api[_-]?key|apikey|auth[_-]?token|access[_-]?token|private[_-]?key"
+_ASSIGNS_LITERAL = r"""["']?\s{0,4}\]?\s{0,4}(?::\s{0,4}\w{1,40}\s{0,4})?(?::|=|:=|=>)\s{0,4}f?["']([^"'\s]{%d,200})["']"""
+_SECRET_ASSIGN = re.compile(rf"""\b([\w.-]{{0,60}}(?:{_CREDENTIAL_WORD})\w{{0,60}}){_ASSIGNS_LITERAL % 6}""", re.I)
+# `token` alone names too many things that aren't credentials, so its value has to look like one.
+_TOKEN_ASSIGN = re.compile(rf"""\b[\w.-]{{0,60}}token{_ASSIGNS_LITERAL % 20}""", re.I)
+_AUTH_HEADER = re.compile(r"""\b(?:Proxy-)?Authorization["']?\s{0,4}[:=,]\s{0,4}f?["'`](?:Bearer|Basic|token)\s+([A-Za-z0-9._~+/=-]{12,200})["'`]""", re.I)
+_SHELL_ASSIGN = re.compile(rf"""^[ \t]*(?:export[ \t]+)?([A-Za-z0-9_]*(?:{_CREDENTIAL_WORD}|access[_-]?key|token)[A-Za-z0-9_]*)=([^\s"'$`{{(;|&<>]{{6,200}})(?=[\s;]|$)""", re.I | re.M)
+# Named for what it describes, as in private_key_path or password_policy.
+_DESCRIBES_A_CREDENTIAL = re.compile(r"(?:[_-](?i:path|file|dir|url|uri|name|arn|ttl|min|max|len|length|prefix|header|env|policy|regex|pattern|field)|[a-z0-9](?:Path|File|Dir|Url|URL|Uri|URI|Name|Arn|ARN|Ttl|TTL|Min|Max|Len|Length|Prefix|Header|Env|Policy|Regex|Pattern|Field))$")
+_ENDS_IN_CREDENTIAL = re.compile(rf"(?:{_CREDENTIAL_WORD})$", re.I)
+# What can't be a value yet, by its whole shape, since `$` or `%` or `test` inside a real password says nothing: `P@ss%w0rd99`, `Latest#2024`.
+_NOT_A_SECRET = re.compile(
+    r"\$\{|\$\(|^\$\w+$|(?-i:\$[A-Z_][A-Z0-9_]{2,})|#\{|\{[^{}\s]*\}|<\w[\w -]*>|%[sd(]"  # a template to fill in. One `$k` inside a value is just a character
+    r"|\*{3}|x{4,}"                                                               # a mask
+    r"|^(?:example|changeme|change_me|change-me|your|xxx|placeholder|dummy|fake|sample|redacted|replace)|^(?:test|secret|password|none|null|true|false)\d*$"
+    r"|^(?:AKIA|ASIA)[0-9A-Z]*EXAMPLE$"                                           # AWS's documented key
+    r"|^[a-z]+(?:[_.-][a-z]+)+$|^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|(?-i:^[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+$)"  # the name of something, or of an environment variable. A digit in every part reads as a value
+    r"|^\.{0,2}/|^\w+://|^arn:"                                                   # where something is
+    r"|^\^|\$$|\(\?|\\[dwsb]|\[[^\]]*-[^\]]*\]",                                  # a pattern
     re.I,
 )
-_NOT_A_SECRET = re.compile(r"example|changeme|change_me|your|xxx|placeholder|dummy|fake|sample|test|secret|password|none|null|true|false|\$|\{|\}|<|>|%|\*{3}|^[a-z_.-]+$", re.I)
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _NARRATION_START = re.compile(
     r"^(?:increment|decrement|loop (?:through|over)|iterate (?:over|through)|initiali[sz]e|create (?:a|an|the)|define (?:a|an|the)|import\b"
@@ -250,13 +281,15 @@ def text_findings(source: Source, is_test: bool, is_script: bool) -> Iterable[tu
                 if rule.rule == "ai-residue" and comment.startswith(_DOC_COMMENT):
                     continue  # published documentation can use any style it likes
                 if rule.rule == "placeholder-comment" and SHORTCUT_MARK.search(_visible(comment)) and _DUE_CLAUSE.search(_visible(comment)):
-                    continue  # a limit with a stated way out: `occam debt` keeps track of it
+                    continue  # a limit with a stated way out
                 if rule.pattern.search(_visible(comment)):
                     yield rule.rule, line, None, rule.overrides
         else:
             for match in rule.pattern.finditer(_view_text(source, rule.view)):
                 yield rule.rule, source.line_of(match.start()), None, rule.overrides
     yield from _secrets(source, is_test)
+    if language in JS and not is_test:
+        yield from _js_sql_findings(source)
     yield from _comment_shape(source, is_test)
     if language == "shell":
         yield from _shell_file_rules(source)
@@ -266,33 +299,239 @@ def text_findings(source: Source, is_test: bool, is_script: bool) -> Iterable[tu
 
 
 def has_secret_shape(text: str) -> bool:
-    return bool(_SECRET_TOKENS.search(text) or _URL_CREDENTIALS.search(text))
+    return bool(_SECRET_TOKENS.search(text) or _LIVE_TOKENS.search(text) or _URL_CREDENTIALS.search(text))
 
 
 def has_secret_assignment(line: str) -> bool:
-    return any(not _NOT_A_SECRET.search(match.group(1)) for pattern in (_SECRET_ASSIGN, _SECRET_DEFAULT) for match in pattern.finditer(line))
+    return any(not _NOT_A_SECRET.search(match.groups()[-1]) for pattern in (_SECRET_ASSIGN, _SECRET_DEFAULT, _TOKEN_ASSIGN, _AUTH_HEADER) for match in pattern.finditer(line))
+
+
+def _is_worth_a_lead(value: str, name: str = "secret") -> bool:
+    """One word reads as a label or a setting, as in `"password": "required"`, unless it's long and what it's assigned to is the credential itself."""
+    if _NOT_A_SECRET.search(value):
+        return False
+    return not value.isalpha() or (value.islower() and len(value) >= 12 and bool(_ENDS_IN_CREDENTIAL.search(name)))
+
+
+def _looks_random(value: str) -> bool:
+    if not re.fullmatch(r"[A-Za-z0-9_+/=.~-]+", value):
+        return False
+    if re.fullmatch(r"[a-fA-F0-9]+", value) or all(re.search(kind, value) for kind in ("[a-z]", "[A-Z]", "[0-9]")):
+        return True
+    return bool(re.fullmatch(r"[a-z0-9]{24,}", value)) and sum(character.isdigit() for character in value) >= 6
+
+
+def _token_findings(source: Source) -> Iterable[tuple]:
+    """What's unmistakable from the text alone, in any file."""
+    for match in _LIVE_TOKENS.finditer(source.text):
+        yield "hardcoded-secret", source.line_of(match.start()), "Credential-shaped token in source (value withheld).", {"confidence": "high"}
+    for match in _URL_CREDENTIALS.finditer(source.text):
+        if _is_worth_a_lead(match.group(1), "password"):
+            yield "hardcoded-secret", source.line_of(match.start()), "A URL with an embedded password (value withheld).", {"confidence": "high"}
 
 
 def _secrets(source: Source, is_test: bool) -> Iterable[tuple]:
     if is_test:
         return
     seen = set()
-    for match in _SECRET_TOKENS.finditer(source.text):
-        line = source.line_of(match.start())
-        seen.add(line)
-        yield "hardcoded-secret", line, "Credential-shaped token in source (value withheld).", {"confidence": "high"}
+    for finding in _token_findings(source):
+        if finding[2].startswith("Credential"):
+            seen.add(finding[1])
+        yield finding
     for match in _SECRET_ASSIGN.finditer(source.text):
         line = source.line_of(match.start())
-        value = match.group(1)
-        if line in seen or _NOT_A_SECRET.search(value):
+        name, value = match.groups()
+        if line in seen or _DESCRIBES_A_CREDENTIAL.search(name) or not _is_worth_a_lead(value, name):
             continue
+        seen.add(line)
         yield "hardcoded-secret", line, "Literal assigned to a credential-named variable (value withheld).", {}
+    for match in _TOKEN_ASSIGN.finditer(source.text):
+        line = source.line_of(match.start())
+        if line not in seen and _looks_random(match.group(1)) and not _NOT_A_SECRET.search(match.group(1)):
+            seen.add(line)
+            yield "hardcoded-secret", line, "Literal assigned to a credential-named variable (value withheld).", {}
+    for match in _AUTH_HEADER.finditer(source.text):
+        line = source.line_of(match.start())
+        if line not in seen and not match.group(1).isalpha() and not _NOT_A_SECRET.search(match.group(1)):
+            seen.add(line)
+            yield "hardcoded-secret", line, "An Authorization header with its credential written out (value withheld).", {"confidence": "high"}
+    if source.language == "shell":
+        for match in _SHELL_ASSIGN.finditer(source.code):  # unquoted, so the code view has it and has dropped comments
+            name, value = match.groups()
+            line = source.line_of(match.start())
+            if line not in seen and not value.isdigit() and not _DESCRIBES_A_CREDENTIAL.search(name) and _is_worth_a_lead(value, name):
+                seen.add(line)
+                yield "hardcoded-secret", line, "Literal assigned to a credential-named variable (value withheld).", {}
     for match in _SECRET_DEFAULT.finditer(source.text):
-        if not _NOT_A_SECRET.search(match.group(1)):
+        if _is_worth_a_lead(match.group(1)):
             yield "hardcoded-secret", source.line_of(match.start()), "A credential's fallback value is committed here (value withheld).", {"confidence": "high"}
-    for match in _URL_CREDENTIALS.finditer(source.text):
-        if not _NOT_A_SECRET.search(match.group(1)):
-            yield "hardcoded-secret", source.line_of(match.start()), "A URL with an embedded password (value withheld).", {"confidence": "high"}
+
+
+def secrets_only_findings(source: Source) -> Iterable[tuple]:
+    """For a config file or Dockerfile: no name-based guessing, since `password: required` is a schema there, and a Dockerfile's RUN lines are shell."""
+    seen = set()
+    for finding in _token_findings(source):
+        if finding[:3] not in seen:
+            seen.add(finding[:3])
+            yield finding
+    if DOCKERFILE.search(source.path):
+        for rule in TEXT_RULES:
+            if rule.rule == "curl-pipe-shell":
+                for match in rule.pattern.finditer(_view_text(source, rule.view)):
+                    yield rule.rule, source.line_of(match.start()), None, rule.overrides
+
+
+# ---------------------------------------------------------------- SQL in JavaScript, which needs more than a pattern: multi-line templates, and values built earlier
+
+_JS_SQL_CALL = re.compile(r"\.(query|execute|raw|\$queryRawUnsafe|\$executeRawUnsafe)\s*(?:<[^()\n]{0,100}>\s*)?\(")
+_JS_ASSIGNMENT = re.compile(r"(?<![\w.$])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(\+?=)(?![=>])")
+_JS_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
+_JS_MARKER_TEXT = re.compile(r"""["'`](?:\?|\$\$\{|\$\d|%s)|\b\w*(?:[Pp]laceholder|[Mm]arks)\w*\(""")
+_NOT_SQL = re.compile(r"\s*(?:(?:query|mutation|subscription|fragment)\b|\{)")  # a GraphQL document, which can say `where:`
+_JS_VALUE_LIMIT = 8000
+
+
+def _js_string_end(text: str, start: int, limit: int, literal: list[str], spliced: list[str]) -> int:
+    """Past the string or template opening at `start`, noting its written-out text and what's interpolated."""
+    quote = text[start]
+    index = piece = start + 1
+    while index < limit:
+        character = text[index]
+        if character == "\\":
+            index += 2
+        elif character == quote or (character == "\n" and quote != "`"):
+            literal.append(text[piece:index])
+            return index + 1
+        elif quote == "`" and text.startswith("${", index):
+            literal.append(text[piece:index])
+            depth, inner = 1, index + 2
+            while inner < limit and depth:
+                depth += {"{": 1, "}": -1}.get(text[inner], 0)
+                inner += 1
+            spliced.append(text[index + 2:inner - 1].strip())
+            index = piece = inner
+        else:
+            index += 1
+    literal.append(text[piece:min(index, limit)])
+    return index
+
+
+class _JsValue(NamedTuple):
+    literal: str     # written-out text
+    spliced: list    # what a template interpolates
+    rest: str        # the code around the strings
+    end: int
+
+
+def _js_value(text: str, start: int, whole_statement: bool) -> _JsValue:
+    """One expression, up to the end of an argument, or of a statement when `whole_statement`. A line break ends a statement unless a `+` carries it on."""
+    literal: list[str] = []
+    spliced: list[str] = []
+    rest: list[str] = []
+    depth = 0
+    index = start
+    limit = min(len(text), start + _JS_VALUE_LIMIT)
+    while index < limit:
+        character = text[index]
+        if character in "\"'`":
+            index = _js_string_end(text, index, limit, literal, spliced)
+            rest.append(" ")
+            continue
+        if character in "([{":
+            depth += 1
+        elif character in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0 and character in ",;":
+            break
+        elif depth == 0 and character == "\n" and whole_statement:
+            before = "".join(rest).rstrip()
+            ahead = text[index:index + 200].lstrip()
+            if (before or literal) and not before.endswith("+") and not ahead.startswith("+"):
+                break
+        rest.append(character)
+        index += 1
+    return _JsValue(" ".join(literal), spliced, "".join(rest), index)
+
+
+def _js_is_built(value: _JsValue) -> list[str] | None:
+    """What's put into this text at runtime, or None if nothing is."""
+    if "=>" in value.rest or "function" in value.rest:
+        return None  # a callback, not a query's text
+    operands = [part.strip() for part in value.rest.split("+") if part.strip()] if "+" in value.rest and value.literal else []
+    return (value.spliced + operands) or None
+
+
+def _js_is_only_markers(text: str, expression: str, assignments: dict[str, list[tuple]], position: int) -> bool:
+    if _JS_MARKER_TEXT.search(expression):
+        return True
+    if not PLACEHOLDER_NAME.fullmatch(expression):
+        return False
+    earlier = _js_assigned_before(assignments, expression, position)  # the name is a claim, so whatever sets it has to back that up
+    return not earlier or bool(_JS_MARKER_TEXT.search(text[earlier[-1][0]:earlier[-1][0] + _JS_VALUE_LIMIT].split("\n", 1)[0]))
+
+
+def _js_assignments(code: str) -> dict[str, list[tuple]]:
+    assignments: dict[str, list[tuple]] = {}
+    for match in _JS_ASSIGNMENT.finditer(code):
+        assignments.setdefault(match.group(1), []).append((match.end(), match.group(2)))
+    return assignments
+
+
+def _js_assigned_before(assignments: dict[str, list[tuple]], name: str, position: int) -> list[tuple]:
+    """Its last `=` before this point, and any `+=` since, up to a few. What came before that `=` no longer counts."""
+    listed = assignments.get(name, [])
+    end = bisect.bisect_left(listed, (position,))
+    start = end
+    while start > 0 and end - start < 8:
+        start -= 1
+        if listed[start][1] == "=":
+            break
+    return listed[start:end]
+
+
+def _js_sql_findings(source: Source) -> Iterable[tuple]:
+    text = source.text
+    assignments: dict[str, list[tuple]] | None = None
+    budget = 4 * len(text) + _JS_VALUE_LIMIT  # enough for real code, while calls packed together can't make this quadratic
+    for match in _JS_SQL_CALL.finditer(source.code):
+        if budget <= 0:
+            return
+        start = match.end()
+        while start < len(text) and text[start] in " \t\r\n":
+            start += 1
+        if text[start:start + 1] in ("{", "["):
+            continue  # an options object, as in { text, values }
+        unsafe_api = match.group(1).endswith("Unsafe")
+        value = _js_value(text, start, whole_statement=False)
+        budget -= value.end - start + 1
+        if assignments is None:
+            assignments = _js_assignments(source.code)
+        line = source.line_of(match.start())
+        built = _js_is_built(value)
+        if built:
+            if (unsafe_api or _is_js_sql(value.literal)) and not all(_js_is_only_markers(text, part, assignments, match.start()) for part in built):
+                yield "sql-injection", line, f".{match.group(1)}() receives SQL built from runtime values.", {}
+            continue
+        name = value.rest.strip()
+        if value.literal or not _JS_IDENTIFIER.fullmatch(name):
+            continue
+        earlier = _js_assigned_before(assignments, name, match.start())
+        if not earlier:
+            if unsafe_api:
+                yield "sql-injection", line, f".{match.group(1)}() runs whatever {name} holds.", {"confidence": "medium"}
+            continue
+        pieces = [_js_value(text, offset, whole_statement=True) for offset, _ in earlier]
+        budget -= sum(piece.end - offset for piece, (offset, _) in zip(pieces, earlier))
+        parts = [part for piece in pieces for part in (_js_is_built(piece) or [])]
+        whole = " ".join(piece.literal for piece in pieces)
+        if parts and (unsafe_api or _is_js_sql(whole)) and not all(_js_is_only_markers(text, part, assignments, match.start()) for part in parts):
+            yield "sql-injection", line, f".{match.group(1)}() receives SQL built from runtime values, by way of {name}.", {"confidence": "medium"}
+
+
+def _is_js_sql(text: str) -> bool:
+    return _has_sql(text) and not _NOT_SQL.match(text)
 
 
 def _comment_shape(source: Source, is_test: bool) -> Iterable[tuple]:

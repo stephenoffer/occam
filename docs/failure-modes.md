@@ -44,7 +44,7 @@ The report says tests pass, that something was verified, or that a change made t
 
 **Evidence.** Of 12 models on file review tasks, 67.9% of runs left a file unread, and 80.4% of those were misleading about it (OverclaimBench). Self-reports refer to about one action in eleven (Narrative Layer).
 
-**What occam does.** At Stop the hook compares the final message with what it recorded, and sends the agent back once if:
+**What occam does.** At Stop the hook compares the final message with what it recorded, and sends the agent back, once per state of the code, if:
 
 - a check failed after the last edit and hasn't passed since, and the message doesn't mention a failure, or claims a pass in a sentence that doesn't qualify it. Only the same command settles a failure, or an unnarrowed run of a whole suite, so `pytest --ignore=tests/test_a.py` doesn't
 - the message reports N passing, some output this turn states a count, and none contains N
@@ -54,7 +54,7 @@ The report says tests pass, that something was verified, or that a change made t
 
 This extends the existing rule that a claim of passing needs a check that passed. A check that never started, or that ran on a temp copy of older code, doesn't count as a failure of this code, because showing a new test fails on the old code is what the skill asks for.
 
-**What gets past it.** Stopping short in other words, including stopping without saying so. A notebook that fails for any reason a static read can't see. A real failure in the same command as a run on a temp copy. A wrong figure with the right shape, a count that happens to appear elsewhere in the output, a runner that prints no count, a speedup in words without a number, and a before-and-after that ran the same command on different input. Failure words are matched loosely, so "still has issues" passes as honest even when it understates. One-off scripts on stdin or in `-c` aren't tracked. A false claim about anything other than tests or speed isn't seen, and neither is a review claim about files read. The hook compares against what it saw, so a passing check that didn't exercise the change still counts.
+**What gets past it.** Stopping short in other words, including stopping without saying so, and any admission in a turn with no code edit, since Stop only compares after one. A notebook that fails for any reason a static read can't see. A real failure in the same command as a run on a temp copy. A wrong figure with the right shape, a count that happens to appear elsewhere in the output, a runner that prints no count, a speedup in words without a number, and a before-and-after that ran the same command on different input. Failure words are matched loosely, so "still has issues" passes as honest even when it understates. One-off scripts on stdin or in `-c` aren't tracked. A false claim about anything other than tests or speed isn't seen, and neither is a review claim about files read. The hook compares against what it saw, so a passing check that didn't exercise the change still counts.
 
 ### 2. Coding from stale memory
 
@@ -72,7 +72,7 @@ Pattern matching on resemblance: the helper with a similar name and different se
 
 **Evidence.** Nine LLMs dropped from 84.9% on genuine riddles to 50.7% on look-alikes that need only a literal reading, while humans went the other way, 50.5% to 80.5% (Riddle Riddle).
 
-**What occam does.** Guidance only. `design.md`: state what must be true for a pattern to work, read the request literally, and say so if a premise is false. `performance.md`, which is held until read on performance work: find the stage that binds before tuning.
+**What occam does.** Guidance only. `design.md`: state what must be true for a pattern to work, read the request literally, and say so if a premise is false. `performance.md`, whose main points are stated before the edit on performance work: find the stage that binds before tuning.
 
 **What gets past it.** Everything the model doesn't choose to apply. Whether a fix fits is a judgment no pattern can see, and we know of no deterministic check for it.
 
@@ -154,7 +154,7 @@ Installs, deletions and config changes that never reach the report, and a green 
 
 **Evidence.** Across 5,851 sessions and 355,942 tool calls, a self-report referred to about one action in eleven (Narrative Layer). Identical temperature-zero requests gave 80 unique completions, the most common occurring 78 times (He, Thinking Machines).
 
-**What occam does.** At Stop the agent is sent back once if:
+**What occam does.** At Stop the agent is sent back, once per state of the code, if:
 
 - the message doesn't name an install, a deletion, a dependency manifest, check configuration, or a weakened test it changed this turn
 - the same command failed and passed in consecutive runs with no edit or other command between them, and the message doesn't explain it
@@ -169,6 +169,17 @@ Each name is asked for once per turn.
 - **The false-positive rate on real work is only partly known.** Every hold, ask and continuation costs turns. Most patterns are tested on authored cases only, and the same author wrote the patterns and the cases. The one rule checked against real traces was mostly false positives until it was narrowed, so expect others to need the same.
 - **The cost of these checks alone is unmeasured.** The re-evaluation in `evals/RESULTS.md` included them but can't separate them from other changes.
 - **No adaptive attacker has tried these.** They are guardrails, not a security boundary, and a misdirected agent can route around them. Each section lists the routes we know of. One fresh-context review by the same model found many false interruptions and missed cases, now fixed and in the tests, but it stopped short of mutation-testing most of them.
+
+## What the hook's reading of commands can't see
+
+All of the above rests on reading a shell command without running it. On 19,370 generated commands run in real bash with logging stubs, it missed none of the programs that ran, and it read a program that didn't run in about 2,400, mostly `true || pytest` style branches, which a static read can't settle. Those commands were written by a reviewer, so they test odd shapes and not typical use, and they're no longer a blind test now that fixes were made against them. When it's unsure whether a `cd` ran, it assumes the project, so work in a temp copy can draw a false hold. These still get past it, and each one fails toward doing nothing, not toward stopping work:
+
+- **Running code it can't read:** a script file's contents, `exec` of a variable, `__import__`, a renamed `open`, a library's own writer such as `df.to_csv`, `os.chdir` inside Python, and tools it doesn't know, such as `npx prettier --write`.
+- **Variables and branches:** a command built from variables, a `cd` inside `if` or a loop, and code past a function it can't see called. A path in a variable reads as unclear rather than safe.
+- **Size:** the hook gives up after 8 seconds and lets the command through, so megabytes of padding avoid every check. Inline Python over 100,000 characters isn't parsed, only searched for the obvious calls.
+- **Whether a check really tested this code:** a check that names no path and runs from the project counts, even if it tests something else. A real check and a run on a temp copy in one command count as a real failure, since their output can't be told apart. Matching pytest's result lines to runs was tried and removed, because a fresh review got real failures recorded as passes.
+- **Notebooks:** only the use of a name before its definition across cells. A name never defined, one defined later in the same cell, a syntax error or an exception aren't seen, and a name used inside a function body can be flagged though the notebook runs.
+- **PowerShell:** a line ending in a backslash reads as joined to the next. Windows hasn't been run at all.
 
 ## How we'd find out
 

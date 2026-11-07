@@ -18,7 +18,7 @@ A notebook is verified when a fresh kernel runs it top to bottom. Save the resul
 jupyter nbconvert --to notebook --execute --output-dir "$(mktemp -d)" analysis.ipynb
 ```
 
-`papermill` does the same with parameters. Running one cell in a live kernel only shows that cell works with whatever state the kernel holds, so report it that way. If the data or hardware isn't available, say so, and run what you can on a sample.
+`papermill` does the same with parameters. Running one cell in a live kernel only shows that cell works with whatever state the kernel holds, so report it that way. If the data or hardware isn't available, say so, and run what you can on a sample. If no kernel can run here, say so. Stale outputs mislead, so either execute the code cells in order in a new process and save what they print, saying it wasn't Jupyter, or clear them and say a rerun will fill them.
 
 `nbqa ruff` and `nbqa mypy` run the usual checkers over cells, if available. Top-level `await` and `%` magics are notebook syntax, so they won't work if the code moves to a module.
 

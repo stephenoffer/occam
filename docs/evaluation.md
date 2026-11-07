@@ -1,5 +1,7 @@
 # Evaluating occam for auditing and repair
 
+`fix`, `reuse`, `debt` and `ledger` were removed on 2026-11-06, because they showed no value on real inputs. Incidents below that name them are history. See `evals/PREREGISTRATION.md`.
+
 Written 2026-11-05. For maintainers and anyone deciding whether to trust this. `evals/RESULTS.md` covers the paid comparison of the earlier skill. This document covers the audit skill and tools added after it.
 
 **In short:**
@@ -17,18 +19,79 @@ Before this work, occam was a careful skill for making a change and reviewing a 
 |---|---|---|
 | Auditing an existing codebase | "Review" meant a diff. No method for a whole repository | `occam-audit`, with strategy by size from a cell to a monorepo |
 | Repairing one | Nothing beyond "fix the responsible component" | Tiers that decide permission, locking behavior first, an order of work, batches |
-| Tools | None. Every check depended on the model remembering | A standard-library CLI with 19 commands and 190 rules |
-| Large repositories | Nothing | `map`, `partition`, `baseline`, `ledger`. 1.5 million lines scanned in about 30 seconds |
+| Tools | None. Every check depended on the model remembering | A standard-library CLI with 16 commands and 189 rules |
+| Large repositories | Nothing | `map`, `partition`, `baseline`. 1.5 million lines scanned in about 30 seconds |
 | Notebook cells and snippets | Nothing | `scan --stdin`, `.ipynb` parsing, cell locations, hidden-state rules |
-| Agent-written defects | Described in prose only | Deterministic rules. The plugin mentions what an edit just introduced, and sends the agent back once at stop |
+| Agent-written defects | Described in prose only | Deterministic rules. The plugin mentions what an edit just introduced, and sends the agent back at stop |
 | Goal-based work and plan drift | A sentence about a table in working notes | `goal`: requirements with checks, constraints, scope, stale evidence, drift |
-| Other agents | Guidance only | `coord`, and `fix` refusing dirty, claimed or changed files |
+| Other agents | Guidance only | `coord` |
 | Codex | Skills only, no tools or hooks | The same tools, plus plugin manifest and hooks, written to the docs and **not run under Codex** |
 | Docs | The README and results the docs pointed at were missing when this review began. Another session has since restored them | Present |
 
 The earlier evaluation still stands, and it applies here: the full plugin cost 57% more on the holdout and tied on acceptance. Nothing below shows these additions make agents' output better. It shows the tools work, and how far they can be trusted.
 
-## Does it help an agent? Mixed, and short of the bar set in advance
+## Does it help an agent? Not in two large tests, and no-skill runs usually fixed more
+
+**Across two large preregistered tests, the plugin located about as many defects as no skill, 92.8 against 93.0 of 122 per run, and typically fixed fewer: median 48.5 of 60 against 55.** The total of 293 against 294 of 360 looks like a tie only because of one no-skill run that fixed 19. Without it, no skill averages 55.0 to the plugin's 48.8. This doesn't support "significantly improves". What changed reliably is how agents behave: plugin runs changed far less code, made fewer unrequested changes, and took longer. These tests also have design problems, listed under "What these tests can't show".
+
+**The latest test first, because the plugin was lower on a primary measure: it fixed fewer serious defects, 50.0 of 60 against 57.3.** It located slightly more, 95.0 of 122 against 94.0. By the rule written before the test repository existed, that's no measured benefit.
+
+The test: a new 28,070-line veterinary platform with 122 planted defects, written by fresh subagents, whose key nobody working on the skill read beforehand. Same prompt and limits as the first large test, 3 runs per arm on Sonnet 5.5, on plugin hash `8cac9607b9697ce0`, which has the larger reader budget and in-place facts but not the fixes from a second review of those hook changes. **It cost $31.64, which is $1.64 over the $30 the user approved.** The runner's $20 limit doesn't stop runs in flight, and I had judged that overshoot unlikely. Run data is in `evals/results/audit-large-2/`.
+
+| Measure | Plugin | No skill |
+|---|---:|---:|
+| Located of 122, per run (primary) | 93, 91, 101 | 95, 88, 99 |
+| Static of 60 | 38, 39, 47 | 40, 34, 43 |
+| Semantic of 62 | 55, 52, 54 | 55, 54, 56 |
+| Critical and high fixed, of 60 (primary, blind judge) | 48, 49, 53 | 58, 57, 57 |
+| Left open but reported | 11, 7, 4 | 1, 1, 2 |
+| Missed | 0, 3, 1 | 0, 0, 0 |
+| Decoys reported as defects (judge) | 1, 0, 1 | 2, 5, 3 |
+| Decoys mentioned (proximity score) | 3, 1, 1 | 2, 1, 3 |
+| Items of new damage (judge) | 3, 3, 4 | 6, 6, 6 |
+| Report claims the diff contradicts (judge) | 0, 1, 2 | 1, 0, 2 |
+| Unflagged behavior changes (judge) | 2, 2, 2 | 7, 7, 6 |
+| Judge's rank of 6 | 1st, 5th, 2nd | 6th, 3rd, 4th |
+| New test functions | 14, 13, 70 | 0, 83, 61 |
+| Lines added | 162, 162, 344 | 679, 1,545, 825 |
+| Minutes | 24, 20, 17 | 12, 12, 11 |
+| Cost | $13.85 | $17.79 |
+
+Tests passed afterward in all six. The fixed-count means differ by 7.3 and the medians are 49 and 57, so this isn't one outlier, unlike the first large test, where the gap ran the other way. The judge ranked plugin runs 1st and 2nd anyway, on fewer risky changes, while noting that the order is a judgment call and that weighting coverage would change it.
+
+**What the two large tests show together, all of it read after the scores were known:**
+
+| Measure, both tests | Plugin | No skill |
+|---|---:|---:|
+| Located per run, mean | 92.8 | 93.0 |
+| Serious defects fixed, of 360 | 293 | 294 |
+| Serious defects fixed per run, median | 48.5 | 55 |
+| Lines added, 6 runs | 1,118 | 4,070 |
+| Cost, 6 runs | $25.22 | $29.45 |
+| Time per run, mean | 17 min | 10 min |
+
+- **Three runs per arm can't settle this.** Mean fixed counts favored the plugin by 7 in one test and no skill by 7 in the other.
+- **The skill still holds agents back from fixing,** which is the failure the brief warned about. In the latest test it left 22 serious defects open against 4, and the judge called plugin runs over-cautious 10 times against 0, despite the rule added so that documented behavior gets fixed. Part of that restraint is correct: no-skill runs reported 5 times as many decoys as defects, caused more damage, and made 3 times as many unflagged behavior changes. This trade is the real finding.
+- **Restraint doesn't prevent every error.** The worst new damage in the latest test was a plugin run's: its backup rewrite keeps 10 files when 20 exist, and 1 when 29 do, which I confirmed by running the slice, and its report says backups keep the newest 30. A no-skill run put every GET inside a write transaction, which the judge found and I confirmed in the diff.
+- **More readers helped little if at all.** `map` advised 6 readers. Plugin runs used 4 or 5, and no-skill runs used 8 to 10 agents in total. Semantic located rose from 51.3 to 53.7 with the plugin, but on a different fixture, so it's not a measurement of that change.
+- **The scanner remains weak on its own.** Its blind score on this fixture is below, and it can't be what makes the difference.
+
+### What these tests can't show
+
+An independent audit of the eval suite, in `evals/EVAL_AUDIT.md`, found that the audit tests measure less than they appear to. I checked its main numbers against the data. None of this changes the tables above, but it limits what they mean:
+
+- **Most of what the owner named has no outcome test.** Of 33 things checked, 7 have an outcome measure with a comparison arm and room to move. All 60 judged defects per fixture are security, business-rule or reliability bugs, so these tests can't see overengineering, duplication, comments, naming, base classes or third-party choices.
+- **"Located" is mostly citation-format noise.** Parsing line ranges properly flips the sign of the difference between arms on both large fixtures, from -1.3 to +0.4 and from +1.0 to -1.4. It shouldn't be a primary measure.
+- **"Fixed" rewards changing more.** On the latest fixture it correlates 0.98 with new damage and -0.65 with the same judge's overall score, and the run that fixed the most ranked last.
+- **The verdict depends on a weight nobody has set.** Count fixes alone, and no skill leads on medians in all three fixtures. Charge 2 fixes per new bug or unflagged change, and the plugin leads on means in all three. That's post hoc, and it shows the question isn't settled by these numbers either way.
+- **The prompt, README and key disagree.** Both arms were told not to change public behavior, then scored on fixes that do. The key marks 18 serious defects on the latest fixture `needs_decision`, yet 17 of them cite a README rule, and the README says the rule wins. So no-skill runs fixing them wasn't skipping permission, as I first wrote here. The flag is undefined and needs relabeling.
+- **Nothing tests asking.** Every case has nobody to answer, so a stated requirement is unmeasured.
+- **"Large" isn't large.** These fixtures have about 15,000 source lines plus 12,000 of tests, and plugin reports say readers read every line. Nothing tests code too large to read, which is what the tools are for.
+- **The fixture is the independent unit, and there are two.** In simulation, 12 runs per cell on 2 fixtures reads as significant 46% of the time with no true effect. More runs on the same repositories wouldn't help.
+
+**The key to this fixture reached two scratch copies** made by another session at 02:46, which says it read neither and has deleted both. No plugin edit from that session entered this snapshot.
+
+## The first large test
 
 **The latest test doesn't meet the bar: the plugin located slightly fewer defects (90.7 of 122 against 92.0), and its mechanical decoy score was higher.** By the rule written before the test repository existed, that's no measured benefit. Its repairs did look better on a blind read: more defects fixed on average, regression tests in every run, and no unflagged behavior changes. That doesn't establish "significantly improves", which needs more than this one test.
 
@@ -67,7 +130,7 @@ Mean fixed is 47.7 against 40.7, but one no-skill run that treated "behavior cha
 - **The decoy score overstates the plugin's errors.** It counts any mention, and 11 of 18 mentions I checked in plugin reports were scanner leads the agents correctly dismissed with a reason. Without those, the arms are about level, at around 7 each. By the rule fixed in advance, the score stands at 17 against 7.
 - **Repairs were more disciplined.** Every plugin run added regression tests, and no no-skill run added any. One no-skill report says a reused idempotency key "gives 422", while its diff raises `UnprocessableEntity` without importing it, so that path is a `NameError`. I confirmed this in the code, and replaying the scanner on that final tree names the line. Plugin runs still made false claims too: one said all its new tests fail on the original code, and the judge found at least three that pass there.
 - **It costs time, not money.** $11.37 against $11.66, but about 1.8 times as long, with more test runs.
-- **Enforcement can't be confirmed from these traces.** Agents edited through `python3 - <<E` scripts, with no `Edit` calls in any plugin run. Replaying 47 such commands through the current hook, 29 name their file, 14 are seen with no clear path, and 4 go unseen. Stop couldn't scan a file it couldn't name, and stop feedback isn't recorded in traces, so whether the audit check fired in these runs is unknown. Stop now asks git in that case, unmeasured.
+- **Enforcement can't be confirmed from these traces.** Agents edited through `python3 - <<E` scripts, with no `Edit` calls in any plugin run. Replaying 47 such commands through the current hook, 29 name their file, 14 are seen with no clear path, and 4 go unseen. Stop couldn't scan a file it couldn't name, and stop feedback isn't recorded in traces, so whether the audit check fired in these runs is unknown. The hook now reads more of those paths from the script's syntax, unmeasured.
 
 **What this can't show.** One fixture, written by the model family that ran and judged it. Tests are thin in every arm, so fix counts overstate safety. Nothing here covers code too large to split among readers. `plugin/` has changed since the snapshot.
 
@@ -139,7 +202,7 @@ One Sonnet subagent followed the skill on a private copy of a real, mostly AI-wr
 | Overengineering | `single-impl-abstraction`, `pass-through`, `pattern-one-product`, `one-method-class`, `static-only-class`, `deep-inheritance`. Whether a layer is warranted is **judgment** | Core, design |
 | Duplication | `clone-block`, `clone-renamed`, `clone-function`, `diverged-twin`, `parallel-verbs`, and `gate` on new names | Design, repair |
 | Overly complex algorithms | `high-complexity`, `deep-nesting`, `nested-loops`, `nested-same-collection`, `list-membership-in-loop`, `bench`'s growth fit | Design, performance |
-| Not looking for third-party first | `reuse`, `deps`, `handrolled-*`, `tools` | Core |
+| Not looking for third-party first | `deps`, `handrolled-*`, `tools` | Core |
 | Bloat | `scratch-file`, `ai-report-file`, `committed-artifact`, `unused-dependency`, `competing-dependencies`, `utility-bucket`, `debug-leftover`, dead-code rules | Design, repair |
 | Non-scalable architecture | `process-local-state`, `unpaginated-query`, `query-in-loop`, `unbounded-concurrency`, `materialize-all`, `import-time-io`, `import-cycle`, `hub-module` | Performance, design |
 | Not properly tested | `no-tests`, `module-untested`, `test-*`, `checks-hidden-by-config`, `mutate`, `gate` on weakened tests | Verification, repair |
@@ -147,9 +210,9 @@ One Sonnet subagent followed the skill on a private copy of a real, mostly AI-wr
 | Security | 27 rules, and `tools` for scanners. Tenancy and logic flaws are **judgment** | Security |
 | Usability | `generic-exception`, `opaque-error`, `inconsistent-return`, `a11y-missing`, `rest-verb-route`, `many-params`, `flag-params`. Most of this is **judgment** | Design |
 | Comments, too many or too few | `ai-residue`, `narration-comment`, `comment-flood`, `banner-comment`, `missing-docstring`, `docstring-restates-name` | Design |
-| Not reusing code | `reuse`, `gate`, `parallel-verbs` | Core |
+| Not reusing code | `query find`, `gate`, `parallel-verbs` | Core |
 | Shared code and base classes | `pull-up-method`, `base-class-bypassed`, `lsp-violation`, `single-impl-abstraction` | Design |
-| Other agents | `coord`, `ledger next`, and `fix`'s refusals | Collaboration |
+| Other agents | `coord`, `partition --mode write` | Collaboration |
 | Language best practices | `deprecated-api`, `mutable-default`, `float-money`, `star-import` and others. Python parsed, others at text level | Language skills |
 | Performance and expected behavior | `bench`, `golden`, `mutate`, and performance rules | Performance, verification |
 | Not sticking to the plan | `goal verify` constraints and scope drift | Know what done means |
@@ -158,7 +221,7 @@ One Sonnet subagent followed the skill on a private copy of a real, mostly AI-wr
 | Number of subagents | `map`, `partition`. The numbers are heuristics | Scale, collaboration |
 | Architecture down to hardware | Rules tagged by layer. `map` lists implicated layers. `dataframe-grow-loop`, `python-loop-over-array`, `transfer-in-loop`, `remote-get-in-loop`, `oversubscription` | Design |
 | Standard naming | `hedge-name`, `vague-name`, `convention-mismatch`, `rest-verb-route`. Whether a name is the industry's term is **judgment** | Design |
-| Fixing, while asking | Tiers, `fix`, `ledger decisions`, the audit-only read-only hook | Repair, and "When you find something else" in the core |
+| Fixing, while asking | Tiers, the audit-only read-only hook | Repair, and "When you find something else" in the core |
 
 ## How well the scanner works
 
@@ -199,7 +262,7 @@ Ten of the 12 false leads were then fixed. The worst was `unused-import` missing
 
 **Speed on real code.** 1.47 million lines in 41 seconds and 1.34 million in 34, with no cache. `map` puts leads like missing auth checks in a billing app at the top. Whether an agent acts on them better than it would alone is still untested.
 
-**The scanner's one truly blind score.** On the large fixture, whose key nobody working on the rules had read, at medium confidence and up: 22 of 60 static defects, 5 of 62 semantic, 2 of 20 critical, and 7 of 43 decoys. At all confidences: 33 of 60, 13 of 62, 10 of 20 critical, 12 of 43 decoys. That's the number to trust over the next one, which came from a fixture the rules were later tuned on.
+**The scanner's one truly blind score.** On the large fixture, whose key nobody working on the rules had read, at medium confidence and up: 22 of 60 static defects, 5 of 62 semantic, 2 of 20 critical, and 7 of 43 decoys. At all confidences: 33 of 60, 13 of 62, 10 of 20 critical, 12 of 43 decoys. On the second large fixture, also blind: 20 of 60 static, 2 of 62 semantic, 1 of 20 critical and 4 of 42 decoys, and at all confidences 26 of 60, 6 of 62, 6 of 20 critical and 6 of 42 decoys. Those are the numbers to trust over the next one, which came from a fixture the rules were later tuned on.
 
 **A blind test.** A fresh subagent, told nothing about the rules, wrote a 3,200-line AI-style service with 83 planted defects and 27 decoys, listing them only in a key. The numbers below are for medium confidence and up, the default, and count a defect as located if a finding lands within 3 lines. That measures pointing at the right place, not understanding.
 
@@ -246,8 +309,8 @@ Two known problems are left. With a blanked filter that isn't marked required, `
 
 ## What has not been checked
 
-- **Whether changes after the large test help.** No agent has run them. A fair retest needs a new fixture, since the key to this one has now been read and shared.
-- **Very large code.** The largest agent test is 27,369 lines. Nothing tests an agent with these tools on code too large to split among readers.
+- **Whether changes after the second large test help.** No agent has run them. A fair retest needs a new fixture, and enough runs to detect a small gap.
+- **Very large code.** The largest agent test is 28,070 lines. Nothing tests an agent with these tools on code too large to split among readers.
 - **Codex.** The manifest, hooks and marketplace entry follow the docs, and were tested by feeding the script documented events. Codex wasn't available here. Whether skills in `.agents/skills` can reach sibling `scripts/` on every host hasn't been observed.
 - **Audits of real AI-generated repositories.** The scanner has run on 15, with leads judged by a model. One agent has audited one, without running its tests, most of the hooks or a comparison. No person has reviewed any of this.
 - **Languages other than Python.** They get text and brace-level rules, with no parser, so treat them as weak. Real code was scanned for false positives: npm's own source (14,000 lines of JavaScript), 40 Rust crates (278,000 lines) and 3 Go modules (32,000 lines). That found and fixed whole classes of false alarm, such as doc-comment examples reported as dead code, a crate's own name reported as phantom, and Go's `interface{}` return type read as an empty body. Java, Kotlin, C, C++, C#, Ruby, PHP and Swift have only the rule tests.

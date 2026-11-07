@@ -40,24 +40,11 @@ ONE_FILE = [
     ("useless-except", "app/a.py", "def f():\n    try:\n        return g()\n    except ValueError:\n        raise\n", "def f():\n    try:\n        return g()\n    except ValueError:\n        log()\n        raise\n"),
     ("useless-except", "src/a.js", "function f() { try { g(); } catch (e) { throw e; } }\n", "function f() { try { g(); } catch (e) { log(e); throw e; } }\n"),
     ("useless-except", "src/a.ts", "function f() { try { g(); } catch (e) { throw e } }\n", "function f() { try { g(); } catch (e) { throw wrap(e); } }\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return len(name)\n", "def f(name: Optional[str]):\n    if name is None:\n        return 0\n    return len(name)\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return len(name)\n", "def f(name: str | None):\n    if name is None:\n        return 0\n    return len(name)\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return len(name)\n", "def f(name: str = None):\n    if name is None:\n        return 0\n    return len(name)\n"),
-    ("impossible-none-check", "app/a.py", "class User:\n    pass\n\n\ndef f(user: 'User'):\n    if user is not None:\n        return 1\n    return 0\n", "class User:\n    pass\n\n\ndef f(user: 'User | None'):\n    if user is not None:\n        return 1\n    return 0\n"),
-    ("impossible-none-check", "app/a.py", "def f(*, name: str):\n    if name is None:\n        return 0\n    return 1\n", "def f(*, name: str = None):\n    if name is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return 1\n", "def f(name: str):\n    name = lookup(name)\n    if name is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return 1\n", "Maybe = Optional[str]\ndef f(name: Maybe):\n    if name is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return 1\n", "def f(name: Any):\n    if name is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f(name: str):\n    if name is None:\n        return 0\n    return 1\n", "def f(name: T):\n    if name is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f():\n    items = []\n    if items is None:\n        return 0\n    return 1\n", "def f():\n    items = load()\n    if items is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def f(x):\n    size = len(x)\n    if size is None:\n        return 0\n    return 1\n", "def len(x):\n    return None\ndef f(x):\n    size = len(x)\n    if size is None:\n        return 0\n    return 1\n"),
-    ("impossible-none-check", "app/a.py", "def load() -> list[int]:\n    return [1]\n\ndef f():\n    items = load()\n    if items is None:\n        return 0\n    return items\n", "def load() -> Optional[list[int]]:\n    return [1]\n\ndef f():\n    items = load()\n    if items is None:\n        return 0\n    return items\n"),
-    ("impossible-none-check", "app/a.py", "def f():\n    items = []\n    if items is None:\n        return 0\n    return 1\n", "def f():\n    items = []\n    items = load(items)\n    if items is None:\n        return 0\n    return 1\n"),
     ("ts-double-cast", "src/a.ts", "const u = data as unknown as User;\n", "const u = data as User;\n"),
     ("ts-double-cast", "src/a.ts", "const u = data as any as User;\n", "const s = 'data as unknown as User';\n"),
     # Security
     ("hardcoded-secret", "app/a.py", 'API_KEY = "abc123def456ghi789"\n', 'API_KEY = os.environ["API_KEY"]\n'),
-    ("hardcoded-secret", "src/a.js", 'const k = "AKIAIOSFODNN7EXAMPLE";\n', 'const k = process.env.KEY;\n'),
+    ("hardcoded-secret", "src/a.js", 'const k = "AKIA' + 'IOSFODNN7ABCDEFG";\n', 'const k = process.env.KEY;\n'),  # AWS's documented EXAMPLE key isn't a credential
     ("hardcoded-secret", "app/a.py", 'password = "hunter2hunter2"\n', 'password = "changeme"\n'),
     ("sql-injection", "app/a.py", 'def f(c, n):\n    c.execute(f"SELECT * FROM t WHERE n = {n}")\n', 'def f(c, n):\n    c.execute("SELECT * FROM t WHERE n = ?", (n,))\n'),
     ("sql-injection", "app/a.py", 'def f(c, n):\n    c.execute("SELECT * FROM t WHERE n = " + n)\n', 'def f(c, ids):\n    marks = ",".join("?" * len(ids))\n    c.execute(f"SELECT * FROM t WHERE n IN ({marks})", ids)\n'),
@@ -241,6 +228,7 @@ ONE_FILE = [
     ("handrolled-csv", "app/a.py", "def f(fh):\n    for line in fh:\n        a = line.split(',')\n", "import csv\ndef f(fh):\n    for row in csv.reader(fh):\n        g(row)\n"),
     ("handrolled-dotenv", "app/a.py", "def f():\n    with open('.env') as e:\n        return e.read()\n", "def f():\n    with open('settings.ini') as e:\n        return e.read()\n"),
     ("handrolled-argv", "app/a.py", "import sys\nif sys.argv[1] == '--help':\n    print(sys.argv[2])\n", "import sys\nname = sys.argv[1]\n"),
+    ("handrolled-argv", "app/a.py", "import sys\nverbose = '--v' in sys.argv\nquiet = '--q' in sys.argv\n", "import sys\nname = sys.argv[1]\nodd = sys.platform == '--z'\n"),
     ("handrolled-url", "app/a.py", 'def f(a, b):\n    return f"https://x.dev/s?a={a}&b={b}"\n', 'def f(a):\n    return f"https://x.dev/s/{a}"\n'),
     ("handrolled-json", "app/a.py", """def f(a):\n    return f'{{"name": "{a}"}}'\n""", "import json\ndef f(a):\n    return json.dumps({'name': a})\n"),
     ("handrolled-html-parse", "app/a.py", "import re\ndef f(h):\n    return re.findall('<a href=(.*)>', h)\n", "import re\ndef f(h):\n    return re.findall('[0-9]+', h)\n"),
@@ -259,6 +247,17 @@ ONE_FILE = [
     ("deprecated-api", "app/a.py", "import openai\nr = openai.ChatCompletion.create(model='x')\n", "client = make_client()\n"),
     ("deprecated-api", "a.go", "b, _ := ioutil.ReadAll(r)\n", "b, _ := io.ReadAll(r)\n"),
     ("float-money", "app/a.py", "total = float(price)\n", "ratio = float(width)\n"),
+    ("float-money", "app/a.py", "total = float(order.amount)\n", "ratio = float(shape.width)\n"),
+    ("float-money", "app/a.py", "due = round(order.total, 2)\n", "share = round(correct / total, 2)\n"),
+    ("float-money", "app/a.py", "total = float(order.amount)\n", "tries = float(payment.retry_count)\n"),
+    ("float-money", "app/a.py", "total = float(order.amount)\n", "guess = float(cost_model.predict(a))\n"),
+    ("float-money", "app/a.py", "due = round(subtotal * 1.08, 2)\n", "due = round(1.08 * 3, 2)\n"),
+    ("float-money", "app/a.py", "due = round(amount / 3, 2)\n", "due = round(3 / amount, 2)\n"),
+    ("float-money", "app/a.py", "due = round(-amount, 2)\n", "due = round(-width, 2)\n"),
+    ("float-money", "app/a.py", "due = float(total or 0)\n", "due = float(width or 0)\n"),
+    ("float-money", "app/a.py", "due = float(prices[0])\n", "due = float(widths[0])\n"),
+    ("float-money", "app/a.py", "due = float(get_price())\n", "due = float(get_width())\n"),
+    ("float-money", "app/a.py", "due = int(amount * 1.5 / 2)\n", "due = int(width * 1.5 / 2)\n"),
     ("float-money", "t.sql", "CREATE TABLE t (price REAL);\n", "CREATE TABLE t (price NUMERIC(12,2));\n"),
     ("star-import", "app/a.py", "from os import *\n", "from os import sep\n"),
     ("naive-datetime", "app/a.py", "import datetime\nnow = datetime.datetime.now()\n", "import datetime\nnow = datetime.datetime.now(datetime.timezone.utc)\n"),
@@ -597,3 +596,33 @@ def test_pip_freeze_output_is_not_a_list_of_unused_dependencies(tmp_path):
     (tmp_path / "requirements.txt").write_text("flask\n")
     assert fired(scan.run_scan(tmp_path, use_cache=False).findings, "unused-dependency")
 
+
+def test_asking_people_not_to_edit_something_doesnt_hide_the_file():
+    assert scan.scan_text("keys.py", "# Do not edit this list without asking Bob\neval(input())\n")
+
+
+def _notebook(*cells: str) -> str:
+    return json.dumps({"cells": [{"cell_type": "code", "source": cell, "outputs": [], "execution_count": index + 1} for index, cell in enumerate(cells)], "metadata": {}, "nbformat": 4, "nbformat_minor": 5})
+
+
+def test_a_helper_defined_later_is_fine_when_its_caller_runs_later_still():
+    def hidden(*cells: str) -> list:
+        return [finding for finding in scan.scan_text("n.ipynb", _notebook(*cells)) if finding["rule"] == "nb-hidden-state"]
+
+    assert not hidden("def f():\n    return helper()\n", "def helper():\n    return 1\n", "f()\n")
+    assert not hidden("def f(**kwargs):\n    return kwargs\n", "f(a=1)\n", "kwargs = {}\n")
+    assert not hidden("def f(*items, /):\n    return items\n", "f(1)\n", "items = []\n")
+    assert hidden("print(total)\n", "total = 1\n")
+    assert hidden("def f():\n    return LATER\n\nprint(f())\n", "LATER = 1\n"), "called in its own cell"
+    assert hidden("def f():\n    return LATER\n", "f()\n", "LATER = 1\n"), "called before what it reads exists"
+    assert hidden("def g():\n    return LATER\n\ndef f():\n    return g()\n\nf()\n", "LATER = 1\n"), "through another function"
+    assert hidden("class A:\n    def __init__(self):\n        self.v = LATER\n\nA()\n", "LATER = 1\n"), "through a class"
+    assert hidden("class C:\n    def m(self):\n        return LATER\n\nC().m()\n", "LATER = 1\n"), "a method called at once"
+    assert hidden("class C:\n    def __init__(self):\n        self.go()\n    def go(self):\n        return LATER\n\nC()\n", "LATER = 1\n"), "a method __init__ calls"
+    assert hidden("class C:\n    def __enter__(self):\n        return LATER\n    def __exit__(self, *a):\n        pass\n\nwith C():\n    pass\n", "LATER = 1\n"), "a context manager"
+    assert hidden("def f(x):\n    return x\n", "print(x)\n", "x = 1\n"), "a parameter isn't a definition"
+    assert not hidden("def f(x):\n    def g():\n        return x\n    return g()\n", "f(1)\n", "x = 3\n"), "a nested function reads its enclosing scope"
+    assert not hidden("def setup():\n    global CONFIG\n    CONFIG = 1\n", "setup()\n", "print(CONFIG)\n", "CONFIG = 2\n"), "a function can set a global"
+    assert hidden("@memo\ndef f():\n    return 1\n", "memo = print\n"), "a decorator runs at definition"
+    assert hidden("def f(x=LIMIT):\n    return x\n", "LIMIT = 1\n"), "a default runs at definition"
+    assert hidden("(lambda: LATER)()\n", "LATER = 1\n"), "a lambda is usually called where it's written"

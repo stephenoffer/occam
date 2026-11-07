@@ -7,11 +7,10 @@ from __future__ import annotations  # the stock macOS python3 is 3.9
 
 import os
 import re
-import shlex
 
 # Words the shell reads before a command, so `if x; then rm -rf /; fi` still runs rm.
 SHELL_KEYWORDS = {"if", "then", "elif", "else", "while", "until", "do", "{", "!"}
-WRAPPERS = {"sudo", "time", "timeout", "gtimeout", "env", "nice", "command", "exec", "nohup"}
+WRAPPERS = {"sudo", "time", "timeout", "gtimeout", "env", "nice", "command", "exec", "nohup", "stdbuf", "caffeinate", "ionice"}
 WRAPPER_VALUE = re.compile(r"\d+(\.\d+)?[smhd]?")  # `timeout 60`, `nice -n 10`
 # Options whose next word is their value, so `sudo -u root rm` runs rm, not root.
 WRAPPER_VALUE_OPTIONS = {"sudo": {"-u", "-g", "-h", "-p", "-C", "-r", "-t", "-T", "-U", "-D", "-R"}, "env": {"-u", "-C", "-S"},
@@ -25,19 +24,29 @@ RUNNER_SHORT_VALUE_FLAGS = {"conda": {"-n", "-p"}, "mamba": {"-n", "-p"}, "micro
                             "uvx": {"-p", "-w"}, "poetry": {"-C", "-P"}, "hatch": {"-e"}, "pdm": {"-p"}}
 PYTHON = re.compile(r"python[\d.]*")
 PYTHON_MODULE_FLAG = re.compile(r"-[bBdEiIOPqsSuvx]*m")  # `python -m` and `python -Bm`
-PYTHON_INFO_ARGS = (["--version"], ["-V"], ["-h"], ["--help"])
+PYTHON_INFO_ARGS = (["--version"], ["-V"], ["-VV"], ["-h"], ["--help"])
 PYTHON_VALUE_FLAGS = {"-X", "-W"}
 
 CHECK_TOOLS = {"pytest", "py.test", "tox", "nox", "mypy", "pyright", "ty", "ruff", "flake8", "pylint", "bandit", "pip-audit",
                "vulture", "deptry", "lint-imports", "papermill", "sphinx-build", "cosmic-ray", "stubtest", "eslint", "tsc", "jest", "vitest",
                "mocha", "ava", "playwright", "cypress", "ctest", "cmake", "ninja", "bazel", "make", "mvn", "gradle", "gradlew",
                "rspec", "phpunit", "sqlite3", "psql", "shellcheck", "bats", "golangci-lint", "clang-tidy", "hyperfine"}
+# Running one of these runs the code, or builds it, unless all it was asked for is what it is. Its own arguments decide that, since `pytest -v` runs tests and `ruby -v` doesn't.
+RUNTIMES = {"ruby", "php", "perl", "lua", "java", "javac", "kotlin", "kotlinc", "scala", "swift", "swiftc", "gcc", "g++", "cc", "c++", "clang", "clang++", "rustc", "elixir", "dart", "ghc",
+            "runghc", "Rscript", "julia", "rake", "tsx", "ts-node", "racket", "ocaml", "clojure", "escript", "groovy", "mono", "R"}
+RUNTIME_INFO_ARG = re.compile(r"--?(?:v+|V|vV|version|numeric-version|verbose|h|help|help=\S+|info|copyright|list-\S+|dump\w*|print-\S+)|-V:\S*|version|help")
+RUNTIME_NOT_RUNS = {"swift": {"package", "format"}, "dart": {"pub", "create", "format", "fix", "info"}, "php": {"-i", "-m", "--ini"}, "rustc": {"--print", "--explain"}}
+RAKE_ONLY_LISTS = {"-T", "--tasks", "-P", "--prereqs", "-D", "--describe", "-V", "--version", "-h", "--help"}  # -v means verbose there, and still runs the task
+SWITCHES_TAKING_A_WORD = {"-I", "-M", "-m", "-r", "-e", "-E", "-x"}
+# `perl -0pi`, `-pi.bak` and `-i` rewrite files. `-Ilib`, `-MFoo` and `-rfoo` take a value that may happen to contain an i, so they're not in the cluster.
+IN_PLACE_CLUSTER = re.compile(r"-[0-7aFlnpsuwWtTcdSv]*i\S*")
 PACKAGE_RUN_COMMANDS = {"test", "t", "run", "exec", "lint", "build", "typecheck", "check"}
 CARGO_CHECKS = {"test", "check", "clippy", "build", "run", "nextest"}
 GO_CHECKS = {"test", "vet", "build", "run"}
 # Checks only under one subcommand: `coverage run` runs the code, `pre-commit install` doesn't check anything.
 SUBCOMMAND_CHECKS = {"coverage": {"run"}, "pre-commit": {"run"}, "mkdocs": {"build"}, "hatch": {"test"},
-                     "pants": {"test", "check", "lint"}, "tach": {"check", "test"}, "mutmut": {"run"}}
+                     "pants": {"test", "check", "lint"}, "tach": {"check", "test"}, "mutmut": {"run"}, "dotnet": {"test", "build", "run"},
+                     "deno": {"test", "run", "check", "lint"}, "mix": {"test", "compile", "run"}, "zig": {"build", "test", "run"}}
 NOT_CHECK_PROGRAMS = {"pip", "venv", "virtualenv", "ensurepip", "pydoc", "echo", "ls", "cat", "which", "printenv"}
 RUFF_NOT_CHECKS = {"rule", "config", "linter", "version", "clean", "server", "analyze"}
 # These ask a tool about itself or list a suite, so they aren't checks and aren't meant to write.
@@ -49,7 +58,7 @@ FORMATTERS = {"black": None, "isort": None, "pyupgrade": None, "nbstripout": Non
               "autoflake": "--in-place", "docformatter": "--in-place"}
 FORMATTER_DRY_RUN = {"--check", "--check-only", "--diff", "--dry-run", "--is-stripped", "--verify", "--nbqa-diff"}
 RUFF_WRITES = {"--fix", "--fix-only", "--add-noqa"}
-IN_PLACE = re.compile(r"-[a-zA-Z]*i[a-zA-Z]*|--in-place")
+IN_PLACE = re.compile(r"-[a-hj-zA-Z]*i[a-zA-Z]*|--in-place")
 INSTALLERS = {"npm": {"install", "i", "add"}, "pnpm": {"install", "i", "add"}, "yarn": {"add"}, "bun": {"add", "install"},
               "uv": {"add", "remove", "lock", "sync"}, "poetry": {"add", "remove", "lock", "update"},
               "pdm": {"add", "remove", "lock", "update"}, "cargo": {"add"}, "go": {"get"},
@@ -57,19 +66,14 @@ INSTALLERS = {"npm": {"install", "i", "add"}, "pnpm": {"install", "i", "add"}, "
 LOCK_CHECKS = {"--check", "--dry-run"}
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-# Python run straight from the command, and the code it runs: `python3 - <<E`, `python3 -I - args <<E`, `python3 -c "..."`.
-_PYTHON = r"\bpython[\d.]*(?:\s+-[A-Za-z]*[A-BD-Za-bd-z])*"
-PYTHON_HEREDOC = re.compile(_PYTHON + r"""\s*(?:-(?:\s[^\n;&|<]*)?)?<<-?\s*['"]?(\w+)['"]?[^\n]*\n(.*?)\n\s*\1\b""", re.S)
-PYTHON_DASH_C = re.compile(_PYTHON + r"""\s+-[A-Za-z]*c\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')""", re.S)
-_WRITE_MODE = r"""(?:mode\s*=\s*)?['"](?:[wax]|r\+)[bt+]*['"]"""
-PYTHON_WRITE = re.compile(rf"""\bopen\(\s*(?:['"](?P<literal>[^'"\n]+)['"]|(?P<name>\w+)|(?:[^()\n]|\([^()\n]*\))*?)\s*,\s*{_WRITE_MODE}"""
-                          rf"""|(?:(?:\w+\.)?Path\(\s*['"](?P<literal2>[^'"\n]+)['"]\s*\)|(?P<name2>\w+)|\S+)\s*\.(?:write_(?:text|bytes)\(|open\(\s*{_WRITE_MODE})""")
-PYTHON_NAMED_PATH = re.compile(r"""^\s*(\w+)\s*=\s*(?:\w*Path\(\s*)?['"]([^'"\n]+)['"]""", re.M)
-LEADING_CD = re.compile(r"""\s*cd\s+(\S+)\s*(?:&&|;)""")
+GOLDEN_VALUE_OPTIONS = ("--normalize", "--timeout", "--root")
+PYTEST_COULD_NOT_START = re.compile(r"^ERROR: (?:usage|file or directory not found|not found: )", re.M)
+# Any sign of a result, from any runner, means something started.
+RESULT_SHOWN = re.compile(r"\b[1-9]\d* (?:passed|failed|failing|failures?|errors?)\b|^--- (?:FAIL|PASS)|^FAIL\b|^ok\b|\bTests: ", re.M)
 # A pipe hides the exit status, so `pytest | tail` looks successful with failures in its output.
 FAILED_SUMMARY = re.compile(r"\b[1-9]\d* (failed|errors?)\b[^=\n]{0,80} in \d"  # pytest
                             r"|^FAILED \S+::\S|^FAILED \(|^ERROR \S+\.py(::[^\n]*)?( - |$)"  # pytest's short summary, and unittest
-                            r"|^ERROR: (usage|file or directory not found|not found)|ImportError while loading conftest"  # pytest couldn't start
+                            r"|^ERROR: (usage|file or directory not found|not found: \S*(?:\.py|::))|ImportError while loading conftest"  # pytest couldn't start
                             r"|\bFound [1-9]\d* (errors?|diagnostics?)\b(?! \(\d+ fixed, 0 remaining\))"  # mypy, ruff, ty
                             r"|^[1-9]\d* errors?, \d+ warnings?"  # pyright
                             r"|^\S+\.py:\d+:\d+: [A-Z]+\d+\b"  # findings from flake8, pylint and ruff
@@ -82,11 +86,16 @@ def unquote(word: str) -> str:
     return word[1:-1] if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"" else word
 
 
+def _program(word: str) -> str:
+    """What this word runs. `\\rm`, `"rm"` and `r''m` skip an alias or look different, and they are all still rm."""
+    return os.path.basename(re.sub(r"""\$?['"]""", "", word)).lstrip("\\")
+
+
 def head(words: list[str]) -> tuple[str, list[str]]:
     """The program a simple command runs, past environment assignments and wrappers, and its arguments."""
     index = 0
     while index < len(words):
-        word = os.path.basename(unquote(words[index]))
+        word = _program(words[index])
         if re.match(r"^\w+=", words[index]) or word in SHELL_KEYWORDS:
             index += 1
         elif word == "command" and words[index + 1:index + 2] in (["-v"], ["-V"]):
@@ -99,26 +108,28 @@ def head(words: list[str]) -> tuple[str, list[str]]:
             break
     if index >= len(words):
         return "", []
-    return os.path.basename(unquote(words[index])), [unquote(word) for word in words[index + 1:]]
+    return _program(words[index]), [unquote(word) for word in words[index + 1:]]
 
 
 def _past_options(words: list[str], runner: str = "") -> list[str]:
     short = RUNNER_SHORT_VALUE_FLAGS.get(runner, ())
-    rest = list(words)
-    while rest and rest[0].startswith("-"):
-        rest = rest[2:] if rest[0] in RUNNER_VALUE_FLAGS or rest[0] in short else rest[1:]
-    return rest
+    index = 0  # an index, because a command can carry tens of thousands of options
+    while index < len(words) and words[index].startswith("-"):
+        index += 2 if words[index] in RUNNER_VALUE_FLAGS or words[index] in short else 1
+    return words[index:]
 
 
 def _handed_to(name: str, args: list[str]) -> list[str] | None:
     """The command line a runner hands on, or None if this isn't a runner."""
     if PYTHON.fullmatch(name):
-        rest = list(args)
-        while rest and rest[0].startswith("-") and not PYTHON_MODULE_FLAG.fullmatch(rest[0]):
-            rest = rest[2:] if rest[0] in PYTHON_VALUE_FLAGS else rest[1:]
-        return rest[1:] if rest and PYTHON_MODULE_FLAG.fullmatch(rest[0]) else None
+        index = 0
+        while index < len(args) and args[index].startswith("-") and not PYTHON_MODULE_FLAG.fullmatch(args[index]):
+            index += 2 if args[index] in PYTHON_VALUE_FLAGS else 1
+        return args[index + 1:] if index < len(args) and PYTHON_MODULE_FLAG.fullmatch(args[index]) else None
     if name in ("uvx", "nbqa"):
         return _past_options(args, name)
+    if name == "bundle":
+        return args[1:] if args[:1] == ["exec"] else None
     if name in RUNNERS:
         rest = _past_options(args, name)
         if rest[:2] == ["tool", "run"]:
@@ -162,8 +173,10 @@ def rewrites_files(name: str, args: list[str]) -> bool:
 
 
 def _changes_manifest(name: str, args: list[str]) -> bool:
+    if name not in INSTALLERS:
+        return False
     rest = _past_options(args, name)
-    if name not in INSTALLERS or not rest or rest[0] not in INSTALLERS[name] or LOCK_CHECKS & set(args):
+    if not rest or rest[0] not in INSTALLERS[name] or LOCK_CHECKS & set(args):
         return False
     if rest[0] == "lock" and "--locked" in args:  # asserts the lockfile is current
         return False
@@ -199,6 +212,28 @@ def nbconvert_target(args: list[str]) -> str | None:
     return ""
 
 
+def rewrites_in_place(name: str, args: list[str]) -> bool:
+    """Is this editor or runtime rewriting files? Perl and Ruby switches stop at the script's name, and some take the next word, whether code or a folder."""
+    if name not in ("perl", "ruby"):
+        return any(re.fullmatch(r"-[a-hj-zA-Z]*i\S*|--in-place\S*", arg) for arg in args)
+    rest = list(args)
+    while rest and rest[0].startswith("-") and rest[0] != "--":
+        word = rest.pop(0)
+        if IN_PLACE_CLUSTER.fullmatch(word):
+            return True
+        if word in SWITCHES_TAKING_A_WORD or (word[1:2] not in ("I", "M", "m", "r") and word[-1] in "eE"):
+            rest = rest[1:]
+    return False
+
+
+def _runs_a_program(program: str, args: list[str]) -> bool:
+    if program == "rake":
+        return not RAKE_ONLY_LISTS & set(args)
+    if not args or all(RUNTIME_INFO_ARG.fullmatch(arg) for arg in args) or args[0] in RUNTIME_NOT_RUNS.get(program, ()):
+        return False
+    return not (program in ("perl", "ruby") and rewrites_in_place(program, args))
+
+
 def is_check(words: list[str]) -> bool:
     """Does this simple command run tests, a build, a checker, or the code itself?"""
     name, args = head(words)
@@ -209,6 +244,8 @@ def is_check(words: list[str]) -> bool:
         return False
     if PYTHON.fullmatch(program) and program_args in PYTHON_INFO_ARGS:
         return False
+    if program in RUNTIMES:
+        return _runs_a_program(program, program_args)
     if program == "ruff" and _past_options(program_args)[:1] and _past_options(program_args)[0] in RUFF_NOT_CHECKS:
         return False
     # A formatting pass says nothing about behavior, while `ruff check --fix` and `eslint --fix` also lint.
@@ -233,11 +270,11 @@ def is_check(words: list[str]) -> bool:
     if name == "go":
         return first in GO_CHECKS
     if name == "node":
-        return bool(first) and first not in ("--version", "-v")
+        return bool(first) and first not in ("--version", "-v", "--help", "-h")
     if PYTHON.fullmatch(name):
         return bool(first) and first not in ("--version", "-V", "-h", "--help") and args[:2] != ["-m", "pip"]
     if name in ("bash", "sh", "zsh"):
-        return bool(first) and first != "-c"
+        return bool(first) and first not in ("-c", "--version", "--help")
     return unquote(words[0]).startswith("./")
 
 
@@ -246,12 +283,13 @@ def output_text(response: object) -> str:
     return ANSI.sub("", "\n".join(_strings(response)))
 
 
-def _strings(value: object) -> list[str]:
+def _strings(value: object, depth: int = 0) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, dict):
         value = list(value.values())
-    return [text for item in value for text in _strings(item)] if isinstance(value, (list, tuple)) else []
+    # Bounded, because an exception here would fail open.
+    return [text for item in value for text in _strings(item, depth + 1)] if isinstance(value, (list, tuple)) and depth < 20 else []
 
 
 def shows_no_pass(output: str) -> bool:
@@ -260,86 +298,34 @@ def shows_no_pass(output: str) -> bool:
     return bool(ran_no_tests(output) or FAILED_SUMMARY.search(output))
 
 
-def logical_lines(text: str) -> list[str]:
-    """Split where a shell ends a command, which isn't every newline: quotes span lines and a backslash joins the next one.
-
-    Splitting at each newline made the lexer give up on a line with a multi-line quote, hiding `pytest` or `rm` in
-    `pytest -q && git commit -m "a<newline>b"`. Comments go, because an apostrophe in one isn't a quote, and `# clean; rm -rf /`
-    isn't a command. A quote that never closes isn't valid shell, so from that command on this falls back to every newline.
-    """
-    lines: list[str] = []
-    current: list[str] = []
-    quote = ""
-    start = index = 0
-    while index < len(text):
-        char = text[index]
-        if quote:
-            step = 2 if char == "\\" and quote == '"' else 1
-            current.append(text[index:index + step])
-            quote = "" if char == quote else quote
-            index += step
-        elif char == "\\":
-            current.append(" " if text[index + 1:index + 2] == "\n" else text[index:index + 2])
-            index += 2
-        elif char == "#" and (not current or current[-1][-1:] in tuple(" \t;&|(")):
-            newline = text.find("\n", index)
-            index = newline if newline >= 0 else len(text)
-        elif char == "\n":
-            lines.append("".join(current))
-            current = []
-            index += 1
-            start = index
-        else:
-            quote = char if char in "'\"" else ""
-            current.append(char)
-            index += 1
-    return lines + text[start:].split("\n") if quote else lines + ["".join(current)]
-
-
-def shell_tokens(line: str) -> list[str]:
-    """Words and operators. If the quotes don't balance, read them as ordinary characters, so a stray one can't hide the line."""
-    for quotes in ("'\"", ""):
-        lexer = shlex.shlex(line, posix=False, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        lexer.quotes = quotes
-        try:
-            return list(lexer)
-        except ValueError:
-            continue
-    return []
-
-
-def inline_python_writes(command: str) -> list[str]:
-    """Files that Python run straight from the command writes, with "" where the code doesn't say which.
-
-    Only the code that runs here: a script written out with `cat > gen.py <<E` writes nothing until something runs it.
-    """
-    code = [match.group(2) for match in PYTHON_HEREDOC.finditer(command)]
-    code += [match.group(1) or match.group(2) or "" for match in PYTHON_DASH_C.finditer(command)]
-    folder = LEADING_CD.match(command)
-    prefix = unquote(folder.group(1)) if folder else ""
-    targets = []
-    for body in code:
-        named = dict(PYTHON_NAMED_PATH.findall(body))
-        for match in PYTHON_WRITE.finditer(body):
-            path = match.group("literal") or match.group("literal2") or named.get(match.group("name") or match.group("name2") or "")
-            targets.append("" if not path else path if path.startswith("$") else os.path.join(prefix, path))
-    return targets
-
-
-def runs_inline_python(words: list[str]) -> bool:
-    """Is this simple command Python running code from the command line, rather than a script or module?"""
-    name, args = head(words)
-    return bool(PYTHON.fullmatch(name)) and (all(arg.startswith("-") for arg in args) or any(re.fullmatch(r"-[A-Za-z]*c", arg) for arg in args))
+def never_started(output: str, programs: list[str]) -> bool:
+    """The check itself didn't get as far as running. Anything else missing, or any sign of a result, means it did, and a failure there is real."""
+    if RESULT_SHOWN.search(output):
+        return False
+    if PYTEST_COULD_NOT_START.search(output) or re.search(r"\bExit code 127\b", output):
+        return True
+    names = "|".join(re.escape(program) for program in programs if program)
+    return bool(names) and bool(re.search(rf"\b(?:{names}): command not found|command not found: (?:{names})\b|\bNo module named (?:{names})\b", output))
 
 
 def golden_command(args: list[str]) -> list[str]:
-    """What `occam golden record NAME ...` will run, read the way the tool reads it, with or without `--`."""
-    if "record" not in args or args.index("record") + 1 >= len(args):
+    """What `occam golden record NAME ...` will run, read the way the tool reads it: options can come before NAME, and `--` is optional."""
+    if "record" not in args:
         return []
-    rest = args[args.index("record") + 2:]
+    rest = args[args.index("record") + 1:]
+    named = False
     index = 0
-    while index < len(rest) and rest[index] in ("--normalize", "--timeout"):
-        index += 2
-    return rest[index + 1:] if rest[index:index + 1] == ["--"] else rest[index:]
+    while index < len(rest):
+        word = rest[index]
+        if word == "--":
+            return rest[index + 1:] if named else rest[index + 2:]
+        if word in GOLDEN_VALUE_OPTIONS:
+            index += 2
+        elif word.startswith(tuple(option + "=" for option in GOLDEN_VALUE_OPTIONS)):
+            index += 1
+        elif named:
+            return rest[index:]
+        else:
+            named = True
+            index += 1
+    return []

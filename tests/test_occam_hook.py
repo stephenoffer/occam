@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -210,7 +211,7 @@ def test_read_only_requests_hold_edits(agent, prompt):
     "if cd sub; then rm other.py; fi", "if true; then rm app.py; fi", "for f in a; do rm app.py; done", "popd; rm other.py", "pushd sub && rm other.py", "builtin cd sub; rm other.py",
     "Set-Location sub; rm other.py", "env -C sub rm other.py", "rm my\\ file.py", 'rm "my file".py', "rm a'p'p.py",
     'F=new.txt; F=app.py; rm "$F"', "ln -s app.py new.txt && echo x > new.txt", "echo x > new.txt; cd sub",
-    "cd .. && rm project/app.py", "cd $d; rm other.py", "cd /tmp; cd -; rm app.py", "cd /tmp && cd sub && rm other.py",
+    "cd .. && rm project/app.py", "cd $d; rm other.py", "cd /tmp; cd -; rm app.py", "cd /tmp && cd - && rm other.py",
 ])
 def test_a_shell_command_that_could_lose_work_is_held_on_a_read_only_turn(agent, command):
     (agent.project / "app.py").write_text("a = 1\n")
@@ -466,25 +467,29 @@ def test_reading_and_running_are_not_held(agent, command):
 
 # ------------------------------------------------------------ references
 
-def test_high_consequence_path_requires_the_security_reference(agent):
+def test_a_high_consequence_path_states_the_security_facts_instead_of_holding(agent):
     agent.prompt("Add an export")
     agent.load()
     output = agent.try_edit("billing/app.py")
-    assert decision(output) == "deny"
-    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
-    path = next(word for word in reason.split() if word.endswith("security.md."))[:-1]
+    assert decision(output) is None and "idempotency key" in added(output)
+    path = re.search(r"(/\S+security\.md)", added(output)).group(1)
     assert Path(path).exists(), "the hook must name a path that exists"
+    assert "idempotency key" not in added(agent.try_edit("billing/app.py")), "once is enough"
+
+
+def test_a_reference_already_read_isnt_repeated(agent):
+    agent.prompt("Add an export")
+    agent.load()
     agent.read_reference("security")
-    assert decision(agent.try_edit("billing/app.py")) is None
+    assert "idempotency key" not in added(agent.try_edit("billing/app.py"))
 
 
-def test_performance_request_requires_the_performance_reference(agent):
+def test_a_performance_request_states_the_performance_facts_instead_of_holding(agent):
     agent.prompt("It falls over at 1,000,000 records. Make it fit in memory.")
     agent.load()
-    assert "performance" in agent.try_edit("pipeline.py")["hookSpecificOutput"]["permissionDecisionReason"]
-    agent.read_reference("performance")
-    agent.load("occam:occam-python")
-    assert decision(agent.try_edit("pipeline.py")) is None
+    output = agent.try_edit("pipeline.py")
+    assert decision(output) is None and "find the stage that binds" in added(output)
+    assert "find the stage that binds" not in added(agent.try_edit("pipeline.py"))
 
 
 @pytest.mark.parametrize("prompt", ["The report prints 1 items when a count is one.", "Only the first 100 contacts import.",
@@ -500,15 +505,15 @@ def test_small_numbers_are_not_a_workload(agent, prompt):
 def test_real_workloads_are(agent, prompt):
     agent.prompt(prompt)
     agent.load()
-    assert "performance" in agent.try_edit("report.py")["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "find the stage that binds" in added(agent.try_edit("report.py"))
 
 
-def test_dependency_manifest_requires_the_design_reference(agent):
+def test_a_dependency_manifest_states_the_design_facts_instead_of_holding(agent):
     agent.prompt("Add requests to the project")
     agent.load()
-    assert "design" in agent.try_edit("pyproject.toml")["hookSpecificOutput"]["permissionDecisionReason"]
-    agent.read_reference("design")
-    assert decision(agent.try_edit("pyproject.toml")) is None
+    output = agent.try_edit("pyproject.toml")
+    assert decision(output) is None and "the package the documentation means" in added(output)
+    assert "the package the documentation means" not in added(agent.try_edit("pyproject.toml"))
 
 
 def test_reading_a_reference_through_the_shell_counts(agent):
@@ -550,21 +555,19 @@ def test_routine_edit_only_mentions_the_language_skill_once(agent):
     assert "occam-python" not in added(agent.try_edit("b.py"))
 
 
-def test_risky_request_pauses_once_and_retrying_is_a_real_choice(agent):
+def test_a_risky_request_mentions_the_language_skill_once_and_holds_nothing(agent):
     agent.prompt("Cancellation gets swallowed in fetcher.py, please fix it")
     agent.load()
     first = agent.try_edit("fetcher.py")
-    assert decision(first) == "deny"
-    assert "occam:occam-python" in first["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "continue without it" in first["hookSpecificOutput"]["permissionDecisionReason"]
-    assert decision(agent.try_edit("fetcher.py")) is None, "retrying declines the skill, so it must go through"
+    assert decision(first) is None and "occam:occam-python" in added(first)
+    assert "occam:occam-python" not in added(agent.try_edit("fetcher.py"))
 
 
-def test_risky_edit_content_pauses_too(agent):
+def test_risky_edit_content_mentions_the_skill_too(agent):
     agent.prompt("Tidy this up")
     agent.load()
     output = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("a.js"), "new_string": "const n = limit ?? 0;"})
-    assert decision(output) == "deny"
+    assert decision(output) is None and "occam:occam-typescript" in added(output)
 
 
 def test_loaded_language_skill_means_no_pause(agent):
@@ -574,12 +577,12 @@ def test_loaded_language_skill_means_no_pause(agent):
     assert decision(agent.try_edit("fetcher.py")) is None
 
 
-def test_language_pause_does_not_apply_to_other_languages_edits_again(agent):
+def test_each_language_is_mentioned_once(agent):
     agent.prompt("Cancellation gets swallowed, please fix it")
     agent.load()
-    assert decision(agent.try_edit("a.py")) == "deny"
-    assert decision(agent.try_edit("a.go")) == "deny", "each language gets its own single decision"
-    assert decision(agent.try_edit("b.py")) is None
+    assert "occam:occam-python" in added(agent.try_edit("a.py"))
+    assert "occam:occam-go" in added(agent.try_edit("a.go")), "each language gets its own mention"
+    assert "occam:occam-python" not in added(agent.try_edit("b.py"))
 
 
 def test_language_skill_not_mentioned_once_loaded(agent):
@@ -768,6 +771,7 @@ def test_shell_edit_counts_as_an_edit(agent):
 def test_loop_guard(agent):
     agent.prompt("Fix it")
     finish_edit(agent)
+    assert "No check has run" in added(agent.stop())
     assert agent.stop(stop_hook_active=True) is None
 
 
@@ -852,15 +856,42 @@ def test_a_directory_above_the_project_cannot_make_files_high_consequence(tmp_pa
     assert agent.stop("1 passed") is None
 
 
-def test_several_files_need_the_diff_inspected(agent):
+def test_an_unread_diff_alone_doesnt_send_an_agent_back(agent):
     agent.prompt("Fix it")
     agent.load()
     agent.edit("a.py")
     agent.edit("b.py")
     agent.bash("pytest", output="1 passed")
-    assert "diff" in added(agent.stop("1 passed"))
-    agent.bash("git diff HEAD")
     assert agent.stop("1 passed") is None
+
+
+def test_an_unread_diff_is_mentioned_when_sent_back_anyway(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit("a.py")
+    agent.edit("b.py")
+    said = added(agent.stop("Fixed."))
+    assert "No check has run" in said
+    assert "final diff hasn't been inspected" in said
+
+
+def test_a_read_diff_isnt_mentioned(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit("a.py")
+    agent.edit("b.py")
+    agent.bash("git diff HEAD")
+    assert "final diff" not in added(agent.stop("Fixed."))
+
+
+def test_a_send_back_asks_for_the_whole_report_not_an_answer_to_the_note(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit("a.py")
+    said = added(agent.stop("Fixed."))
+    assert "write the whole report again" in said
+    assert "without discussing the note" in said
+    assert "no report until it's done" in said and "your next message is the report" in said
 
 
 def test_all_problems_are_reported_at_once_because_stop_only_continues_once(agent):

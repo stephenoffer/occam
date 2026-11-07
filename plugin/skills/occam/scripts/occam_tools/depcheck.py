@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 
 from . import files as filesystem, manifests, scan as scanner
+from .report import partial_note
 
 USER_AGENT = "occam-deps/2 (dependency existence check)"
 _REGISTRIES = {
@@ -85,7 +86,7 @@ def check_package(registry: str, name: str) -> dict:
     return result
 
 
-def report(root, online: bool = False, names: list[str] | None = None) -> tuple[str, int]:
+def report(root, online: bool = False, names: list[str] | None = None, seconds: int | None = None) -> tuple[str, int]:
     lines: list[str] = []
     exit_code = 0
     for spec in names or []:
@@ -100,7 +101,9 @@ def report(root, online: bool = False, names: list[str] | None = None) -> tuple[
             exit_code = 1
     if names:
         return "\n".join(lines), exit_code
-    result = scanner.run_scan(root)
+    # Every rule asked for here needs the whole repository, so if that's too much to read, reading part of it would only cost time.
+    result = scanner.run_scan(root, seconds=seconds, focus=[])
+    lines += partial_note(result.stats)
     wanted = {"phantom-import", "undeclared-dependency", "unused-dependency", "competing-dependencies"}
     findings = [f for f in result.findings if f["rule"] in wanted]
     manifest = manifests.read_manifests(root, filesystem.list_files(root, None, filesystem.load_config(root)))

@@ -334,9 +334,11 @@ def test_a_temp_copy_reached_through_a_variable_is_not_the_project(agent):
 
 
 def test_a_notebook_edited_after_an_earlier_cd_is_still_found(agent):
-    (agent.project / "notebooks").mkdir()
-    (agent.project / "notebooks" / "n.ipynb").write_text(notebook("print(TOTAL)", "TOTAL = 1"))
-    agent.bash("python3 -I - <<'E'\np='n.ipynb'\nt=open(p).read()\nopen(p,'w').write(t)\nE")
+    folder = agent.project / "notebooks"
+    folder.mkdir()
+    (folder / "n.ipynb").write_text(notebook("print(TOTAL)", "TOTAL = 1"))
+    agent.send("post-tool", tool_name="Bash", cwd=str(folder), tool_response={"stdout": ""},
+               tool_input={"command": "python3 -I - <<'E'\np='n.ipynb'\nt=open(p).read()\nopen(p,'w').write(t)\nE"})
     assert CANT_RUN in added(agent.stop("Fixed the formula."))
 
 

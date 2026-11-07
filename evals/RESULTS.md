@@ -13,7 +13,7 @@ Run on 2026-11-05. Generated from the saved runs in `results/`, which are local 
 - **One possible gain.** A blind model judge scored the skill arms' code as simpler when the run finished (3.86 against 2.44), with no difference on whether it would merge it. That is a lead from one model judge, not a measurement.
 - **The evaluated mechanisms work.** Every enforcement mechanism in the holdout version fired in real Claude Code, and trigger accuracy was 22/22. Some checks added since have not been seen acting. On smoke, a check after the last edit went from 12/14 runs to 14/14. Fallback behavior was honest when the shell or subagents were removed.
 - **Python guidance: no measured benefit, at about 23% more cost per run.** On seven new cases on Sonnet, the plugin passed 7/21 and no skill 5/19 as graded, but the plugin passed fewer on one case (0/3 against 1/3), so by the criteria set in advance it reads as not helping. With one unfair check dropped, the six cases with full runs tied at 7/18 each. The new Python references were read in only 1 of 21 plugin runs. See "Python suite". Direct pointers to the references, tested afterwards, didn't get them read either: 1 of 15 runs. A last case on moved APIs and sinks tied at 3/3, at about 35% more cost per run.
-- **Auditing and repair: short of the preset bar, with better repairs.** On a new 27,369-line repository, 3 runs per arm, the plugin located 90.7 of 122 defects against 92.0, which by the preset rule is no measured benefit. A blind judge scored its repairs higher, 47.7 of 60 serious defects fixed against 40.7, though one weak no-skill run drives that, and every plugin run added regression tests where no no-skill run did. See "Large audit head-to-head".
+- **Auditing and repair: no measured benefit in finding or fixing.** Across two large tests, 3 runs per arm each, the plugin located 92.8 of 122 defects against 93.0 and fixed a median of 48.5 of 60 serious ones against 55 (293 and 294 of 360 in total, level only because one no-skill run fixed 19). It changed far less code, with fewer decoys acted on and fewer unflagged behavior changes, but left more open and took about 1.8 times as long. See "Large audit head-to-heads".
 
 The evidence supports "this enforces process". It doesn't support "this produces better code". These cases may be too easy to show a benefit on harder work, and this suite can't establish one. Choose the full plugin for its enforcement, not for a measured quality gain.
 
@@ -219,7 +219,9 @@ The user approved about $1.50 for this, plus moving the top Python facts into ho
 - **Hook notes still aren't visible in traces,** so this can't confirm whether any fact reached a run.
 - **Known failure in that copy, unrelated to this path:** a shell scanner speed test, a real bug since fixed by its owner. The rest of that copy passed: 2,648 passed and 2 skipped outside calibration, and 187 passed in calibration.
 
-**Fresh-context review before this run.** It found patterns giving wrong advice on correct code, such as telling `from pydantic_settings import BaseSettings` it was the v1 API, and false statements in the new TypeScript and Rust text. Matching was rewritten with a balanced scan of call arguments, `ast` for tuple asserts, and bounded patterns, and the text was corrected. Nobody has re-reviewed that rewrite. Its tests were checked by breaking the code on a scratch copy.
+**Fresh-context review before this run.** It found patterns giving wrong advice on correct code, such as telling `from pydantic_settings import BaseSettings` it was the v1 API, and false statements in the new TypeScript and Rust text. Matching was rewritten with a balanced scan of call arguments, `ast` for tuple asserts, and bounded patterns, and the text was corrected. The reviewer then checked the rewrite. Most findings were fixed, false fires were rare on a sample of library code, and it found new misses and one false note on MultiEdit, which landed after this run and aren't in what was measured. That was the third review round, so review stopped there: capped, not converged. Known remaining gaps: a `)` inside a string can cause a false note, the request patterns are approximate, and subagents and Bash heredocs get no facts.
+
+**Delivery checked by replay, after these runs.** Replaying the saved plugin runs through the real hook handlers (`evals/replay_hook.py`) showed the facts as first written would have reached only 10 of 36 runs, and missed most of the failures they were written for. Agents often write code through the shell, as `cat > tidekit/calendar.py <<'EOF'`, and most notebook edits were inline scripts. People also ask differently from what the patterns expected: "break it up into modules", or "go through it and tell me what's actually wrong" for an audit. With the facts extended to shell writes, those phrasings and notebook requests, the replay reaches 34 of 36, including all 6 runs each of `grain-elevator-settlement`, `freight-lane-quotes` and `bikeshare-dock-usage`, and the 4 harbour runs that hit the name clash. **This shows the facts are now stated at the right moments. It doesn't show they change what an agent does**, because no agent has run with this version. The user left measuring that to the harder suite.
 
 **Other languages, unmeasured.** TypeScript, Go and Rust gained short structure, naming and test result sections. Go and Rust's test claims are run by `tests/test_language_claims.py`. Framework-specific guidance was left out, as the user decided, until a real failure calls for it.
 
@@ -283,7 +285,7 @@ These cases tuned the skill, so they describe what happened and aren't efficacy 
 - **Check after the last edit:** 12/14 with no skill, 14/14 with the plugin, counting runs that edited with edit tools. This is the clearest behavior change.
 - **Pass claimed with no passing run:** 0 with no skill, 0 with the plugin. The baseline was already honest here.
 - **Surfacing an adjacent defect** (`dirty-tree-failing-suite`, regex diagnostic): no skill 2/2, plugin 1/2 in these runs. No sign of benefit.
-- **Trivial-case target missed.** The preregistered limit was +30% over no skill on `trivial-fix`. The plugin cost +91% ($0.26 against $0.14), because every code edit now loads the skill first. Removing that would undo the requirement that all parts fire, so this is reported rather than trimmed.
+- **Trivial-case target missed.** The preregistered limit was +30% over no skill on `trivial-fix`. The plugin cost +91% ($0.26 against $0.14), because every code edit in that version loaded the skill first. Removing that would undo the requirement that all parts fire, so this was reported rather than trimmed. A later version exempts small edits, which hasn't been shown to help: the only runs where that path fired passed this case 0 of 2 on Sonnet against 2 of 2 with no skill. With the current wording the plugin passed 5 of 5 at +51% against no skill's 5 of 5, but all 5 agents loaded the skill on their own, so the path didn't fire. See the small-edit checks in `PREREGISTRATION.md`.
 
 ## Audit head-to-head (post-evaluation)
 
@@ -320,7 +322,22 @@ Not preregistered, and added on 2026-11-05 after reading Ponytail's report of 53
 - **Not comparable with Ponytail's figures.** Different tasks, different models and a different measure of delivered lines. Bash was off in its runs and on here.
 - **Versions differ.** These runs measured the plugin versions recorded in each section above, so none of them include the principle wording, `occam debt` or `gate`'s scope notes, which came later and have had no agent run.
 
-## Large audit head-to-head (post-evaluation)
+## Large audit head-to-heads (post-evaluation)
+
+**Second test,** on hash `8cac9607b9697ce0`, `evals/fixtures/blind-audit-large-2`. No measured benefit by the preset rule, and fixed count goes first because the plugin is lower.
+
+| Measure | Plugin | No skill |
+|---|---:|---:|
+| Critical and high fixed, of 60 (primary, blind judge) | 48, 49, 53 | 58, 57, 57 |
+| Located of 122, per run (primary) | 93, 91, 101 | 95, 88, 99 |
+| Decoys reported as defects (judge) | 1, 0, 1 | 2, 5, 3 |
+| Report claims the diff contradicts (judge) | 0, 1, 2 | 1, 0, 2 |
+| Behavior changes not flagged (judge) | 2, 2, 2 | 7, 7, 6 |
+| New test functions | 14, 13, 70 | 0, 83, 61 |
+| Seconds | 1429, 1193, 1020 | 699, 733, 654 |
+| Cost | $13.85 | $17.79 |
+
+**First test,** below.
 
 On hash `d913a354a88b89a1`, Sonnet 5.5, 3 runs per arm, on `evals/fixtures/blind-audit-large`, whose key nobody working on the skill had read. Preregistered, with two primary measures.
 
@@ -339,6 +356,30 @@ On hash `d913a354a88b89a1`, Sonnet 5.5, 3 runs per arm, on `evals/fixtures/blind
 | Cost | $11.37 | $11.66 |
 
 Tests passed afterward in all six. By the rule fixed in advance this is no measured benefit, since located is lower and decoys are above 1.5 times. `docs/evaluation.md` has what the traces and reports add, including that 11 decoy mentions were correct dismissals of scanner leads.
+
+## Hard cases: round 1 and an exploratory look (post-evaluation)
+
+Fresh cases written blind to the guidance, chosen because they were meant to be hard. Rules and every change are in `PREREGISTRATION.md`.
+
+**Round 1 stopped at its pilot, as its rule requires.** No skill passed 5 of the 8 new cases every time it finished them, leaving 3 cases, under the 4 needed. No plugin run happened, so it says nothing about the plugin. It counts as round 1 of up to 3, at $7.68.
+
+**The look: no sign of a benefit, at more cost.** Exploratory, and not a round. The user chose it after round 1, on the 3 cases no skill had failed, on Sonnet 5.5, 3 runs per arm, $6.10.
+
+| Case | Plugin | No skill |
+|---|---:|---:|
+| `locker-pickup-reminders` | 0/3 | 0/3 |
+| `solar-annual-figure` | 1/3 | 2/3 |
+| `water-billing-split` | 2/3 | 2/3 |
+| Total | 3/9 | 4/9 |
+| Hidden checks passed per run, mean | 93.7% | 96.4% |
+| Mean turns | 17.6 | 9.0 |
+| Cost | $3.79 | $2.31 (plugin +64%) |
+
+The rule fixed before it ran asked for at least 3 more passes out of 9. These 3 cases are ones the guidance already describes in general terms, so the look was generous, and a one-run difference at this size means nothing either way. A blind audit afterwards rated `locker-pickup-reminders` and `solar-annual-figure` unfair, with checks at fault falling only on plugin runs. Setting aside the one such check that alone failed a run gives 4 of 9 against 4 of 9, which doesn't change the reading.
+
+- **What the plugin got wrong.** A send-back at Stop replaced a good report with a short reply to a note the reader never sees, in all 3 `locker` plugin runs. Two of them then failed a check on the final message, though their first report passed it. The hook also counted a test's expected failure on a copy of the old code as this code's.
+- **What send-backs do.** After the fact, in 140 saved plugin runs: 65 were sent back, 74 times, and the agent changed code after 7 of those. The reviewer note accounts for most of what they achieve. One reviewer in the look found a real defect the repo's tests didn't cover. The two runs with a reviewer cost 1.7 and 3 times a no-skill run.
+- **Changed afterwards, and not measured.** A send-back now asks for the whole report again, and an unread diff no longer sends an agent back by itself. The skill says to test the old code in its own command, which the hook reads correctly. Counting that failure correctly inside a mixed command was tried and removed, because a fresh review got real failures recorded as passes. Replay on 73 saved runs shows runs sent back falling from 46 to 32, which shows what fires, not that it helps. See `PREREGISTRATION.md`.
 
 ## Spend
 
@@ -366,7 +407,7 @@ Tests passed afterward in all six. By the rule fixed in advance this is no measu
 
 The user approved up to $15 more for the re-evaluation, about $90 in all. I worked to $88.55 ($73.55 plus $15) and overran that by $0.13. **$6.21 of that $15 produced nothing usable, and those were my mistakes:** a queue I had left waiting on machine load started by itself on an out-of-date snapshot, and I deleted its results unread, which was hasty. I also stopped runs after a session reported hook defects, then again to change their order.
 
-Authoring, review and judging subagents aren't in this total, because the cap covered evaluation runs. Runs labeled `python-` or `audit-sonnet` in the ledger belong to other sessions' separate evaluations and aren't in this total. `audit-sonnet` cost $8.58, under a separate $12 approval from the user. `audit-large` cost $23.03, under a separate $25 approval. Writing its fixture used about 1.6 million subagent tokens and judging it 0.4 million, outside that cap.
+Authoring, review and judging subagents aren't in this total, because the cap covered evaluation runs. Runs labeled `python-` or `audit-sonnet` in the ledger belong to other sessions' separate evaluations and aren't in this total. Neither is later work: hard-case round 1's pilot ($7.68) and the exploratory look ($6.10) came from a separate $25 approval, with $11.22 unspent. The look went $1.10 over the estimate given for it, and its `water-billing-split` case reached $4.45 against a $2 cap, because the runner's cap doesn't stop runs already going. `audit-sonnet` cost $8.58, under a separate $12 approval from the user. `audit-large` cost $23.03, under a separate $25 approval. Writing its fixture used about 1.6 million subagent tokens and judging it 0.4 million, outside that cap. `audit-large-2` cost $31.64 against a separate $30 approval, **$1.64 over it**, because the runner's limit doesn't stop runs in flight. Its fixture used about 1.7 million subagent tokens and judging 0.5 million, outside that cap.
 
 
 ### Where the money went

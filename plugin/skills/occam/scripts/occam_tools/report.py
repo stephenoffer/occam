@@ -38,7 +38,7 @@ def _hotspots(findings: list[dict], limit: int = 10) -> list[str]:
 
 def render_text(findings: list[dict], hidden: int, stats: dict, top: int, saved_to: str | None = None) -> str:
     languages = ", ".join(f"{name} {count}" for name, count in sorted(stats["languages"].items(), key=lambda kv: -kv[1])) or "none"
-    lines = [f"occam scan {VERSION}: {stats['analyzed']} of {stats['files']} files, {stats['lines']:,} lines, {stats['seconds']}s. {languages}."]
+    lines = [f"occam scan {VERSION}: {stats['analyzed']} of {stats['files']} files, {stats['lines']:,} lines, {stats['seconds']}s. {languages}.", *partial_note(stats)]
     if not findings:
         lines.append("No findings at this confidence. That isn't proof of quality: see the rules with `occam rules`, and read the risky paths yourself.")
     else:
@@ -68,6 +68,28 @@ def isolated_note(stats: dict) -> list[str]:
     if not stats.get("isolated"):
         return []
     return ["Scanned in isolation, so the rules that need the rest of the repository didn't run: dead code, clones, import cycles, phantom local imports, untested modules."]
+
+
+def left_unread(stats: dict) -> bool:
+    """Were files in scope left unread? What wasn't read can't be called clean, while a scope read in full can, and says what else it couldn't see."""
+    return bool((stats.get("partial") or {}).get("unread_in_scope"))
+
+
+def partial_note(stats: dict) -> list[str]:
+    """Comes first, because a clean result from part of a repository reads like a clean repository."""
+    partial = stats.get("partial")
+    if not partial:
+        return []
+    skipped = ("Rules needing the rest of the repository didn't run: unused and orphaned code, duplicates across files, imports of things that don't exist, dependency use, and what a removal breaks or orphans elsewhere. "
+               "A lead here can also be explained by code that wasn't read, such as a re-export or a subclass.")
+    if partial["reason"] == "scope":
+        return [f"PARTIAL: this repository has {partial['repository_files']:,} files, too many to read for a scoped command, so only the {partial['read']:,} in scope were. {skipped} "
+                "`--max-seconds 0` reads everything, which takes minutes and gigabytes, so run it in the background."]
+    saved = "What was read is saved, so running this again gets further. " if partial.get("saved") else ""
+    if partial["read"] == partial["wanted"]:
+        return [f"PARTIAL: read all {partial['read']:,} files, but too near the {partial['seconds']}s limit to run the rest. {skipped} {saved}`--max-seconds 0` removes the limit, so run that in the background."]
+    return [f"PARTIAL: reached the {partial['seconds']}s limit, having read {partial['read']:,} of {partial['wanted']:,} files. Files not reached have no findings here, which says nothing about them. {skipped} "
+            f"{saved}On a repository this size a folder is what finishes, so name one, and `--max-seconds 0` removes the limit, so run that in the background."]
 
 
 def exemptions(stats: dict) -> list[str]:
@@ -107,23 +129,17 @@ def render_sarif(findings: list[dict]) -> str:
                        "runs": [{"tool": {"driver": {"name": "occam", "version": VERSION, "rules": rules}}, "results": results}]}, indent=2)
 
 
-def render_markdown(findings: list[dict], stats: dict, ledger: dict | None = None, title: str = "Audit") -> str:
+def render_markdown(findings: list[dict], stats: dict) -> str:
     """A report a person can act on. Only things the tool knows go in. The agent adds what it read and judged."""
-    ledger = ledger or {}
-    lines = [f"# {title}", "", f"Scanned {stats['analyzed']} of {stats['files']} files and {stats['lines']:,} lines with occam {VERSION}.",
-             "Findings here are leads unless marked confirmed. Items marked false positive or accepted are left out.", ""]
-    active = [f for f in findings if ledger.get(f["id"], {}).get("status") not in ("false-positive", "accepted", "fixed")]
+    lines = ["# Audit", "", f"Scanned {stats['analyzed']} of {stats['files']} files and {stats['lines']:,} lines with occam {VERSION}.",
+             *partial_note(stats), "Findings here are leads.", ""]
     for severity in SEVERITIES:
-        group = [f for f in active if f["severity"] == severity]
+        group = [f for f in findings if f["severity"] == severity]
         if not group:
             continue
         lines += [f"## {severity.capitalize()} ({len(group)})", ""]
         for finding in group[:50]:
-            state = ledger.get(finding["id"], {}).get("status", "open")
-            lines.append(f"- `{location(finding)}` **{finding['rule']}** ({state}, {finding['confidence']} confidence, tier {finding['tier']}): {finding['message']} *Fix:* {finding['fix']}")
-            note = ledger.get(finding["id"], {}).get("note")
-            if note:
-                lines.append(f"  - {note}")
+            lines.append(f"- `{location(finding)}` **{finding['rule']}** ({finding['confidence']} confidence, tier {finding['tier']}): {finding['message']} *Fix:* {finding['fix']}")
         if len(group) > 50:
             lines.append(f"- ... and {len(group) - 50} more.")
         lines.append("")
@@ -135,7 +151,7 @@ def render_markdown(findings: list[dict], stats: dict, ledger: dict | None = Non
     return "\n".join(lines)
 
 
-def render_rules(category: str | None = None, rule_id: str | None = None) -> str:
+def render_rules(rule_id: str | None = None) -> str:
     if rule_id:
         rule = BY_ID.get(rule_id)
         if not rule:
@@ -143,8 +159,6 @@ def render_rules(category: str | None = None, rule_id: str | None = None) -> str
         return (f"{rule.id} ({rule.category}, layer {rule.layer})\n  {rule.title}\n  severity {rule.severity}, confidence {rule.confidence}, tier {rule.tier}\n  fix: {rule.fix}")
     lines = []
     for name in CATEGORIES:
-        if category and category != name:
-            continue
         lines.append(f"{name}:")
         lines += [f"  {rule.id:<30}{rule.severity:<9}{rule.confidence:<7}{rule.tier}  {rule.title}" for rule in RULES if rule.category == name]
     return "\n".join(lines)

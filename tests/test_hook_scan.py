@@ -107,6 +107,7 @@ def test_stop_continues_only_once(agent):
     agent.try_edit("app.py")
     write(agent, "app.py", STUB)
     agent.edit("app.py")
+    assert "scanner sees" in additional(agent.stop())
     assert agent.stop(stop_hook_active=True) is None
 
 
@@ -185,11 +186,11 @@ def test_occams_own_writers_are_held_on_a_read_only_turn(tmp_path):
     made.load()
     tool = ROOT / "plugin/skills/occam/scripts/occam.py"
     (made.project / "build").mkdir()
-    for command in (f"python3 {tool} fix --apply", f"python3 {tool} golden record x -- rm -rf build", f"python3 {tool} baseline write --out b.py"):
+    for command in (f"python3 {tool} golden record x -- rm -rf build", f"python3 {tool} baseline write --out b.py"):
         reason = (made.try_bash(command) or {}).get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
         assert "review-only" in reason, command
     assert made.try_bash(f"python3 {tool} scan") is None
-    assert made.try_bash(f"python3 {tool} fix") is None
+    assert made.try_bash(f"python3 {tool} query size") is None, "a read-only query isn't held on a read-only turn"
 
 
 def test_a_file_too_big_to_scan_first_isnt_blamed_on_the_edit(agent):

@@ -55,7 +55,7 @@ def test_core_names_every_language_skill():
 
 
 def test_hook_maps_only_to_language_skills_that_exist():
-    source = (PLUGIN / "hooks" / "occam_hook.py").read_text()
+    source = (PLUGIN / "hooks" / "classify.py").read_text()
     mapped = set(re.findall(r'"(occam-[a-z]+)"', source))
     assert mapped - NON_LANGUAGE_SKILLS == {path.parent.name for path in LANGUAGE_SKILLS}
 
@@ -182,6 +182,15 @@ def test_codex_manifest_agrees_with_claude_manifest():
 def test_only_expected_things_ship_in_the_skill():
     assert {p.name for p in SKILL.iterdir()} <= {"SKILL.md", "references", "scripts", "assets"}
     assert not list(SKILLS.rglob("hooks*")), "hooks belong to the plugin layer, so a plain copy of a skill activates nothing"
+
+
+def test_text_every_run_pays_for_stays_small():
+    """Every session pays for descriptions on every turn, and most code runs for the core and a language skill. Growing them should be a decision."""
+    front = sum(len(parts(path)[0]["description"]) for path in ALL_SKILLS)
+    agents = sum(len(parts(path)[0]["description"]) for path in (PLUGIN / "agents").glob("*.md"))
+    assert front + agents <= 3350, front + agents
+    assert len(parts(SKILL_MD)[1]) <= 13000
+    assert all(len(parts(path)[1]) <= 5500 for path in LANGUAGE_SKILLS)
 
 
 def test_compact_variant_is_a_real_compact_core():

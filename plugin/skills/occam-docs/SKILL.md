@@ -1,6 +1,6 @@
 ---
 name: occam-docs
-description: Writing or updating documentation for code, such as a README, API reference, guide, docstrings or changelog, especially for code just written. Takes claims from the code, checks them with the occam tools, runs the examples, then hands the prose to human-voice if installed. Use alongside occam.
+description: Writing or updating code documentation, such as a README, API reference, guide, docstrings or changelog, especially for code just written. Checks claims with the occam tools, runs the examples, then hands the prose to human-voice if installed. Use alongside occam.
 ---
 
 # Documenting code

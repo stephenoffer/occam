@@ -15,7 +15,8 @@ import tempfile
 from pathlib import Path
 
 import scan_notes  # beside this script, on sys.path because Python put it there
-from occam_hook import AUDIT_REQUEST, could_lose_work, is_code, reads_as_read_only, shell_edits, visible_prompt
+from classify import AUDIT_REQUEST, is_code, reads_as_read_only, visible_prompt
+from shell_writes import could_lose_work, shell_edits
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
 

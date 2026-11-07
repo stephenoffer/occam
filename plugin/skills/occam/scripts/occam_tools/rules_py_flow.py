@@ -7,12 +7,21 @@ import re
 
 from .py_helpers import (
     NESTED_QUANTIFIER,
-    AUTH_NAME, COMPARED_SECRET, HTTP_MODULES, HTTP_VERBS, MIGRATION_PATH, MONEY_NAME, _literal_loop_names, QUERY_METHODS, SECRET_NAME, _call_name,
-    _dotted, _has_sql, _is_constant_none_or_empty, _is_dynamic_string, _last, _names_in, _only_placeholders,
-    _string_parts, _walk_own, head_is_re,
+    COMPARED_SECRET, HTTP_MODULES, HTTP_VERBS, MIGRATION_PATH, MONEY_NAME, PLACEHOLDER_NAME, QUERY_METHODS, SECRET_NAME, SQL_NUMBER_CALLS, _call_name, _chain,
+    _dotted, _has_sql, _interpolated, _is_constant_none_or_empty, _is_dynamic_string, _last, _names_in,
+    _string_parts, _walk_own, builds_bind_markers, head_is_re, holds_at, is_literal_binding, looks_like_auth_check,
 )
 
-SQL_METHODS = {"execute", "executemany", "raw", "text", "query", "executescript", "read_sql", "read_sql_query"}
+SQL_METHODS = {"execute", "executemany", "raw", "text", "query", "executescript", "read_sql", "read_sql_query", "fetch", "fetchrow", "fetchval"}
+SQL_TEXT_KEYWORDS = ("statement", "sql", "query", "stmt", "operation")
+SQL_RECEIVER = re.compile(r"(?:^|[._])(?:cur|cursor|conn|connection|db|database|session|engine)\d*(?:$|[._])", re.I)
+DJANGO_EXTRA_SQL = ("where", "select", "tables", "order_by")
+HTTP_LIBRARIES = {"requests", "httpx", "aiohttp", "urllib3"}
+HTTP_RECEIVER = re.compile(r"(?:^|[._])(?:requests?|httpx|aiohttp|urllib3|sessions?|sess|clients?|http|https|api)\d*(?:$|[._])", re.I)
+HTTP_SETTING_UP = {"Session", "ClientSession", "Client", "AsyncClient"}
+CREDENTIAL_ARGUMENT = re.compile(r"password|passwd|passphrase|secret|(?:^|_)pwd(?:_|$)", re.I)
+MEANS_A_FOLDER = re.compile(r"cwd|dir|path|folder", re.I)  # `cwd_key(pwd)`: there, pwd is where it's working
+HASHES_A_PASSWORD = re.compile(r"(?:hash|digest|encrypt|encode|store|save|set|check|verify)\w*_(?:password|passwd)|(?:password|passwd)_?(?:hash|digest)", re.I)
 WEAK_HASHES = {"hashlib.md5", "hashlib.sha1", "md5", "sha1"}
 RANDOM_CALLS = {"random", "randint", "choice", "choices", "randrange", "sample", "getrandbits"}
 CODE_LOADERS = {"pickle.load", "pickle.loads", "cPickle.loads", "cPickle.load", "marshal.loads", "marshal.load", "dill.load", "dill.loads", "shelve.open"}
@@ -63,7 +72,7 @@ def check_try(ctx, node, function) -> None:
         broad = caught in (None, "Exception", "BaseException")
         if handler.type is None and not ctx.is_test:
             ctx.add("bare-except", handler)
-        if function is not None and AUTH_NAME.search(function.name):
+        if function is not None and looks_like_auth_check(function):
             for statement in handler.body:
                 if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Constant) and statement.value.value is True:
                     ctx.add("fail-open", statement, f"{function.name} returns True when its check errors.")
@@ -73,72 +82,6 @@ def check_try(ctx, node, function) -> None:
             comments = [line for line in range(handler.lineno, (handler.end_lineno or handler.lineno) + 1) if line in ctx.comment_lines]
             confidence = ("low" if _states_a_reason(ctx, comments) else "medium") if comments else None
             ctx.add("swallowed-exception", handler, f"except {caught or ''} drops the error.".replace("  ", " "), **({"confidence": confidence} if confidence else {}))
-
-
-_NEVER_NONE_NODES = (ast.List, ast.Dict, ast.Set, ast.Tuple, ast.ListComp, ast.DictComp, ast.SetComp, ast.GeneratorExp, ast.JoinedStr, ast.Lambda)
-_NEVER_NONE_CALLS = {"str", "int", "float", "bool", "bytes", "list", "dict", "set", "frozenset", "tuple", "len", "sorted", "abs", "range"}
-
-
-def compares_with_none(node: ast.AST) -> str | None:
-    """The name in `name is None`, or None if this isn't that comparison. `==` doesn't count, because a column or a frame can overload it to mean something else."""
-    if not isinstance(node, ast.Compare) or len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Is, ast.IsNot)):
-        return None
-    right = node.comparators[0]
-    if isinstance(node.left, ast.Name) and isinstance(right, ast.Constant) and right.value is None:
-        return node.left.id
-    return None
-
-
-def bound_names(function: ast.AST) -> set[str]:
-    """Every name this function's body can rebind, however it does it. Nested functions count, because `nonlocal` reaches out of them."""
-    names: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
-            names.add(node.id)
-        elif isinstance(node, ast.ExceptHandler) and node.name:
-            names.add(node.name)
-        elif isinstance(node, ast.alias):
-            names.add((node.asname or node.name).split(".")[0])
-        elif isinstance(node, (ast.Nonlocal, ast.Global)):
-            names.update(node.names)
-        elif type(node).__name__ in ("MatchAs", "MatchStar") and node.name:
-            names.add(node.name)
-        elif type(node).__name__ == "MatchMapping" and node.rest:
-            names.add(node.rest)
-    return names
-
-
-def _local_names(function: ast.AST | None) -> set[str]:
-    if function is None:
-        return set()
-    return bound_names(function) | {node.arg for node in ast.walk(function) if isinstance(node, ast.arg)}
-
-
-def _why_never_none(ctx, value: ast.AST, function: ast.AST | None) -> str | None:
-    if isinstance(value, _NEVER_NONE_NODES) or (isinstance(value, ast.Constant) and value.value is not None):
-        return "a literal"
-    awaited = isinstance(value, ast.Await)
-    call = value.value if awaited else value
-    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.func.id in _local_names(function) or call.func.id in ctx.shadowed_names:
-        return None
-    name = call.func.id
-    if ctx.never_none_functions.get(name) is awaited:  # only awaiting an `async def` gives what its annotation says
-        return f"{name}(), whose return annotation excludes None"
-    if name in _NEVER_NONE_CALLS and name not in ctx.function_names and not awaited:
-        return f"{name}()"
-    return None
-
-
-def check_none_after_assign(ctx, previous: ast.AST, statement: ast.AST, function: ast.AST | None) -> None:
-    """`x = [..]` directly followed by `if x is None:`. Adjacent statements only, so nothing can have changed it in between."""
-    if not isinstance(previous, ast.Assign) or len(previous.targets) != 1 or not isinstance(previous.targets[0], ast.Name) or not isinstance(statement, ast.If):
-        return
-    name = previous.targets[0].id
-    if compares_with_none(statement.test) != name:
-        return
-    why = _why_never_none(ctx, previous.value, function)
-    if why:
-        ctx.add("impossible-none-check", statement, f"{name} was just assigned from {why}, so it can't be None here.")
 
 
 def _logs_at_debug(statement: ast.AST) -> bool:
@@ -248,7 +191,7 @@ def _compares_a_secret(sides: tuple) -> bool:
     names = [_final_name(side) for side in sides]
     if any(name.lower().endswith("signature") and not COMPARED_SECRET.search(name) for name in names):
         return False
-    return any(COMPARED_SECRET.search(name) for name in names) or any("hmac" in _text_of(side).lower() for side in sides)
+    return any(COMPARED_SECRET.search(name) for name in names) or any("hmac" in name.lower() for side in sides for name in _names_of(side))
 
 
 def check_compare(ctx, node: ast.Compare, loops: int, function: ast.AST | None) -> None:
@@ -306,16 +249,13 @@ def check_call(ctx, node: ast.Call, statement: ast.AST, loops: int, function: as
 
 def _security_call(ctx, node, name, last, head, keywords, statement, function) -> None:
     first = node.args[0] if node.args else None
-    _command_execution(ctx, node, name, head, keywords, first)
+    _command_execution(ctx, node, name, head, keywords, first, function)
     _regex_literal(ctx, node, name, first)
     _deserialization(ctx, node, name, keywords)
-    if last in SQL_METHODS and first is not None and _is_dynamic_string(first) and (last == "execute" or _has_sql(_string_parts(first))) and not _only_placeholders(first, _literal_loop_names(function)):
-        # Values are bound as well, so what's interpolated may only be structure, such as a checked column name.
-        overrides = {"confidence": "low"} if MIGRATION_PATH.search(ctx.path) else {"confidence": "medium"} if len(node.args) > 1 else {}
-        ctx.add("sql-injection", node, f"{name}() receives SQL built from runtime values.", **overrides)
+    _sql_call(ctx, node, keywords, statement, function)
+    _tls_disabled(ctx, node, head, keywords)
     if name in WEAK_HASHES and not (keywords.get("usedforsecurity") and getattr(keywords["usedforsecurity"], "value", True) is False):
-        context = ast.dump(statement) + (function.name if function is not None else "")
-        if re.search(r"password|passwd|pwd|secret", context, re.I):
+        if _hashes_a_credential(node, statement, function):
             ctx.add("weak-password-hash", node, f"{name}() on a password or secret.")
         else:
             ctx.add("weak-crypto", node, f"{name}() in use.")
@@ -327,16 +267,128 @@ def _security_call(ctx, node, name, last, head, keywords, statement, function) -
         ctx.add("world-writable", node)
 
 
+def _hashes_a_credential(node: ast.Call, statement: ast.AST, function: ast.AST | None) -> bool:
+    """What's being hashed says so, and not what's near it: fingerprint_secret_line(line) hashes a line. A name that says it hashes a password is the exception, in `def hash_password(p):`."""
+    given = [*node.args, *(keyword.value for keyword in node.keywords)]
+    names = []
+    for child in (inner for argument in given for inner in ast.walk(argument)):
+        if isinstance(child, ast.Name):
+            names.append(child.id)
+        elif isinstance(child, ast.Attribute):
+            names.append(child.attr)
+        elif isinstance(child, ast.Subscript) and isinstance(child.slice, ast.Constant):
+            names.append(str(child.slice.value))
+    if any(CREDENTIAL_ARGUMENT.search(name) and not (name.lower() == "pwd" and function is not None and MEANS_A_FOLDER.search(function.name)) for name in names):
+        return True
+    targets = [target.id for target in getattr(statement, "targets", []) if isinstance(target, ast.Name)]
+    return any(HASHES_A_PASSWORD.search(name) for name in [*targets, *([function.name] if function is not None else [])])
+
+
+def _tls_disabled(ctx, node: ast.Call, head: str, keywords: dict) -> None:
+    """`verify=False` is a keyword many things take, so what's receiving it has to be talking HTTP. `repo.commit("x", verify=False)` isn't."""
+    verify = keywords.get("verify")
+    if not (isinstance(verify, ast.Constant) and verify.value is False):
+        return
+    chain = _chain(node.func)
+    module = ctx.module_aliases.get(head, head).split(".")[0]
+    if _last(chain) in HTTP_VERBS or _last(chain) in HTTP_SETTING_UP or module in HTTP_LIBRARIES or HTTP_RECEIVER.search(chain):
+        ctx.add("tls-disabled", node)
+
+
+def _is_only_written_out(ctx, name: str, function: ast.AST | None, upper: bool = False) -> bool:
+    """Every binding of this name that this code could read takes a value written in the code."""
+    key = (id(function), name, upper)
+    if key not in ctx.name_verdicts:  # a file can bind one name thousands of times, and ask about it as often
+        bindings = (ctx.bindings(function).get(name) if function is not None else None) or ctx.bindings(None).get(name)
+        ctx.name_verdicts[key] = bool(bindings) and name not in ctx.declared_global() and all(is_literal_binding(binding, upper) for binding in bindings)
+    return ctx.name_verdicts[key]
+
+
+def _name_is_safe_in_sql(ctx, name: str, function: ast.AST | None, comprehensions: dict[str, bool]) -> bool:
+    if name in comprehensions:
+        return comprehensions[name]
+    local = ctx.bindings(function).get(name) if function is not None else None
+    if PLACEHOLDER_NAME.fullmatch(name):  # the name is a claim, so whatever sets it has to back that up. A parameter has only the name to go on.
+        key = (id(function), name, "markers")
+        if key not in ctx.name_verdicts:
+            bindings = local or ctx.bindings(None).get(name) or []
+            ctx.name_verdicts[key] = all(isinstance(binding.node, ast.arg) or (binding.value is not None and builds_bind_markers(binding.value)) for binding in bindings)
+        return ctx.name_verdicts[key]
+    if name.isupper() and not local:  # a constant from this module, or imported from another
+        return True
+    return _is_only_written_out(ctx, name, function, upper=True)
+
+
+def _is_safe_in_sql(ctx, expression: ast.AST, function: ast.AST | None, comprehensions: dict[str, bool]) -> bool:
+    if isinstance(expression, ast.Constant):
+        return True
+    if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name):
+        if expression.func.id in SQL_NUMBER_CALLS:
+            return True
+        if expression.func.id == "str" and expression.args:
+            return _is_safe_in_sql(ctx, expression.args[0], function, comprehensions)
+    if builds_bind_markers(expression):
+        return True
+    names = _names_in(expression)
+    return bool(names) and all(_name_is_safe_in_sql(ctx, name, function, comprehensions) for name in names)
+
+
+def _sql_call(ctx, node: ast.Call, keywords: dict, statement: ast.AST, function: ast.AST | None) -> None:
+    chain = _chain(node.func)
+    method = _last(chain)
+    if method not in SQL_METHODS and method != "extra":
+        return
+    comprehensions = ctx.comprehensions_in(statement).get(id(node), {})
+
+    def is_safe(text: ast.AST) -> bool:
+        return all(_is_safe_in_sql(ctx, part, function, comprehensions) for part in _interpolated(text))
+
+    if method == "extra":
+        if any(item is not None and _is_dynamic_string(item) and not is_safe(item) for item in _django_extra_items(keywords)):
+            ctx.add("sql-injection", node, f"{chain}() receives SQL built from runtime values.")
+        return
+    text = node.args[0] if node.args else next((keywords[key] for key in SQL_TEXT_KEYWORDS if key in keywords), None)
+    if isinstance(text, ast.Name):
+        _sql_held_by_name(ctx, node, chain, text.id, function, is_safe)
+    elif text is not None and _is_dynamic_string(text) and _reads_as_sql(text, method, chain) and not is_safe(text):
+        # Values are bound as well, so what's interpolated may only be structure, such as a checked column name.
+        overrides = {"confidence": "low"} if MIGRATION_PATH.search(ctx.path) else {"confidence": "medium"} if len(node.args) > 1 else {}
+        ctx.add("sql-injection", node, f"{chain}() receives SQL built from runtime values.", **overrides)
+
+
+def _django_extra_items(keywords: dict) -> list:
+    written = []
+    for key in DJANGO_EXTRA_SQL:
+        value = keywords.get(key)
+        written += value.values if isinstance(value, ast.Dict) else getattr(value, "elts", [])
+    return written
+
+
+def _reads_as_sql(text: ast.AST, method: str, chain: str) -> bool:
+    """execute() also runs shell commands and jobs, so it needs its text or its receiver to say this is SQL."""
+    return _has_sql(_string_parts(text)) or (method == "execute" and bool(SQL_RECEIVER.search(chain.rpartition(".")[0])))
+
+
+def _sql_held_by_name(ctx, node: ast.Call, chain: str, name: str, function: ast.AST | None, is_safe) -> None:
+    """A step removed from the call, so this is a lead to read and not one to interrupt for."""
+    held = holds_at(ctx.bindings(function).get(name, []), node)
+    built = [value for index, value in enumerate(held) if _is_dynamic_string(value) or (index and not isinstance(value, ast.Constant))]
+    if built and _has_sql(" ".join(_string_parts(value) for value in held)) and not all(is_safe(value) for value in built):
+        ctx.add("sql-injection", node, f"{chain}() receives SQL built from runtime values, by way of {name}.", confidence="low" if MIGRATION_PATH.search(ctx.path) else "medium")
+
+
 def _regex_literal(ctx, node, name, first) -> None:
     if name.split(".")[0] in ("re", "regex") and isinstance(first, ast.Constant) and isinstance(first.value, str) and NESTED_QUANTIFIER.search(first.value):
         ctx.add("redos-regex", node, "This pattern has a repeated group containing a repeat.")
 
 
-def _command_execution(ctx, node, name, head, keywords, first) -> None:
+def _command_execution(ctx, node, name, head, keywords, first, function) -> None:
     if first is None or isinstance(first, ast.Constant):
         return
     if name in ("eval", "exec"):
         ctx.add("dynamic-eval", node, f"{name}() on a value computed at runtime.")
+    if isinstance(first, ast.Name) and _is_only_written_out(ctx, first.id, function):  # `cmd = "git log"`, which is a shell command and no injection
+        return
     shell = keywords.get("shell")
     if head == "subprocess" and isinstance(shell, ast.Constant) and shell.value is True:
         ctx.add("shell-injection", node, f"{name}(shell=True) with a value computed at runtime.")
@@ -367,7 +419,7 @@ def _targets_secret(statement, function) -> bool:
 def _practice_call(ctx, node, name, last, head, keywords, statement) -> None:
     if name == "bool" and node.args and isinstance(node.args[0], ast.Call) and re.search(r"getenv$|environ\.get$", _call_name(node.args[0])):
         ctx.add("env-flag-truthy", node, "The string 'false' is truthy.")
-    if name == "int" and node.args and isinstance(node.args[0], ast.BinOp) and MONEY_NAME.search(_text_of(node.args[0])) and any(isinstance(n, ast.Constant) and isinstance(n.value, float) for n in ast.walk(node.args[0])):
+    if name == "int" and node.args and isinstance(node.args[0], ast.BinOp) and _is_money(node.args[0]) and any(isinstance(n, ast.Constant) and isinstance(n.value, float) for n in ast.walk(node.args[0])):
         ctx.add("float-money", node, "Float arithmetic on money, then truncated by int().")
     if name in ("date.today", "datetime.date.today"):
         ctx.add("naive-datetime", node, "date.today() uses the host's timezone.")
@@ -375,20 +427,37 @@ def _practice_call(ctx, node, name, last, head, keywords, statement) -> None:
         ctx.add("naive-datetime", node, "datetime.now() without a timezone.")
     if name == "open" and isinstance(statement, ast.Assign):
         ctx.add("resource-no-context", node)
-    if name == "float" and node.args and MONEY_NAME.search(_text_of(node.args[0])):
+    if name == "float" and node.args and _is_money(node.args[0]):
         ctx.add("float-money", node, "float() on a money value.")
-    if name == "round" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 2 and MONEY_NAME.search(_text_of(node.args[0])):
+    if name == "round" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 2 and _is_money(node.args[0]):
         ctx.add("float-money", node, "round(x, 2) on a money value uses binary floats and banker's rounding.")
 
 
-def _text_of(node: ast.AST) -> str:
-    names = []
-    for child in ast.walk(node):
-        if isinstance(child, ast.Name):
-            names.append(child.id)
-        elif isinstance(child, ast.Attribute):
-            names.append(child.attr)
-    return " ".join(names).replace(" ", "_") if len(names) == 1 else " ".join(names)
+def _names_of(node: ast.AST) -> list[str]:
+    return [child.id if isinstance(child, ast.Name) else child.attr for child in ast.walk(node) if isinstance(child, (ast.Name, ast.Attribute))]
+
+
+def _value_names(node: ast.AST) -> list[str]:
+    """Where a value comes from: `order.amount` is an amount, `payment.retry_count` isn't one because of its receiver, and `correct / total` is a ratio."""
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, ast.Attribute):
+        return [node.attr]
+    if isinstance(node, ast.Call):
+        return _value_names(node.func)
+    if isinstance(node, ast.Subscript):
+        return _value_names(node.value)
+    if isinstance(node, ast.UnaryOp):
+        return _value_names(node.operand)
+    if isinstance(node, ast.BoolOp):
+        return [name for value in node.values for name in _value_names(value)]
+    if isinstance(node, ast.BinOp):
+        return _value_names(node.left) + ([] if isinstance(node.op, ast.Div) else _value_names(node.right))
+    return []
+
+
+def _is_money(node: ast.AST) -> bool:
+    return any(MONEY_NAME.search(name) for name in _value_names(node))
 
 
 def _is_remote_call(name: str, last: str, head: str) -> bool:

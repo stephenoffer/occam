@@ -184,10 +184,6 @@ def _bash_says(text: str) -> tuple[int, str, bool] | None:
     return int(match.group(1)), match.group(2)[:120], bool(found and int(found.group(1)) < 4)
 
 
-def _line(offsets: Source, position: int) -> int:
-    return offsets.line_of(position)
-
-
 def line_of_text(source: Source, number: int) -> str:
     starts = source.line_starts
     end = starts[number] - 1 if number < len(starts) else len(source.text)
@@ -216,7 +212,7 @@ def _quoting(source: Source, masked: str) -> Iterable[tuple]:
             continue
         if command == "rm" and re.match(r"-[a-zA-Z]*[rf]", rest.strip()):
             continue  # shell-unquoted-rm reports this one
-        line = _line(source, match.start(2) + variable.start())
+        line = source.line_of(match.start(2) + variable.start())
         if line not in seen and len(seen) < 10:
             seen.add(line)
             yield "shell-unquoted-path", line, f"{command} gets {variable.group(0)} unquoted, so spaces or a glob in the value change what it touches.", {}
@@ -226,23 +222,23 @@ def _flow(source: Source, masked: str, strict: bool) -> Iterable[tuple]:
     if not strict:
         reported = 0
         for match in _CD.finditer(masked):
-            line = _line(source, match.start() + len(match.group(0)) - len(match.group(0).lstrip()))
+            line = source.line_of(match.start() + len(match.group(0)) - len(match.group(0).lstrip()))
             if reported < 5 and not line_of_text(source, line).rstrip().endswith("\\"):  # continues with && on the next line
                 reported += 1
                 yield "shell-cd-unchecked", line, None, {}
     for match in _MASKED.finditer(source.text):
         if not masked[match.start():match.end()].isspace():
-            yield "shell-masked-failure", _line(source, match.start()), None, {}
-    evals = [match for match in _EVAL.finditer(masked) if "$" in line_of_text(source, _line(source, match.start()))]
+            yield "shell-masked-failure", source.line_of(match.start()), None, {}
+    evals = [match for match in _EVAL.finditer(masked) if "$" in line_of_text(source, source.line_of(match.start()))]
     for match in evals[:5]:
-        yield "dynamic-eval", _line(source, match.start()), "eval runs what a variable holds.", {}
+        yield "dynamic-eval", source.line_of(match.start()), "eval runs what a variable holds.", {}
 
 
 def _listing(source: Source, masked: str) -> Iterable[tuple]:
     for match in list(_LS_PARSE.finditer(masked))[:5]:
-        yield "shell-ls-parse", _line(source, match.end() - 1), None, {}
+        yield "shell-ls-parse", source.line_of(match.end() - 1), None, {}
     for match in list(_WORD_SPLIT.finditer(masked))[:5]:
-        yield "shell-word-split", _line(source, match.end() - 1), None, {}
+        yield "shell-word-split", source.line_of(match.end() - 1), None, {}
 
 
 def _removal(source: Source, masked: str) -> Iterable[tuple]:
@@ -253,19 +249,19 @@ def _removal(source: Source, masked: str) -> Iterable[tuple]:
         if name in _RM_SAFE_VARIABLES or masked[start] == " ":
             continue
         everything = match.group(3).rstrip('"').startswith("/*")
-        yield "shell-rm-unguarded", _line(source, start), f"If {name} is empty this removes {'everything under /' if everything else 'a path under /'}.", {} if everything else {"severity": "medium"}
+        yield "shell-rm-unguarded", source.line_of(start), f"If {name} is empty this removes {'everything under /' if everything else 'a path under /'}.", {} if everything else {"severity": "medium"}
 
 
 def _temp(source: Source, masked: str) -> Iterable[tuple]:
     bodies = _heredoc_bodies(source.text)
     for match in _PREDICTABLE_TMP.finditer(source.text):  # the raw text, because a quoted path is just as predictable
-        line = _line(source, match.start())
+        line = source.line_of(match.start())
         before = source.text[source.line_starts[line - 1]:match.start()]
         if line not in bodies and not _COMMENT_BEFORE.search(before):
             yield "insecure-tempfile", line, "A predictable path in /tmp can be planted by another user.", {}
             break
     if re.search(r"\bmktemp\b", masked) and not re.search(r"^[ \t]*trap\b", masked, re.M):
-        yield "shell-tmp-no-trap", _line(source, re.search(r"\bmktemp\b", masked).start()), None, {}
+        yield "shell-tmp-no-trap", source.line_of(re.search(r"\bmktemp\b", masked).start()), None, {}
 
 
 def _portability(source: Source, masked: str) -> Iterable[tuple]:
@@ -273,7 +269,7 @@ def _portability(source: Source, masked: str) -> Iterable[tuple]:
     for _, pattern, message in _NONPORTABLE:
         match = pattern.search(masked)
         if match:
-            yield "shell-nonportable", _line(source, match.start() + len(match.group(0)) - len(match.group(0).lstrip())), f"{message}.", guarded
+            yield "shell-nonportable", source.line_of(match.start() + len(match.group(0)) - len(match.group(0).lstrip())), f"{message}.", guarded
 
 
 def _bashisms(source: Source, masked: str) -> Iterable[tuple]:
@@ -282,7 +278,7 @@ def _bashisms(source: Source, masked: str) -> Iterable[tuple]:
     for _, pattern, label in _BASHISMS:
         match = pattern.search(masked)
         if match:
-            yield "shell-bashism", _line(source, match.start() + len(match.group(0)) - len(match.group(0).lstrip())), f"{label} isn't POSIX, and this script's shebang asks for sh, which is dash on Debian and Ubuntu.", {}
+            yield "shell-bashism", source.line_of(match.start() + len(match.group(0)) - len(match.group(0).lstrip())), f"{label} isn't POSIX, and this script's shebang asks for sh, which is dash on Debian and Ubuntu.", {}
 
 
 def shell_findings(source: Source) -> Iterable[tuple]:

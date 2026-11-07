@@ -88,3 +88,11 @@ def test_shares_add_up_on_a_real_overhead():
     line = cost_report.overhead_line(7, 2.0, extra)
     assert "7 cases: +50% over no skill" in line
     assert "write 50%, read 20%, output 30%, subagents 0%" in line and "-0%" not in line
+    assert "Share of the extra" in line
+
+
+def test_a_cheaper_arm_gets_shares_of_a_saving():
+    extra = {"total": -1.0, "write": 0.3, "read": 0.5, "output": 0.2, "subagents": -2.0}
+    line = cost_report.overhead_line(1, 4.0, extra)
+    assert "-25% over no skill" in line
+    assert "Share of the saving: write -30%, read -50%, output -20%, subagents 200%" in line

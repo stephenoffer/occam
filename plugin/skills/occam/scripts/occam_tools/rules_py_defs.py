@@ -7,12 +7,11 @@ import re
 
 from .py_helpers import (
     ONCE_ONLY_CALLS,
-    ABSTRACT_NAME, AUTH_DECORATOR, AUTH_DEPEND, AUTH_NAME, FUNCTION_NODES, GENERIC_TEST, HEDGE_NAME, HELPERS,
+    ABSTRACT_NAME, AUTH_CALL, AUTH_DECORATOR, AUTH_DEPEND, FUNCTION_NODES, GENERIC_TEST, HEDGE_NAME, HELPERS,
     PATTERN_CLASS, ROUTE_DECORATOR, TWIN_HEDGE, VAGUE_CLASS, _body, _call_name, _complexity, _decorator_names,
-    _docstring, _dotted, _has_sql, _last, _max_nesting, _names_in, _string_parts, _walk_own, shape_hash,
+    _docstring, _dotted, _has_sql, _last, _max_nesting, _names_in, _string_parts, _walk_own, looks_like_auth_check, shape_hash,
 )
 
-from .rules_py_flow import bound_names, compares_with_none
 
 FILE_SINKS = {"open", "os.path.join", "send_file", "Path", "pathlib.Path", "FileResponse", "os.remove", "shutil.copy"}
 REQUEST_SOURCE = re.compile(r"'(?:query|query_params|args|form|params|request|req|GET|POST|json|body)'")
@@ -20,6 +19,8 @@ CHECKING_CALL = re.compile(r"(?:assert|check|verify|expect|ensure|validate|raise
 ENCRYPTION_NAME = re.compile(r"(?:^|_)(?:encrypt|decrypt|cipher|obfuscate)", re.I)
 COUNT_LIKE = re.compile(r"(?:count|total|num|size|len|calls?|attempts?)\w*$", re.I)
 DOCSTRING_FILLER = {"the", "a", "an", "this", "function", "method", "of", "for", "to", "class"}
+NO_OP_NAME = re.compile(r"_*(?:noop|nop|no_op|do_nothing)(?:_\w*)?", re.I)
+NULL_OBJECT_CLASS = re.compile(r"_*(?:Null|Noop|NoOp|Nop)(?=[A-Z_]|$)")
 
 
 def check_function(ctx, node: ast.AST, class_node: ast.ClassDef | None) -> None:
@@ -43,8 +44,6 @@ def check_function(ctx, node: ast.AST, class_node: ast.ClassDef | None) -> None:
     else:
         _test_function(ctx, node, name, decorator_last)
     _defaults(ctx, node)
-    if not ctx.is_test and not ctx.is_stub_file:
-        _none_checks_against_signature(ctx, node)
     if isinstance(node, ast.AsyncFunctionDef) and not decorators:
         own = list(_walk_own(node))
         if not any(isinstance(n, (ast.Await, ast.AsyncFor, ast.AsyncWith, ast.Yield, ast.YieldFrom)) for n in own) and body and not ctx.is_test:
@@ -55,59 +54,6 @@ def check_function(ctx, node: ast.AST, class_node: ast.ClassDef | None) -> None:
         return
     for decorator in node.decorator_list:
         _cache_decorator(ctx, decorator, class_node)
-
-
-BUILTIN_TYPES = {"str", "int", "float", "bool", "bytes", "bytearray", "complex", "list", "dict", "set", "frozenset", "tuple"}
-TRUSTED_TYPE_MODULES = {"typing", "collections.abc", "pathlib", "decimal", "datetime"}
-STANDARD_TYPES = {"List", "Dict", "Set", "FrozenSet", "Tuple", "Sequence", "Mapping", "Iterable", "Iterator", "Path", "Decimal", "datetime", "date"}
-
-
-def _names_a_concrete_type(node: ast.AST, ctx) -> bool:
-    if isinstance(node, ast.Attribute):
-        return _dotted(node).rpartition(".")[0] in TRUSTED_TYPE_MODULES and node.attr in STANDARD_TYPES
-    if not isinstance(node, ast.Name):
-        return False
-    name = node.id
-    if name in ctx.local_classes or (name in STANDARD_TYPES and name in ctx.trusted_imports):
-        return True
-    return name in BUILTIN_TYPES and name not in ctx.shadowed_names
-
-
-def excludes_none(annotation: ast.AST, ctx) -> bool:
-    """Whether an annotation rules out None, as far as this file shows. Only builtins, classes defined here and named standard types count. An imported name could be an alias or a type variable, and a union can hold None."""
-    if isinstance(annotation, ast.Constant):
-        if not isinstance(annotation.value, str):
-            return False
-        try:
-            annotation = ast.parse(annotation.value, mode="eval").body
-        except SyntaxError:
-            return False
-    return _names_a_concrete_type(annotation.value if isinstance(annotation, ast.Subscript) else annotation, ctx)
-
-
-def _none_default_names(arguments: ast.arguments) -> set:
-    positional = arguments.posonlyargs + arguments.args
-    pairs = list(zip(positional[len(positional) - len(arguments.defaults):], arguments.defaults)) + list(zip(arguments.kwonlyargs, arguments.kw_defaults))
-    return {arg.arg for arg, default in pairs if isinstance(default, ast.Constant) and default.value is None}
-
-
-def _none_checks_against_signature(ctx, node) -> None:
-    if node.decorator_list:
-        return  # a framework may call it with raw values, as a validator does, so its annotation describes the result and not the input
-    arguments = node.args
-    implicit_optional = _none_default_names(arguments)
-    annotated = {arg.arg: arg.annotation for arg in arguments.posonlyargs + arguments.args + arguments.kwonlyargs
-                 if arg.annotation is not None and arg.arg not in implicit_optional and excludes_none(arg.annotation, ctx)}
-    if not annotated:
-        return
-    rebound = bound_names(node)
-    for candidate in _walk_own(node):
-        if not isinstance(candidate, (ast.If, ast.IfExp)):
-            continue
-        name = compares_with_none(candidate.test)
-        raises = isinstance(candidate, ast.If) and any(isinstance(statement, ast.Raise) for statement in candidate.body + candidate.orelse)  # an explicit guard on a public function is validation
-        if name in annotated and name not in rebound and not raises:
-            ctx.add("impossible-none-check", candidate, f"{name} is annotated {ast.unparse(annotated[name])}, so this check contradicts the signature. One of them is wrong.")
 
 
 def _options(node) -> list:
@@ -146,14 +92,18 @@ def _stub_rules(ctx, node, body, decorator_last, class_node) -> None:
         ctx.add("stub-raise", node, f"{name} only raises NotImplementedError.", **owner)
     elif _is_empty(body) and name != "__init__":
         ctx.add("stub-body", node, f"{name} has no body.", confidence=_stub_confidence(ctx, node, class_node), **owner)
-    arguments = [arg.arg for arg in node.args.args if arg.arg not in ("self", "cls")]
+    arguments = [arg.arg for arg in [*node.args.args, *node.args.kwonlyargs] if arg.arg not in ("self", "cls")]
     always_true = len(body) == 1 and isinstance(body[0], ast.Return) and isinstance(body[0].value, ast.Constant) and body[0].value.value is True
-    if always_true and AUTH_NAME.search(name) and arguments:
+    if always_true and looks_like_auth_check(node) and arguments:
         ctx.add("fake-success", node, f"{name} always returns True and ignores {', '.join(arguments)}.")
 
 
 def _stub_confidence(ctx, node, class_node) -> str:
-    """Empty hook methods on a working class are normal. A class of nothing but stubs, or an empty function, isn't."""
+    """Empty hook methods on a working class are normal. A class of nothing but stubs, or an empty function, isn't. Empty is the point of a no-op or a handler handed to something else."""
+    parameters = [arg.arg for arg in node.args.args]
+    signal_handler = len(parameters) == 2 and "sig" in parameters[0].lower() and "frame" in parameters[1].lower() and node.name in ctx.referenced_as_values()
+    if NO_OP_NAME.fullmatch(node.name) or (class_node is not None and NULL_OBJECT_CLASS.match(class_node.name)) or signal_handler:
+        return "low"
     if class_node is None:
         return "medium" if _docstring(node) is not None else "high"
     methods = [m for m in class_node.body if isinstance(m, FUNCTION_NODES) and m.name != "__init__"]
@@ -313,7 +263,7 @@ def _route_is_guarded(node, decorators: list[str]) -> bool:
     for default in node.args.defaults + [d for d in node.args.kw_defaults if d is not None]:
         if isinstance(default, ast.Call) and _last(_call_name(default)) in ("Depends", "Security") and AUTH_DEPEND.search(ast.dump(default)):
             return True
-    return any(isinstance(n, ast.Call) and AUTH_DECORATOR.search(_last(_call_name(n)) or "") for n in ast.walk(node))
+    return any((isinstance(n, ast.Call) and AUTH_CALL.match(_last(_call_name(n)) or "")) or (isinstance(n, ast.Name) and n.id == "current_user") for n in ast.walk(node))
 
 
 def _route(ctx, node, decorators: list[str]) -> None:
@@ -477,6 +427,10 @@ def _test_call(ctx, call: ast.Call, name: str, found: dict) -> None:
 def _is_tautology(test: ast.AST) -> bool:
     if isinstance(test, ast.Constant):
         return bool(test.value)
+    if isinstance(test, ast.Tuple):  # `assert (x == 3, "message")` checks a tuple, not x
+        return bool(test.elts)
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or) and any(isinstance(value, ast.Constant) and value.value for value in test.values):
+        return True
     if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.GtE) and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == 0:
         return (isinstance(test.left, ast.Call) and _call_name(test.left) == "len") or bool(COUNT_LIKE.search(_dotted(test.left) or ""))
     # Two calls can differ, and comparing them is how a test checks a singleton or a seed.

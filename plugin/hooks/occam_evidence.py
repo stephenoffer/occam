@@ -12,10 +12,11 @@ import re
 from pathlib import Path
 from urllib.parse import unquote
 
+CLAIMS_PASSING = re.compile(r"(\b(tests?|suite|checks?)\b[^.\n]{0,40}\b(pass|passes|passing|passed|green)\b|\b\d+\s+passed\b)", re.I)
+NEGATED_CLAIM = re.compile(r"\b(not|n't|couldn.t|unable|without|never|tells you nothing|no test)\b", re.I)
 WEB_TOOLS = {"WebFetch", "WebSearch"}
-NEVER_STARTED = re.compile(r"command not found|\bExit code 127\b|\bNo module named (?:pytest|mypy|ruff)\b")
-RUNS_ON_A_COPY = re.compile(r"\$\{?TMPDIR\b|\bmktemp\b|\bgit(?:\s+-\S+)*\s+show\s+HEAD:|\bgit(?:\s+-\S+)*\s+worktree\s+add\b")
-UNSCOPED_CLAIM = re.compile(r"\b(?:all(?: of)?(?: the)?(?: \d+)?|the(?: \d+)?|every|\d+) (?:tests?|checks?)\b|\b(?:whole|full|entire) (?:test )?suite\b|^\W*(?:tests?|checks?)\b", re.I)
+# A named part: "the pricing tests", "unit tests". Not "the tests", "my tests", "these checks" or "12 tests", which claim everything.
+SCOPED_CLAIM = re.compile(r"\b(?!(?:all|the|my|our|these|those|this|every|new|\d+)\b)[a-z][\w-]* (?:tests?|checks?)\b", re.I)
 FAILED_CHECKS_BEFORE_NOTE = 3
 
 # Anchored to a stripped line's start, because the word alone also turns up in docstrings, strings and names.
@@ -124,13 +125,8 @@ def live_count(pattern: re.Pattern, text: str) -> int:
 
 
 def failed_here(check: dict) -> bool:
-    """Did this check fail in a way that says something about the code being worked on?"""
+    """Did this check fail in a way that says something about the code being worked on? One that never started, or ran on a copy elsewhere, didn't."""
     return not check.get("passed") and not check.get("not_this_code")
-
-
-def says_nothing_about_this_code(command: str, output: str) -> bool:
-    """The check never started, or ran on a copy of older code, which is how a new test shows it can fail. Neither result is about this code."""
-    return bool(NEVER_STARTED.search(output) or RUNS_ON_A_COPY.search(command))
 
 
 def just_failed(turn: list[dict]) -> bool:
@@ -138,8 +134,8 @@ def just_failed(turn: list[dict]) -> bool:
     for entry in reversed(turn):
         if entry.get("kind") == "edit" and entry.get("code"):
             return False
-        if entry.get("kind") == "check" and not entry.get("agent"):
-            return failed_here(entry)
+        if entry.get("kind") == "check" and not entry.get("agent") and not entry.get("not_this_code"):
+            return not entry.get("passed")
     return False
 
 
@@ -162,8 +158,11 @@ def is_generated(path: str) -> bool:
     return os.path.basename(path.rstrip("/*")) in GENERATED_NAMES
 
 
-def deletes_too_much(word: str) -> bool:
-    """Would a recursive delete of this reach the root, home, the whole working directory, or outside it?"""
+def deletes_too_much(word: str, inside_project=lambda _: False) -> bool:
+    """Would a recursive delete of this reach the root, home, the whole working directory, or outside it?
+
+    A folder in the project written as an absolute path is the same delete as `rm -rf src`, which isn't asked about.
+    """
     if not word:
         return False
     if word == "$" or word.startswith(("$(", "`", "$PWD", "${PWD", "$HOME", "${HOME", "~")):
@@ -173,12 +172,12 @@ def deletes_too_much(word: str) -> bool:
     path = os.path.normpath(word)
     if word in ("*", "./*", "../*", "/*") or path in (".", "..", "/") or path.startswith("../"):
         return True
-    if not path.startswith("/") or path.startswith(("/tmp/", "/private/tmp/", "/var/folders/")):
+    if not path.startswith("/") or path.startswith(("/tmp/", "/private/tmp/", "/var/folders/")) or inside_project(path):
         return False
     return not is_generated(path)
 
 
-def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]]) -> str | None:
+def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside_project=lambda _: False) -> str | None:
     """Why someone should see this command first. `programs` is each simple command's program and arguments."""
     if DISABLES_CHECKS.search(text) and SETTINGS_FILE.search(text):
         return "this turns off the checks on this session's work."
@@ -186,7 +185,7 @@ def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]]) -> str
         return "this runs a download straight in a shell."
     for name, args in programs:
         if name == "rm" and any(re.fullmatch(r"-[a-zA-Z]*[rR][a-zA-Z]*|--recursive", arg) for arg in args):
-            targets = [arg for arg in args if not arg.startswith("-") and deletes_too_much(arg)]
+            targets = [arg for arg in args if not arg.startswith("-") and deletes_too_much(arg, inside_project)]
             if targets:
                 return f"this recursively deletes {targets[0]}."
         elif name in HARD_TO_UNDO and HARD_TO_UNDO[name] in args:
@@ -232,10 +231,10 @@ def failed_check_streak(turn: list[dict]) -> list[int]:
     streak = []
     for index, entry in reversed(list(enumerate(turn))):
         if entry.get("kind") == "check" and not entry.get("agent"):
-            if entry.get("passed"):
-                break
             if failed_here(entry):
                 streak.append(index)
+            elif not entry.get("not_this_code"):
+                break
     return streak
 
 
@@ -256,37 +255,39 @@ def claims_a_measured_change(message: str) -> bool:
     return any(MEASURED_CHANGE.search(s) and PERFORMANCE_WORD.search(s) and DIRECTION.search(s) and not HEDGED.search(s) for s in sentences_of(message))
 
 
-def leaves_out_a_failure(message: str, claims_passing: re.Pattern, negated: re.Pattern) -> bool:
+def leaves_out_a_failure(message: str) -> bool:
     """No word of a failure, or a claim that everything passes which nothing in its own sentence qualifies. "All the pricing tests pass" is scoped, so it can sit beside an honest failure."""
     if not MENTIONS_FAILURE.search(message):
         return True
-    return any(claims_passing.search(s) and UNSCOPED_CLAIM.search(s) and not negated.search(s) and not MENTIONS_FAILURE.search(s) for s in sentences_of(message))
+    return any(CLAIMS_PASSING.search(s) and not SCOPED_CLAIM.search(s) and not NEGATED_CLAIM.search(s) and not MENTIONS_FAILURE.search(s) for s in sentences_of(message))
 
 
 def has_an_unsettled_failure(checks: list[dict]) -> bool:
     """Did a check fail with no later pass of that same check? Only an unnarrowed run of a whole suite settles part of it."""
     failed: dict = {}
     for check in checks:
+        if check.get("not_this_code"):  # it says nothing either way, so it neither fails this code nor clears a failure
+            continue
         runs = check.get("runs") or []
         if not check.get("passed"):
-            if failed_here(check) and not check.get("agent"):  # a subagent probing for failures is doing its job
+            if not check.get("agent"):  # a subagent probing for failures is doing its job
                 failed.update({text: key for text, key in runs})
             continue
         for text, key in runs:
-            whole_suite = key in WHOLE_SUITE_PROGRAMS and not NARROWS_A_RUN.search(text)
+            whole_suite = key in WHOLE_SUITE_PROGRAMS and not NARROWS_A_RUN.search(text.replace("-m pytest", ""))
             failed = {t: k for t, k in failed.items() if t != text and not (whole_suite and k.split()[0] == key)}
     return bool(failed)
 
 
-def unmatched_test_count(turn: list[dict], message: str, negated: re.Pattern) -> str | None:
+def unmatched_test_count(turn: list[dict], message: str) -> str | None:
     """A count of passing tests that appears in no check's output this turn, when some output states a count at all."""
-    checks = [e for e in turn if e.get("kind") == "check"]
+    checks = [e for e in turn if e.get("kind") == "check" and not e.get("not_this_code")]
     if not any(e.get("counted") for e in checks):
         return None
     seen = {number for e in checks for number in e.get("numbers", [])}
     for match in TEST_COUNT.finditer(message):
         sentence = sentences_of(message[max(0, match.start() - 60):match.end()])[-1]
-        if match.group(1).replace(",", "") not in seen and not negated.search(sentence):
+        if match.group(1).replace(",", "") not in seen and not NEGATED_CLAIM.search(sentence):
             return match.group(1)
     return None
 

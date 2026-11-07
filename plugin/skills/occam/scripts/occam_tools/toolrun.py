@@ -16,7 +16,6 @@ from . import files as filesystem
 from .query import language_at
 from .source import language_of
 
-MAX_OUTPUT = 4000
 MAX_FILES_NAMED = 400  # what one command line can carry
 
 
@@ -91,7 +90,10 @@ def _scoped(command: list[str], root: Path, paths: list[str] | None) -> list[str
     """A tool told `.` reads the whole repository, which can take longer than the time it's given on a large one. Named paths narrow it."""
     if not paths or "." not in command:
         return command
-    relative = [f"./{Path(path).resolve().relative_to(root.resolve())}".replace(os.sep, "/") for path in paths]
+    try:
+        relative = [f"./{Path(path).resolve().relative_to(root.resolve())}".replace(os.sep, "/") for path in paths]
+    except ValueError:
+        raise filesystem.OutsideProject(f"{' '.join(paths)} isn't all inside this project ({root})") from None
     index = command.index(".")
     return [*command[:index], *relative, *command[index + 1:]]
 
@@ -107,18 +109,48 @@ def _summarize(tool: Tool, stdout: str) -> str:
     return f"{len(stdout.splitlines())} lines of output"
 
 
+def _describe(present: list[tuple], languages: set[str]) -> str:
+    lines = [f"Languages here: {', '.join(sorted(languages)) or 'none'}. Prefer these analyzers to occam's rules where they overlap.", ""]
+    for tool, location, in_repository in present:
+        state = "available" if location else f"missing, install with: {tool.install}"
+        caution = "  [runs repo code: needs --allow-exec]" if (tool.executes_repo or in_repository) and location else ""
+        lines.append(f"  {tool.name:<15}{tool.purpose}: {state}{caution}")
+    lines += ["", "`occam tools --run` runs the available ones with no note above, which only read files and execute nothing from the repository. Installing anything is your user's call, so ask first."]
+    return "\n".join(lines)
+
+
+def _named_files(tool: Tool, root: Path, paths: list[str] | None) -> tuple[list[str], str | None]:
+    """For a tool that needs each file named: which ones, and a note if that means it can't run or can't read them all. ./ so a name can't be read as a flag."""
+    if tool.name == "hadolint":
+        found = [f"./{p}" for p in filesystem.list_files(root, paths, {}) if p.rsplit("/", 1)[-1].startswith("Dockerfile")]
+        return found[:MAX_FILES_NAMED], None if found else "no Dockerfile here"
+    if tool.name == "shellcheck":
+        found = [f"./{p}" for p in filesystem.list_files(root, paths, {}) if language_at(root, p) == "shell"]
+        return found[:MAX_FILES_NAMED], None if found else "no shell scripts here"
+    return [], None
+
+
+def _run_one(tool: Tool, command: list[str], root: Path, output_folder: Path | None) -> str:
+    try:
+        done = subprocess.run(command, cwd=str(root), capture_output=True, text=True, errors="replace", timeout=300)
+    except subprocess.TimeoutExpired:
+        return f"  {tool.name}: timed out after 300s"
+    except OSError as error:
+        return f"  {tool.name}: failed to start ({error})"
+    saved = ""
+    if output_folder:
+        target = output_folder / f"{tool.name}.out"
+        target.write_text(done.stdout + "\n" + done.stderr)
+        saved = f", saved to {target}"
+    return f"  {tool.name}: exit {done.returncode}, {_summarize(tool, done.stdout)}{saved}"
+
+
 def run_tools(root: Path, execute: bool = False, allow_exec: bool = False, only: list[str] | None = None, paths: list[str] | None = None) -> str:
     languages = _languages_here(root)
     relevant = [t for t in CATALOG if ("*" in t.languages or languages & set(t.languages)) and (not only or t.name in only)]
     present = [(t, *_locate(root, t.name)) for t in relevant]
     if not execute:
-        lines = [f"Languages here: {', '.join(sorted(languages)) or 'none'}. Prefer these analyzers to occam's rules where they overlap.", ""]
-        for tool, location, in_repository in present:
-            state = "available" if location else f"missing, install with: {tool.install}"
-            caution = "  [runs repo code: needs --allow-exec]" if (tool.executes_repo or in_repository) and location else ""
-            lines.append(f"  {tool.name:<15}{tool.purpose}: {state}{caution}")
-        lines += ["", "`occam tools --run` runs the available ones with no note above, which only read files and execute nothing from the repository. Installing anything is your user's call, so ask first."]
-        return "\n".join(lines)
+        return _describe(present, languages)
     try:
         output_folder = filesystem.state_dir(root) / "tools"
         output_folder.mkdir(exist_ok=True)
@@ -128,37 +160,16 @@ def run_tools(root: Path, execute: bool = False, allow_exec: bool = False, only:
     for tool, location, in_repository in present:
         if not location:
             lines.append(f"  {tool.name}: not run, not installed")
-            continue
-        if (tool.executes_repo or in_repository) and not allow_exec:
+        elif (tool.executes_repo or in_repository) and not allow_exec:
             lines.append(f"  {tool.name}: not run, it can execute repository code. Read the config, then use --allow-exec")
-            continue
-        command = _scoped([location, *tool.command[1:]], root, paths)
-        if tool.name == "hadolint":
-            dockerfiles = [f"./{p}" for p in filesystem.list_files(root, paths, {}) if p.rsplit("/", 1)[-1].startswith("Dockerfile")]
-            if not dockerfiles:
-                lines.append("  hadolint: not run, no Dockerfile here")
+        else:
+            named, reason = _named_files(tool, root, paths)
+            if tool.command[-1] == "--version":
+                reason = "it needs arguments only you know, such as a compile database, so run it yourself. It's installed, and nothing was analyzed"
+            if reason:
+                lines.append(f"  {tool.name}: not run, {reason}")
                 continue
-            command += dockerfiles[:MAX_FILES_NAMED]
-        if tool.name == "shellcheck":
-            scripts = [f"./{p}" for p in filesystem.list_files(root, paths, {}) if language_at(root, p) == "shell"]  # ./ so a name can't be read as a flag
-            if not scripts:
-                lines.append("  shellcheck: not run, no shell scripts here")
-                continue
-            if len(scripts) > MAX_FILES_NAMED:
-                lines.append(f"  shellcheck: only the first {MAX_FILES_NAMED} of {len(scripts)} scripts, so name a folder for the rest")
-            command += scripts[:MAX_FILES_NAMED]
-        try:
-            done = subprocess.run(command, cwd=str(root), capture_output=True, text=True, errors="replace", timeout=300)
-        except subprocess.TimeoutExpired:
-            lines.append(f"  {tool.name}: timed out after 300s")
-            continue
-        except OSError as error:
-            lines.append(f"  {tool.name}: failed to start ({error})")
-            continue
-        saved = ""
-        if output_folder:
-            target = output_folder / f"{tool.name}.out"
-            target.write_text(done.stdout + "\n" + done.stderr)
-            saved = f", saved to {target}"
-        lines.append(f"  {tool.name}: exit {done.returncode}, {_summarize(tool, done.stdout)}{saved}")
+            if len(named) == MAX_FILES_NAMED:
+                lines.append(f"  {tool.name}: read at most the first {MAX_FILES_NAMED} files, so name a folder for the rest")
+            lines.append(_run_one(tool, [*_scoped([location, *tool.command[1:]], root, paths), *named], root, output_folder))
     return "\n".join(["Findings from these tools are leads too. Triage them with the same care.", *lines])

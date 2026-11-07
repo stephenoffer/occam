@@ -73,6 +73,8 @@ def _python_import(project, path, item, declared, has_manifest, stdlib, modules,
 
 
 def _declares(declared, top: str) -> bool:
+    if top == "google" and any(d.startswith("google-") or d == "protobuf" for d in declared):  # a namespace many distributions share
+        return True
     dist = manifests.normalize_dist(manifests.IMPORT_TO_DIST.get(top, top))
     return dist in declared or manifests.normalize_dist(top) in declared or any(d.startswith(dist + "-") or dist.startswith(d + "-") for d in declared)
 
@@ -151,7 +153,7 @@ def _js_import(project, path, item, node, aliases, has_package_json, files) -> N
         return
     head = module.split("/")[0]
     name = "/".join(module.split("/")[:2]) if module.startswith("@") else head
-    if module.startswith("node:") or head in manifests.NODE_BUILTINS or head in aliases or head in ("@", "~", "#", "$") or "$" in module or module.startswith(("http:", "https:", "data:", "virtual:", "bun:", "/")):
+    if module.startswith("node:") or head in manifests.NODE_BUILTINS or head in aliases or head in ("@", "~", "#", "$") or "$" in module or module.startswith(("http:", "https:", "data:", "virtual:", "bun:", "/", "#")):
         return
     if has_package_json and name not in node and f"@types/{name}" not in node:
         project.add("phantom-import", path, line, f"'{name}' isn't in package.json. Check it exists before installing anything of that name.")

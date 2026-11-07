@@ -1,6 +1,6 @@
 ---
 name: occam-python
-description: Python-specific engineering guidance on async and cancellation, shared mutable state, memory in data pipelines, time, money and text semantics, typing, packaging, module structure and file size, large codebases, conventions for names, docstrings and comments, pytest and mocks, moved APIs, security sinks and notebooks. Use alongside occam when writing, debugging, auditing or reviewing Python where these matter.
+description: Python guidance on async and cancellation, shared mutable state, data-pipeline memory, time, money and text semantics, typing, packaging, modules, file size, large codebases, names, docstrings and comments, pytest and mocks, moved APIs, security sinks, notebooks. Use alongside occam to write, debug, audit or review Python where these matter.
 ---
 
 # Python

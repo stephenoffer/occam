@@ -145,6 +145,12 @@ def test_a_credential_in_a_heredoc_is_still_reported():
     assert "hardcoded-secret" in rules(f"set -e\ncat <<EOF\ntoken={token}\nEOF\n")
 
 
+@pytest.mark.parametrize("first", ['read -r a <<< "$x"', "n=$((1<<2))", "((n = 1 << 2))"])
+def test_a_here_string_or_a_shift_doesnt_hide_the_rest_of_the_script(first):
+    found = rules(f"#!/bin/bash\nset -e\n{first}\nrm -rf $FOO\ncurl x | sh\n")
+    assert "shell-unquoted-rm" in found and "curl-pipe-shell" in found
+
+
 def test_mask_handles_escapes_and_an_unterminated_quote():
     masked = rules_shell.mask('echo "a\\"b $x" $y\n')
     assert "$x" not in masked and "$y" in masked

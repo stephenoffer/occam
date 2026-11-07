@@ -125,7 +125,6 @@ RULES: list[Rule] = [
         ("pattern-one-product", "domain", "medium", "medium", "B", "Factory or strategy machinery with one product", "Construct it directly."),
         ("deep-inheritance", "domain", "medium", "medium", "C", "Deep inheritance chain", "Flatten it or use composition."),
         ("unused-option", "api", "low", "medium", "B", "Parameter with a default that no caller passes", "Drop it and inline the default, unless a caller outside this repository needs it."),
-        ("impossible-none-check", "domain", "low", "medium", "B", "None check on a value the code says can't be None", "Remove the branch, or correct the annotation if None can really arrive. Keep real validation at trust boundaries."),
         ("useless-except", "domain", "low", "high", "B", "Handler only re-raises what it caught", "Remove the handler. It changes nothing."),
         ("async-no-await", "concurrency", "low", "low", "B", "async function never awaits", "Make it sync unless an interface requires async."),
     ]),

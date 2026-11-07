@@ -6,13 +6,17 @@ import ast
 import builtins
 import hashlib
 import re
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 Found = tuple  # (rule, line, message or None, overrides)
 
 AUTH_NAME = re.compile(
-    r"(?:^|_)(?:verify|validate|authenticate|authorize|authorise|check_(?:auth|perm|access|token|signature|password|role|admin)"
-    r"|is_(?:valid|auth|authenticated|authorized|allowed|admin|permitted|owner|member)|has_(?:perm|permission|access|role)|can_\w+)", re.I)
+    r"(?:^|_)(?:verify|validate|authenticate|authorize|authorise|login|check_(?:auth|perm|access|token|signature|password|role|admin|login|csrf)"
+    r"|is_(?:auth|authenticated|authorized|allowed|admin|permitted|owner|member|logged_in)|has_(?:perm|permission|access|role))", re.I)
+# These say nothing about auth on their own, as in can_retry(error) or is_valid_extension(name). What they're given, or a word in the name, has to.
+MAYBE_AUTH_NAME = re.compile(r"(?:^|_)(?:can_\w+|is_valid\w*)", re.I)
+AUTH_SUBJECT = re.compile(r"user|token|password|passwd|credential|request|session|role|principal|account", re.I)
+AUTH_WORD_IN_NAME = re.compile(r"(?:^|_)(?:token|password|passwd|credentials?|session|role|login)(?:_|$)", re.I)
 SECRET_NAME = re.compile(r"password|passwd|pwd|secret|token|api_?key|nonce|salt|otp|session_?id|csrf|private_?key", re.I)
 COMPARED_SECRET = re.compile(r"hmac|api_?key|secret|password_?hash|expected_?token|auth_?token|access_?token"
                              r"|^_*(?:(?:expected|provided|computed|calculated|received|webhook|request|header|given|incoming|actual|supplied|client|stored)_)?signature$", re.I)
@@ -25,11 +29,18 @@ VAGUE_CLASS = re.compile(r"(?:Manager|Helper|Util|Utils|Processor|Wrapper|Thing|
 PATTERN_CLASS = re.compile(r"(?:Factory|Builder|Strategy|Provider|Registry)$")
 ABSTRACT_NAME = re.compile(r"(?:^|_)(?:Abstract|Base|Interface|Mixin|Protocol)|(?:Abstract|Base|Interface|Mixin|Protocol|ABC)$")
 GENERIC_TEST = re.compile(r"^test_?(?:\d+|it|function|works?|basic\d*|foo|bar|test|something|case\d*|example\d*|main)?$")
-AUTH_DECORATOR = re.compile(r"login|auth|permission|require|jwt|protect|admin|token|role|guard", re.I)
+# `require` alone isn't auth: @require_json and @require_POST check the request's shape.
+AUTH_DECORATOR = re.compile(r"login|auth|permission|requires?_(?:user|perm)|jwt|protect|admin|token|role|guard", re.I)
+# Called from a handler's body. `data = require_json(request)`, role_list() and token_count() guard nothing, so this goes by the whole name.
+AUTH_CALL = re.compile(
+    r"_*(?:require[sd]?_(?:login|auth|role|user|admin|perm|token|jwt|api_?key)"
+    r"|(?:check|verify|validate|ensure|enforce|assert)_(?:auth|perm|access|token|jwt|role|admin|login|session|api_?key|logged)"
+    r"|(?:get_)?current_(?:active_)?user|get_jwt_identity|authenticate|authori[sz]e|login_required|jwt_required|is_authenticated|has_(?:perm|permission|role|access))", re.I)
 AUTH_DEPEND = re.compile(r"auth|user|token|permission|admin|login|session|security|api_?key|verify", re.I)
-PUBLIC_ROUTE = re.compile(r"health|ping|ready|live|status|metrics|login|logout|signin|signup|register|public|index|home|docs|openapi|webhook|callback|root|favicon|version|reset", re.I)
+PUBLIC_ROUTE = re.compile(r"(?:^|_)(?:health|healthz|healthcheck|ping|ready|readyz|readiness|live|livez|liveness|status|metrics|login|logout|signin|signup|register|registration|public|index|home|homepage|docs|openapi"
+                          r"|webhooks?|callbacks?|root|favicon|version|reset)(?:_|$)", re.I)
+CHANGES_DATA_NAME = re.compile(r"_*(?:delete|update|change|reset_all|export)", re.I)  # update_order_status is about an order, however public a status check is
 ROUTE_DECORATOR = {"route", "get", "post", "put", "patch", "delete", "api_view", "websocket"}
-LOG_CALL = {"debug", "info", "warning", "warn", "error", "exception", "critical", "log", "print", "fatal"}
 LOOP_NODES = (ast.For, ast.AsyncFor, ast.While)
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 ONCE_ONLY_CALLS = {"datetime.now", "datetime.utcnow", "datetime.datetime.now", "datetime.datetime.utcnow", "date.today", "datetime.date.today", "time.time",
@@ -77,6 +88,23 @@ def _call_name(node: ast.Call) -> str:
     return _dotted(node.func)
 
 
+def _chain(node: ast.AST) -> str:
+    """`get_db().session.execute` as "get_db.session.execute": like `_dotted`, but it reads through calls and subscripts."""
+    parts = []
+    while True:
+        if isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        elif isinstance(node, ast.Call):
+            node = node.func
+        elif isinstance(node, ast.Subscript):
+            node = node.value
+        else:
+            if isinstance(node, ast.Name):
+                parts.append(node.id)
+            return ".".join(reversed(parts))
+
+
 def _last(name: str) -> str:
     return name.rsplit(".", 1)[-1]
 
@@ -108,8 +136,17 @@ def _is_constant_none_or_empty(node: ast.AST | None) -> bool:
     return isinstance(node, (ast.List, ast.Dict, ast.Tuple, ast.Set)) and not getattr(node, "elts", getattr(node, "keys", []))
 
 
+_SQL_TEXT = re.compile(
+    r"\b(?:SELECT(?=[\s(*]|$)|WHERE(?=\s|$)|INSERT\s+(?:OR\s+\w+\s+)?INTO\b|REPLACE\s+INTO\b|MERGE\s+INTO\b|UPDATE\s+(?:\S+\s+)?SET\b|DELETE\s+FROM\b|PRAGMA\s|VACUUM\b|ATTACH\s+DATABASE\b|TRUNCATE\s+TABLE\b|ALTER\s+TABLE\b"
+    r"|(?:CREATE|DROP)\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?(?:UNIQUE\s+)?(?:TABLE|INDEX|VIEW|TRIGGER|DATABASE|SCHEMA|SEQUENCE|TYPE|EXTENSION|COLUMN)\b)", re.I)
+PLACEHOLDER_NAME = re.compile(r"(?:q|bind_?)?marks?|placeholders?|params_sql|qs", re.I)
+_BIND_MARKER = re.compile(r"\?\d*|%s|%\(\w+\)s|\$\d*|[:@]\w*|\bNULL\b", re.I)
+_MARKER_MAKER = re.compile(r"placeholder|marks?\b|bind", re.I)
+SQL_NUMBER_CALLS = {"int", "float", "len"}
+
+
 def _has_sql(text: str) -> bool:
-    return bool(re.search(r"\b(?:SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|WHERE|DROP\s+TABLE)\b", text, re.I))
+    return bool(_SQL_TEXT.search(text))
 
 
 def _string_parts(node: ast.AST) -> str:
@@ -134,18 +171,177 @@ def _is_dynamic_string(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format" and bool(_string_parts(node.func.value))
 
 
-def _only_placeholders(node: ast.AST, known: frozenset = frozenset()) -> bool:
-    """An f-string that interpolates only a generated list of bind markers, as in IN ({marks}), or a module's constants, as in {TABLE}."""
-    names = _names_in(node)
-    return bool(names) and isinstance(node, ast.JoinedStr) and all(name.isupper() or name in known or re.fullmatch(r"(?:q|bind_?)?marks?|placeholders?|params_sql|qs", name, re.I) for name in names)
+def _interpolated(node: ast.AST) -> list[ast.AST]:
+    """What a dynamic string puts into its text, for each way of building one."""
+    if isinstance(node, ast.Constant):
+        return []
+    if isinstance(node, ast.JoinedStr):
+        return [value.value for value in node.values if isinstance(value, ast.FormattedValue)]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _interpolated(node.left) + _interpolated(node.right)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        filled = node.right.elts if isinstance(node.right, ast.Tuple) else [value for value in node.right.values if value is not None] if isinstance(node.right, ast.Dict) else [node.right]
+        return _interpolated(node.left) + list(filled)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
+        return _interpolated(node.func.value) + list(node.args) + [keyword.value for keyword in node.keywords]
+    return [node]
 
 
-def _literal_loop_names(function: ast.AST | None) -> frozenset:
-    """What a `for` over written-out strings binds, like `for table in ("a", "b"):`, since those values came from the code."""
-    if function is None:
-        return frozenset()
-    return frozenset(loop.target.id for loop in ast.walk(function) if isinstance(loop, ast.For) and isinstance(loop.target, ast.Name)
-                     and isinstance(loop.iter, (ast.Tuple, ast.List, ast.Set)) and all(isinstance(item, ast.Constant) for item in loop.iter.elts))
+def builds_bind_markers(node: ast.AST) -> bool:
+    """Text made of nothing but bind markers, however many: `",".join("?" * len(ids))`, or a helper named for making them."""
+    if isinstance(node, ast.Call) and _MARKER_MAKER.search(_last(_chain(node.func))):
+        return True
+    parts = [child.value for child in ast.walk(node) if isinstance(child, ast.Constant) and isinstance(child.value, str)]
+    return any(_BIND_MARKER.search(part) for part in parts) and not any(_BIND_MARKER.sub("", part).strip(" ,()\n\t") for part in parts)
+
+
+class Binding(NamedTuple):
+    node: ast.AST            # what binds the name
+    value: ast.AST | None    # what it's set to, or for a loop what it runs over. None when that can't be read off
+
+
+def scope_bindings(scope: ast.AST) -> dict[str, list[Binding]]:
+    """Everything one function or module binds, and to what. A comprehension or nested function has its own scope."""
+    found: dict[str, list[Binding]] = {}
+
+    def add(name: str, node: ast.AST, value: ast.AST | None = None) -> None:
+        found.setdefault(name, []).append(Binding(node, value))
+
+    def bind(target: ast.AST, node: ast.AST, value: ast.AST | None) -> None:
+        if isinstance(target, ast.Name):
+            add(target.id, node, value)
+        elif isinstance(target, (ast.Tuple, ast.List, ast.Starred)):
+            for name in _names_in(target):  # unpacked, so which part it gets isn't worked out
+                add(name, node)
+
+    arguments = getattr(scope, "args", None)
+    if arguments is not None:
+        for arg in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]:
+            if arg is not None:
+                add(arg.arg, arg)
+    stack = list(scope.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (*FUNCTION_NODES, ast.ClassDef)):
+            add(node.name, node)
+            continue
+        if isinstance(node, (ast.Lambda, *COMPREHENSIONS)):
+            continue
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                bind(target, node, node.value)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            if node.value is not None:
+                bind(node.target, node, node.value)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            bind(node.target, node, node.iter)
+        elif isinstance(node, ast.NamedExpr):
+            bind(node.target, node, node.value)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    bind(item.optional_vars, node, None)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            add(node.name, node)
+        elif isinstance(node, ast.alias):
+            add((node.asname or node.name).split(".")[0], node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                add(name, node)
+        elif type(node).__name__ in ("MatchAs", "MatchStar") and node.name:
+            add(node.name, node)
+        elif type(node).__name__ == "MatchMapping" and node.rest:
+            add(node.rest, node)
+        stack.extend(ast.iter_child_nodes(node))
+    for listed in found.values():
+        listed.sort(key=lambda binding: _starts_at(binding.node))
+    return found
+
+
+def _is_literal(value: ast.AST | None, upper: bool) -> bool:
+    if isinstance(value, ast.Constant):
+        return True
+    if isinstance(value, ast.Name):
+        return upper and value.id.isupper()
+    if isinstance(value, ast.JoinedStr):
+        return not any(isinstance(part, ast.FormattedValue) for part in value.values)
+    if isinstance(value, ast.IfExp):
+        return _is_literal(value.body, upper) and _is_literal(value.orelse, upper)
+    return isinstance(value, ast.BinOp) and _is_literal(value.left, upper) and _is_literal(value.right, upper)
+
+
+def _is_literal_iterable(iterable: ast.AST | None, upper: bool) -> bool:
+    if isinstance(iterable, ast.Name):
+        return upper and iterable.id.isupper()
+    return isinstance(iterable, (ast.Tuple, ast.List, ast.Set)) and all(_is_literal(item, upper) for item in iterable.elts)
+
+
+def is_literal_binding(binding: Binding, upper: bool = False) -> bool:
+    """Whether this binding takes a value written in the code. `upper` also takes a module's constant, as in `for table in TABLES:`."""
+    if isinstance(binding.node, (ast.For, ast.AsyncFor)):
+        return _is_literal_iterable(binding.value, upper)
+    return _is_literal(binding.value, upper)
+
+
+def comprehension_scopes(statement: ast.AST) -> dict[int, dict[str, bool]]:
+    """For each call inside a comprehension, the names its comprehensions bind, and whether each only takes written-out values. It applies there and nowhere else."""
+    found: dict[int, dict[str, bool]] = {}
+    stack: list[tuple[ast.AST, dict[str, bool]]] = [(statement, {})]
+    while stack:
+        node, bound = stack.pop()
+        if isinstance(node, COMPREHENSIONS):
+            bound = dict(bound)
+            for generator in node.generators:
+                for name in _names_in(generator.target):
+                    bound[name] = isinstance(generator.target, ast.Name) and _is_literal_iterable(generator.iter, True)
+        elif isinstance(node, ast.Call) and bound:
+            found[id(node)] = bound
+        stack.extend((child, bound) for child in ast.iter_child_nodes(node))
+    return found
+
+
+def _starts_at(node: ast.AST) -> tuple[int, int]:
+    return getattr(node, "lineno", 0), getattr(node, "col_offset", 0)
+
+
+def holds_at(bindings: list[Binding], call: ast.AST) -> list[ast.AST]:
+    """The text a name holds at this call: its last assignment before it, plus up to a few appends since. Nothing readable if a loop or anything else bound it last. `bindings` come in source order."""
+    low, high = 0, len(bindings)
+    while low < high:
+        middle = (low + high) // 2
+        if _starts_at(bindings[middle].node) < _starts_at(call):
+            low = middle + 1
+        else:
+            high = middle
+    held: list[ast.AST] = []
+    for binding in reversed(bindings[max(0, low - 8):low]):
+        node = binding.node
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and (node.end_lineno, node.end_col_offset) > (call.lineno, call.col_offset):
+            continue  # `sql = conn.execute(sql)`: this call is part of that statement
+        if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
+            held.append(binding.value)
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and binding.value is not None:
+            held.append(binding.value)
+        break
+    return held[::-1]
+
+
+def looks_like_auth_check(function: ast.AST) -> bool:
+    """By its name, and for the names that need it, by what it's given."""
+    if AUTH_NAME.search(function.name):
+        return True
+    if not MAYBE_AUTH_NAME.search(function.name):
+        return False
+    arguments = function.args
+    given = [arg.arg for arg in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs] if arg.arg not in ("self", "cls")]
+    return bool(AUTH_WORD_IN_NAME.search(function.name)) or any(AUTH_SUBJECT.search(name) for name in given)
+
+
+def is_public_route(name: str) -> bool:
+    """Routes that are public by nature. A word has to stand alone, because `delivery` isn't `live`, and doing something to one isn't serving it."""
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    return bool(PUBLIC_ROUTE.search(snake)) and not CHANGES_DATA_NAME.match(snake)
 
 
 def _names_in(node: ast.AST) -> set[str]:

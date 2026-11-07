@@ -12,22 +12,12 @@ from typing import Iterable
 from . import rules_py_defs as defs, rules_py_flow as flow
 from .py_helpers import (
     COMPREHENSIONS,
-    DYNAMIC_NAMESPACE, FUNCTION_NODES, Found, HTTP_MODULES, HTTP_VERBS, KNOWN_NAMES, LOOP_NODES, PUBLIC_ROUTE,
-    _call_name, _dotted, _last, _names_in, _walk_own,
+    DYNAMIC_NAMESPACE, FUNCTION_NODES, Found, HTTP_MODULES, HTTP_VERBS, KNOWN_NAMES, LOOP_NODES, Binding,
+    _call_name, _dotted, _last, _names_in, _walk_own, comprehension_scopes, is_public_route, scope_bindings,
 )
 
 
 _IDENTIFIER_TEXT = re.compile(r"^[A-Za-z_]\w*$")
-
-
-def _outside_functions(tree: ast.Module):
-    """Everything at module scope, including under `if TYPE_CHECKING`, without entering functions or classes."""
-    pending: list[ast.AST] = list(tree.body)
-    while pending:
-        node = pending.pop()
-        if not isinstance(node, (*FUNCTION_NODES, ast.ClassDef, ast.Lambda)):
-            yield node
-            pending.extend(ast.iter_child_nodes(node))
 
 
 def _called_name(call: ast.Call) -> str | None:
@@ -115,6 +105,36 @@ class Analyzer:
         self.function_names: set[str] = set()
         self.camel_defs: list[ast.AST] = []
         self.async_names = {n.name for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
+        self._bindings: dict[int, dict[str, list[Binding]]] = {}
+        self._comprehensions: tuple[int, dict] = (0, {})
+        self._global_names: set[str] | None = None
+        self._value_names: set[str] | None = None
+        self.name_verdicts: dict[tuple, bool] = {}
+
+    def bindings(self, scope: ast.AST | None) -> dict[str, list[Binding]]:
+        """Kept per scope, since a file with thousands of queries mustn't walk its tree for each one."""
+        scope = self.tree if scope is None else scope
+        if id(scope) not in self._bindings:
+            self._bindings[id(scope)] = scope_bindings(scope)
+        return self._bindings[id(scope)]
+
+    def comprehensions_in(self, statement: ast.AST) -> dict:
+        if self._comprehensions[0] != id(statement):
+            self._comprehensions = (id(statement), comprehension_scopes(statement))
+        return self._comprehensions[1]
+
+    def declared_global(self) -> set[str]:
+        if self._global_names is None:
+            self._global_names = {name for node in ast.walk(self.tree) if isinstance(node, ast.Global) for name in node.names}
+        return self._global_names
+
+    def referenced_as_values(self) -> set[str]:
+        """Names used other than by calling them, so that something else may be what calls them."""
+        if self._value_names is None:
+            called = {id(node.func) for node in ast.walk(self.tree) if isinstance(node, ast.Call)}
+            self._value_names = {node.id if isinstance(node, ast.Name) else node.attr for node in ast.walk(self.tree)
+                                 if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and id(node) not in called}
+        return self._value_names
 
     def add(self, rule: str, node_or_line, message: str | None = None, **overrides) -> None:
         line = node_or_line if isinstance(node_or_line, int) else getattr(node_or_line, "lineno", 1)
@@ -123,7 +143,6 @@ class Analyzer:
     def run(self) -> dict:
         self._module_level()
         self.function_names = {n.name for n in ast.walk(self.tree) if isinstance(n, FUNCTION_NODES)}
-        self._note_signatures()
         self._walk(self.tree.body, loops=0, function=None, class_node=None)
         self._whole_file_rules()
         rebound = {n.id for n in ast.walk(self.tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)} | {n.arg for n in ast.walk(self.tree) if isinstance(n, ast.arg)}
@@ -134,27 +153,13 @@ class Analyzer:
             "exports": sorted(self.exports), "has_main_guard": self.has_main_guard, **self._call_facts(),
         }
 
-    def _note_signatures(self) -> None:
-        """What this module establishes about types. Names it binds any other way than `class` may be aliases or type variables, including those under `if TYPE_CHECKING`, so they aren't trusted."""
-        module_scope = list(_outside_functions(self.tree))
-        self.trusted_imports = {alias.name for node in module_scope if isinstance(node, ast.ImportFrom) and node.module in defs.TRUSTED_TYPE_MODULES for alias in node.names if not alias.asname}
-        bound = {(node.asname or node.name).split(".")[0] for node in module_scope if isinstance(node, ast.alias)}
-        bound |= {node.id for node in module_scope if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load)}
-        self.shadowed_names = bound - self.trusted_imports
-        classes = [node.name for node in self.tree.body if isinstance(node, ast.ClassDef)]
-        self.local_classes = {name for name in classes if name not in self.shadowed_names and classes.count(name) == 1}
-        annotated = [node for node in self.tree.body if isinstance(node, FUNCTION_NODES) and node.returns is not None and not node.decorator_list and node.name not in self.shadowed_names]
-        self.never_none_functions = {node.name: isinstance(node, ast.AsyncFunctionDef) for node in annotated if defs.excludes_none(node.returns, self)}
-
     def _call_facts(self) -> dict:
         """How callers use each name: `calls` as [count, most positional arguments, keywords, any * or **], and `value_uses` for names passed around instead of called, whose calls can't all be seen."""
         shapes: dict[str, list] = {}
         calls = [node for node in ast.walk(self.tree) if isinstance(node, ast.Call)]
         for call in calls:
             _note_call(shapes, call)
-        called = {id(call.func) for call in calls}
-        values = {node.id if isinstance(node, ast.Name) else node.attr for node in ast.walk(self.tree)
-                  if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load) and id(node) not in called}
+        values = set(self.referenced_as_values())
         values.update(alias.name for node in ast.walk(self.tree) if isinstance(node, ast.ImportFrom) for alias in node.names if alias.asname)  # called under another name
         values.update(text for text in self.code_strings if _IDENTIFIER_TEXT.match(text))  # `getattr(m, 'fetch')`, or a registry keyed by name
         return {"calls": {name: [count, positional, sorted(keywords), star] for name, (count, positional, keywords, star) in shapes.items()}, "value_uses": sorted(values), "dynamic_lookup": _calls_something_unknown(self.tree, calls, shapes)}
@@ -290,16 +295,12 @@ class Analyzer:
 
     def _walk(self, statements: list, loops: int, function: ast.AST | None, class_node: ast.ClassDef | None) -> None:
         previous_exit = False
-        previous = None
         for statement in statements:
             if previous_exit:
                 self.add("unreachable-code", statement)
                 previous_exit = False
-            if not self.is_test:
-                flow.check_none_after_assign(self, previous, statement, function)
             self._statement(statement, loops, function, class_node)
             previous_exit = isinstance(statement, (ast.Return, ast.Raise, ast.Continue, ast.Break))
-            previous = statement
 
     def _statement(self, node: ast.AST, loops: int, function: ast.AST | None, class_node: ast.ClassDef | None) -> None:
         if isinstance(node, FUNCTION_NODES):
@@ -391,7 +392,7 @@ class Analyzer:
         if len(routes) < 3 or len(guarded) / len(routes) < 0.5:
             return
         for route in routes:
-            if not route["guarded"] and not PUBLIC_ROUTE.search(route["name"]):
+            if not route["guarded"] and not is_public_route(route["name"]):
                 self.add("missing-auth", route["line"], f"{route['name']} has no auth guard, though {len(guarded)} of {len(routes)} routes here do.")
 
     def _process_state(self) -> None:
@@ -473,18 +474,15 @@ class Analyzer:
     def _argv(self) -> None:
         if self.is_test:
             return
-        indices = set()
-        flag_compare = None
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.argv" and isinstance(node.slice, ast.Constant):
-                indices.add(node.slice.value)
-                flag_compare = flag_compare or node
-            if isinstance(node, ast.Compare) and "sys.argv" in ast.dump(node).replace("Name(id='sys'", "sys.argv") and any(
-                    isinstance(c, ast.Constant) and str(c.value).startswith("--") for c in [node.left, *node.comparators]):
-                flag_compare = node
-                indices.add(99)
-        if len(indices) >= 2 and flag_compare is not None:
-            self.add("handrolled-argv", flag_compare, "Command-line options parsed by hand.")
+        positions = [node for node in ast.walk(self.tree) if isinstance(node, ast.Subscript) and _dotted(node.value) == "sys.argv" and isinstance(node.slice, ast.Constant)]
+        flags = [node for node in ast.walk(self.tree) if isinstance(node, ast.Compare) and _compares_a_flag_with_argv(node)]
+        if len({node.slice.value for node in positions}) + len(flags) >= 2:
+            self.add("handrolled-argv", flags[-1] if flags else positions[0], "Command-line options parsed by hand.")
+
+
+def _compares_a_flag_with_argv(compare: ast.Compare) -> bool:
+    sides = [compare.left, *compare.comparators]
+    return any(isinstance(side, ast.Constant) and str(side.value).startswith("--") for side in sides) and any(_dotted(node) == "sys.argv" for side in sides for node in ast.walk(side))
 
 
 def analyze(text: str, path: str, code_view: str, comment_lines: set, is_test: bool, is_script: bool, notebook: bool = False) -> tuple[list, dict, str | None]:

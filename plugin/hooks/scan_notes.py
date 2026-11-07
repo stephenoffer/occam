@@ -37,13 +37,17 @@ def _scan(relative: str, text: str) -> list[dict]:
 
     if not hasattr(signal, "setitimer"):
         return scan.scan_text(relative, text)
+    remaining, interval = signal.getitimer(signal.ITIMER_REAL)  # the hook's own limit, which this mustn't cancel
+    started = time.monotonic()
     previous = signal.signal(signal.SIGALRM, give_up)
-    signal.setitimer(signal.ITIMER_REAL, MAX_SECONDS)
+    signal.setitimer(signal.ITIMER_REAL, min(MAX_SECONDS, remaining) if remaining else MAX_SECONDS)
     try:
         return scan.scan_text(relative, text)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+        if remaining:
+            signal.setitimer(signal.ITIMER_REAL, max(remaining - (time.monotonic() - started), 0.01), interval)
 
 
 def _is_serious(finding: dict) -> bool:
@@ -119,6 +123,13 @@ def still_raised_note(files: list[tuple[Path, str]]) -> str | None:
         return None
     return ("The scanner still raises these in files you changed: " + describe(found, limit=12) +
             ". If your report calls one fixed, it isn't, so fix it or say that it remains. Check each other fix you claim against the diff too.")
+
+
+def known_findings(event: dict, session, relative: str) -> list[str] | None:
+    for entry in session.entries:
+        if entry.get("kind") == "scan-baseline" and entry.get("name") == relative:
+            return entry.get("ids")
+    return committed_identities(Path(event.get("cwd") or os.getcwd()), relative)
 
 
 def occam_subcommand(words: list[str]) -> tuple[str, list[str]] | None:

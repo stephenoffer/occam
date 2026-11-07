@@ -8,10 +8,10 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import files as filesystem, scan as scanner
-from .manifests import NODE_BUILTINS
+from .manifests import NODE_BUILTINS, read_manifests
 from .project import _CONSEQUENCE, strongly_connected
-from .report import location
-from .source import is_test_path
+from .report import location, partial_note
+from .source import is_test_path, language_of
 
 # Rough reading capacity. A reader holding this much code still has room to think about it.
 # On one 27,000-line fixture, 5 or 6 readers found more logic defects than 3 (55 to 57 of 62 against 49 to 53). Post-hoc and small, but 12,000 was only ever a guess.
@@ -19,12 +19,15 @@ LINES_PER_READER = 5_000
 READ_IT_YOURSELF_LINES = 6_000
 MAX_READERS = 6  # beyond this, read less rather than spawn more, and name what's left
 TOKENS_PER_LINE = 11
+BYTES_PER_LINE = 35  # only to size a tree too large to count
+GIT_SECONDS = 10  # each git question asked around a time-limited scan
+FOLDERS_SHOWN = 20
 LEADS_SHOWN = 10  # map has already scanned, and agents that planned to read everything never ran scan themselves
 TIERS = (
     ("cell", 60, "Read all of it yourself and scan it. No plan file and no subagents."),
     ("file", 1_000, "Read all of it yourself. Scan, confirm, fix or report."),
     ("small repository", 15_000, "Read entry points and risky paths fully, and let the scan pick the rest. One fresh reviewer at most."),
-    ("medium repository", 150_000, "Scan first, then read by risk. Partition reading across a few agents. Use the ledger."),
+    ("medium repository", 150_000, "Scan first, then read by risk. Partition reading across a few agents."),
     ("large repository", 1_500_000, "Baseline first and ratchet. Audit by risk-ranked shards, and sample the rest. Repair in small batches."),
     ("very large repository", 10**12, "One subsystem at a time, with its owners' agreement. Baseline and ratchet everywhere. Never attempt a repo-wide rewrite."),
 )
@@ -61,8 +64,8 @@ def _tier_for(lines: int) -> tuple[str, str]:
     return TIERS[-1][0], TIERS[-1][2]
 
 
-def _ai_attribution(root: Path, commits: int = 2000) -> dict | None:
-    text = filesystem.run_git(root, "log", f"-n{commits}", "--no-merges", "--format=%B%x00", timeout=60)
+def _ai_attribution(root: Path, commits: int = 2000, timeout: int = 60) -> dict | None:
+    text = filesystem.run_git(root, "log", f"-n{commits}", "--no-merges", "--format=%B%x00", timeout=timeout)
     if text is None:
         return None
     messages = [m for m in text.split("\0") if m.strip()]
@@ -72,41 +75,101 @@ def _ai_attribution(root: Path, commits: int = 2000) -> dict | None:
     return {"commits_read": len(messages), "ai_attributed": attributed}
 
 
-def _activity(root: Path) -> dict:
-    dirty = filesystem.dirty_paths(root)
-    worktrees = (filesystem.run_git(root, "worktree", "list", "--porcelain") or "").count("worktree ")
-    recent = (filesystem.run_git(root, "log", "--since=6.hours", "--format=%an") or "").split("\n")
+def _activity(root: Path, seconds: int | None = None) -> dict:
+    """Who else is here. With a time limit, a git too slow to answer costs this one line of the answer, not all of it. It says so, since nothing dirty would be a false all-clear."""
+    timeout = GIT_SECONDS if seconds else 120
+    try:
+        dirty = filesystem.dirty_paths(root, timeout=timeout)
+    except filesystem.GitProblem:
+        if not seconds:
+            raise
+        return {"dirty_files": None, "dirty_sample": [], "worktrees": 0, "recent_authors": {}, "index_locked": False}
+    worktrees = (filesystem.run_git(root, "worktree", "list", "--porcelain", timeout=min(timeout, 30)) or "").count("worktree ")
+    recent = (filesystem.run_git(root, "log", "--since=6.hours", "--format=%an", timeout=min(timeout, 30)) or "").split("\n")
     authors = Counter(a for a in recent if a)
     locked = (root / ".git" / "index.lock").exists()
     return {"dirty_files": len(dirty), "dirty_sample": sorted(dirty)[:10], "worktrees": worktrees, "recent_authors": dict(authors), "index_locked": locked}
 
 
-def build_map(root: Path, target: Path | None = None, isolated: bool = False) -> dict:
-    result = scanner.run_scan(root, [str(target)] if target and target != root else None, isolated=isolated)
+def _size_of(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _folder_table(root: Path, files: list[str], prefix: str) -> list[dict]:
+    """Sizes by folder from file sizes alone, one level below `prefix`, or further down while a level holds only one folder."""
+    while True:
+        folders = {path[len(prefix):].split("/", 1)[0] for path in files if "/" in path[len(prefix):]}
+        if len(folders) != 1 or any("/" not in path[len(prefix):] for path in files):
+            break
+        prefix += folders.pop() + "/"
+    activity = filesystem.churn(root, timeout=GIT_SECONDS)
+    table: dict[str, dict] = {}
+    for path in files:
+        rest = path[len(prefix):]
+        name = prefix + rest.split("/", 1)[0] + "/" if "/" in rest else prefix or "./"
+        row = table.setdefault(name, {"path": name, "files": 0, "bytes": 0, "churn": 0, "languages": Counter()})
+        row["churn"] += activity.get(path, 0)
+        language = language_of(path)
+        if language:
+            row["files"] += 1
+            row["bytes"] += _size_of(root / path)
+            row["languages"][language] += 1
+    rows = sorted((row for row in table.values() if row["files"]), key=lambda row: -row["bytes"])
+    return [{"path": row["path"], "files": row["files"], "lines": row["bytes"] // BYTES_PER_LINE, "churn": row["churn"], "languages": dict(row["languages"].most_common(3))} for row in rows]
+
+
+def _table_of_contents(root: Path, files: list[str], prefix: str, seconds: int | None, ran_out: bool = False) -> dict:
+    """For what's too large to scan whole: enough to choose where to start, in seconds. `ran_out` says a scan was tried, since describing only what it reached would be false."""
+    table = _folder_table(root, files, prefix)
+    lines = sum(row["lines"] for row in table)
+    languages: Counter = Counter()
+    for path in files:
+        languages[language_of(path)] += 1
+    languages.pop(None, None)
+    tier, strategy = _tier_for(lines)
+    return {"root": str(root), "tier": tier, "strategy": strategy, "lines": lines, "files": sum(row["files"] for row in table), "languages": dict(languages), "estimated": True, "ran_out": ran_out,
+            "folders": table, "tokens_to_read_all": lines * TOKENS_PER_LINE, "activity": _activity(root, seconds), "seconds": seconds}
+
+
+def build_map(root: Path, target: Path | None = None, isolated: bool = False, seconds: int | None = None) -> dict:
+    targets = [str(target)] if target and target != root else None
+    config = filesystem.load_config(root)
+    listed = filesystem.list_files(root, targets, config)
+    prefix = f"{target.relative_to(root).as_posix()}/" if targets else ""
+    if seconds and not isolated and len(listed) > scanner.LARGE_REPOSITORY_FILES:
+        return _table_of_contents(root, listed, prefix, seconds)
+    result = scanner.run_scan(root, targets, isolated=isolated, seconds=seconds)
     project = result.project
     stats = result.stats
-    selected = set(filesystem.list_files(root, [str(target)] if target and target != root else None, filesystem.load_config(root)))
+    partial = stats.get("partial")
+    if partial and partial["reason"] == "time":
+        return _table_of_contents(root, listed, prefix, seconds, ran_out=True)
+    selected = set(listed)
+    around = set(filesystem.list_files(root, None, config)) if partial else selected  # a folder's tooling and manifests are usually above it
     tests = [p for p in selected if is_test_path(p) and project.languages.get(p)]
     lines = stats["lines"]
     tier, strategy = _tier_for(lines)
-    churn = filesystem.churn(root)
+    churn = filesystem.churn(root, timeout=GIT_SECONDS if seconds else 120)
     hotspots = _hotspots(project, result.findings, churn, selected)
     imported = _imported_tops(project, selected)
     layers = _layers(result.findings, imported, selected)
     agents = _agent_advice(_plan_shards(result, sorted(selected), LINES_PER_READER, MAX_READERS, "read"))
     leads = scanner.filter_findings(result.findings)
-    tooling = sorted({CONFIG_TOOL_FILES[p.rsplit("/", 1)[-1]] for p in selected if p.rsplit("/", 1)[-1] in CONFIG_TOOL_FILES})
+    tooling = sorted({CONFIG_TOOL_FILES[p.rsplit("/", 1)[-1]] for p in around if p.rsplit("/", 1)[-1] in CONFIG_TOOL_FILES})
     pyproject = root / "pyproject.toml"
     if pyproject.exists():
         text = filesystem.read_text(pyproject) or ""
         tooling += [name for name in ("ruff", "mypy", "pytest", "black", "isort", "pyright", "coverage") if f"[tool.{name}" in text]
     return {
         "root": str(root), "tier": tier, "strategy": strategy, "lines": lines, "files": stats["analyzed"], "languages": stats["languages"],
-        "test_files": len(tests), "ci": sorted(p for p in selected if CI_FILES.search(p))[:5], "manifests": project._manifests()["files"][:10],
+        "test_files": len(tests), "ci": sorted(p for p in around if CI_FILES.search(p))[:5], "manifests": (read_manifests(root, sorted(around)) if partial else project._manifests())["files"][:10],
         "configured_tools": sorted(set(tooling)), "entry_points": sorted(p for p in selected if ENTRY_POINT.search(p) and project.languages.get(p))[:15],
-        "hotspots": hotspots[:15], "layers": layers, "agents": agents, "activity": _activity(root), "ai_commits": _ai_attribution(root),
+        "hotspots": hotspots[:15], "layers": layers, "agents": agents, "activity": _activity(root, seconds), "ai_commits": _ai_attribution(root, timeout=GIT_SECONDS if seconds else 60),
         "findings": dict(Counter(f["category"] for f in leads)), "lead_count": len(leads), "leads": leads[:LEADS_SHOWN], "scan_seconds": stats["seconds"],
-        "tokens_to_read_all": lines * TOKENS_PER_LINE, "parse_errors": len(stats["parse_errors"]),
+        "tokens_to_read_all": lines * TOKENS_PER_LINE, "parse_errors": len(stats["parse_errors"]), "partial": partial,
     }
 
 
@@ -149,14 +212,41 @@ def _layers(findings: list[dict], imported: Counter, selected: set[str]) -> list
 
 def _agent_advice(plan: dict) -> dict:
     return {"readers_for_audit": plan["agents"], "writers_for_repair": "1, unless `occam partition --mode write` finds disjoint shards",
-            "fresh_reviewers": 1 if plan["total_lines"] else 0,
+            "fresh_reviewers": 1 if plan["total_lines"] > TIERS[0][1] else 0,  # nobody reviews a cell, and its strategy says so
             "why": "Zero helpers if you can read it all yourself. Readers scale with code, capped because you can read less and name the rest. Writers conflict, so they need shards with no import between them."}
+
+
+def _other_work(activity: dict) -> str:
+    if activity["dirty_files"] is None:
+        return "Other work here: unknown, because git didn't answer, so assume there's some and run `occam coord status` before editing"
+    return f"Other work here: {activity['dirty_files']} uncommitted files, {activity['worktrees'] or 1} worktree(s), recent authors {activity['recent_authors'] or 'none in 6h'}"
+
+
+def _render_table_of_contents(data: dict, languages: str) -> str:
+    folders = data["folders"]
+    opening = (f"This couldn't be read and checked within {data['seconds']}s, and describing only part of it would mislead, so this is a table of contents from file sizes."
+               if data["ran_out"] else "Too large to scan whole, so this is a table of contents and no file was read.")
+    out = [data["root"], f"{data['tier']}: about {data['lines']:,} lines in {data['files']:,} files ({languages or 'no code'}), estimated from file sizes. About {data['tokens_to_read_all']:,} tokens to read it all.",
+           f"Strategy: {data['strategy']}", "",
+           f"{opening} Start from the part your task names: `occam map FOLDER` plans it and `occam scan FOLDER` scans it, and `occam gate` reads only what changed. Past 50,000 files those skip the rules needing the rest of the repository, and say so. "
+           f"With no folder, `occam scan` reads what people change most for {data['seconds']}s and saves its progress, and `--max-seconds 0` reads everything, which takes minutes and gigabytes, so run it in the background.",
+           "", "Largest folders:"]
+    for row in folders[:FOLDERS_SHOWN]:
+        kinds = ", ".join(f"{name} {count}" for name, count in row["languages"].items())
+        out.append(f"  {row['path']}  about {row['lines']:,} lines, {row['files']:,} files, churn {row['churn']} ({kinds})")
+    if len(folders) > FOLDERS_SHOWN:
+        out.append(f"  and {len(folders) - FOLDERS_SHOWN} more, about {sum(row['lines'] for row in folders[FOLDERS_SHOWN:]):,} lines.")
+    activity = data["activity"]
+    out += ["", _other_work(activity) + "."]
+    return "\n".join(out)
 
 
 def render_map(data: dict) -> str:
     languages = ", ".join(f"{k} {v}" for k, v in sorted(data["languages"].items(), key=lambda kv: -kv[1]))
+    if data.get("estimated"):
+        return _render_table_of_contents(data, languages)
     out = [f"{data['root']}", f"{data['tier']}: {data['lines']:,} lines in {data['files']} files ({languages or 'no code'}). About {data['tokens_to_read_all']:,} tokens to read it all.",
-           f"Strategy: {data['strategy']}", ""]
+           *partial_note(data), f"Strategy: {data['strategy']}", ""]
     if data["leads"]:
         out.append(f"Worst {len(data['leads'])} of {data['lead_count']} scanner leads, unconfirmed. `occam scan` lists them all, and what it couldn't check:")
         out += [f"  [{f['severity'][:4].upper()}/{f['tier']}] {f['rule']}  {location(f)}  {f['message'][:110]}" for f in data["leads"]]
@@ -167,8 +257,7 @@ def render_map(data: dict) -> str:
     if data["ai_commits"]:
         out.append(f"AI-attributed commits: {data['ai_commits']['ai_attributed']} of the last {data['ai_commits']['commits_read']} (only those that say so).")
     activity = data["activity"]
-    out.append(f"Other work here: {activity['dirty_files']} uncommitted files, {activity['worktrees'] or 1} worktree(s), recent authors {activity['recent_authors'] or 'none in 6h'}"
-               + (", and git's index is locked right now." if activity["index_locked"] else "."))
+    out.append(_other_work(activity) + (", and git's index is locked right now." if activity["index_locked"] else "."))
     if activity["dirty_files"]:
         out.append("  Treat uncommitted changes as someone else's. Run `occam coord status` before editing.")
     agents = data["agents"]
@@ -191,21 +280,29 @@ def render_map(data: dict) -> str:
     return "\n".join(out)
 
 
-def partition(root: Path, targets: list[str] | None, reader_budget: int = LINES_PER_READER, host_limit: int = MAX_READERS, mode: str = "read") -> dict:
+def partition(root: Path, targets: list[str] | None, reader_budget: int = LINES_PER_READER, host_limit: int = MAX_READERS, mode: str = "read", seconds: int | None = None) -> dict:
     """Disjoint shards of files. Files that import each other in a cycle stay together. Write shards also share no imports."""
-    result = scanner.run_scan(root, targets)
     files = filesystem.list_files(root, targets, filesystem.load_config(root))
+    if seconds and len(files) > scanner.LARGE_REPOSITORY_FILES:
+        return {"mode": mode, "agents": 0, "total_lines": 0, "shards": [], "partial": None, "too_large": True, "reason": (
+            f"{len(files):,} files are too many to divide up file by file, and no plan of that size could be followed. `occam map` lists the folders, so pick the ones your task involves and run `occam partition` on those.")}
+    result = scanner.run_scan(root, targets, seconds=seconds)
     return _plan_shards(result, files, reader_budget, host_limit, mode)
 
 
 def _plan_shards(result, files: list[str], reader_budget: int, host_limit: int, mode: str) -> dict:
+    partial = result.stats.get("partial")
+    if partial and partial["reason"] == "time":  # sizes and shards from what happened to be read would be advice about the wrong repository
+        return {"mode": mode, "agents": 0, "total_lines": 0, "shards": [], "partial": partial,
+                "reason": "Not all of this could be read and checked in time, so there's no honest plan yet. Name a folder, or run this again if what was read was saved."}
     project = result.project
     project_files = [p for p in files if project.languages.get(p)]
     graph = getattr(project, "graph", {})
     weight: Counter = Counter()
     for finding in result.findings:
         weight[finding["path"]] += finding["score"]
-    groups = _write_groups(project_files, graph, project) if mode == "write" else _read_groups(project_files, graph)
+    # Without the whole import graph nothing can be shown independent, so a partial scan gets one writer.
+    groups = (([project_files] if project_files else []) if partial else _write_groups(project_files, graph, project)) if mode == "write" else _read_groups(project_files, graph)
     shards = _pack(groups, project.lines, weight, reader_budget, may_split=mode != "write")
     total = sum(project.lines.get(p, 0) for p in project_files)
     shards.sort(key=lambda s: -s["weight"])
@@ -216,7 +313,7 @@ def _plan_shards(result, files: list[str], reader_budget: int, host_limit: int, 
         agents, reason = 0, "The limit is zero agents, so read what you can yourself, riskiest first, and name what's left."
     else:
         agents = min(agents, host_limit)
-    return {"mode": mode, "agents": agents, "reason": reason, "total_lines": total, "shards": shards}
+    return {"mode": mode, "agents": agents, "reason": reason, "total_lines": total, "shards": shards, "partial": partial}
 
 
 def _writers(shards: list[dict]) -> tuple[int, str]:
@@ -346,15 +443,14 @@ def _describe_files(files: list[str]) -> str:
     return shown + (f" and {len(folders) - 15} more folders" if len(folders) > 15 else "") + ". Exact list: `occam partition --format json`."
 
 
-def render_partition(plan: dict, goal: str) -> str:
+def render_partition(plan: dict) -> str:
     out = [f"{plan['agents']} agents for {plan['mode']} work on {plan['total_lines']:,} lines, in {len(plan['shards'])} shards. {plan['reason']}"]
-    if not plan["agents"]:
-        return out[0]
-    if plan["mode"] == "write" and plan["agents"] == 1:
-        return out[0]
+    out += partial_note(plan)
+    if not plan["agents"] or (plan["mode"] == "write" and plan["agents"] == 1):
+        return "\n".join(out)
     for shard in plan["shards"][:plan["agents"] or 1]:
         out += ["", f"--- Shard {shard['id']} ({shard['lines']:,} lines, risk weight {shard['weight']}) ---",
-                f"Goal: {goal}", "Files you own: " + _describe_files(shard["files"])]
+                "Goal: audit this part of the repository.", "Files you own: " + _describe_files(shard["files"])]
         if plan["mode"] == "write":
             out.append("Edit only these files. Claim them with `occam coord claim`. Don't change a public signature without reporting it. Don't commit.")
         else:

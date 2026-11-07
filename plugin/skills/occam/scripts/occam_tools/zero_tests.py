@@ -7,18 +7,29 @@ from __future__ import annotations  # the stock macOS python3 is 3.9
 
 import re
 
-# A fully skipped or fully deselected run exits 0, or looks like it behind a pipe. `, ` before the count means something else ran.
-_NOTHING_RAN = re.compile(r"collected 0 items|no tests ran|no tests collected|\bRan 0 tests\b"
-                          r"|(?<!, )\b[1-9]\d* deselected in \d|(?<!, )\b[1-9]\d* skipped\b[^=\n]{0,40} in \d"
-                          r"|\bRan (\d+) tests?\b[^\n]*\n+OK \(skipped=\1\)"
-                          r"|\bNo tests? (?:files? )?found\b|\bNo tests were found\b|\bNo tests executed\b"  # jest, vitest, ctest, phpunit
-                          r"|\b0 examples, 0 failures\b|\b0 passing\b", re.I)  # rspec, mocha
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Summary lines, so a test whose name or output mentions these phrases can't trip them. pytest prints them on their own line, with or without `=== `.
+_NOTHING_RAN = re.compile(r"^[ \t]*collected 0 items\b|^[= ]*no tests ran\b|^[= ]*no tests collected\b|^[ \t]*Ran 0 tests\b"
+                          r"|^[= ]*[1-9]\d* deselected\b[^=\n]{0,40} in \d|^[= ]*[1-9]\d* skipped\b[^=\n]{0,40} in \d"
+                          r"|^[ \t]*Ran (\d+) tests?\b[^\n]*\n{1,3}OK \(skipped=\1\)"
+                          r"|^(?:\S+:\s*)?No tests? (?:files? )?found\b|^No tests were found\b|^No tests executed\b"  # jest, vitest, ctest, phpunit
+                          r"|\b0 examples, 0 failures\b|^[ \t]*0 passing\b"  # rspec, mocha
+                          r"|\bTests run: 0, Failures: 0\b|\bStarting 0 tests across\b|^1\.\.0\b"  # mvn, nextest, TAP
+                          r"|^Tests:\s+(?:0 passed, )?0 total\b|\b0 runs, 0 assertions\b|\bNo test is available\b|^ok \| 0 passed"  # jest, rake, dotnet, deno
+                          r"|\bExecuted 0 tests\b|^[ \t]*0 tests, 0 failures\b|^DONE 0 tests\b|^[ \t]*0 pass[ \t]*\n[ \t]*0 fail\b|^(?:#|ℹ)[ \t]*tests 0\b"  # xcodebuild, exunit, gotestsum, bun, node
+                          r"|^0 features passed\b|^0 scenarios\b|^0 specs, 0 failures\b"  # behave, cucumber, jasmine
+                          r"|^[= ]*[1-9]\d* xfailed\b[^=\n]{0,40} in \d|^[= ]*[1-9]\d* tests? collected\b[^=\n]{0,20} in \d", re.I | re.M)  # pytest: all expected failures, or --collect-only
+# Anything here means something did run, which settles it for a monorepo where one package had no tests.
+_SOMETHING_RAN = re.compile(r"\b[1-9]\d* (?:passed|xpassed|passing|failed|failing)\b|^--- (?:PASS|FAIL)\b|(?-i:^ok\b)(?! \| 0 passed)(?!.*\[no tests to run\])|\b[1-9]\d* examples?, |\bTests run: [1-9]|^[ \t]*Ran [1-9]\d* tests?\b(?![^\n]*\n{1,3}OK \(skipped=)", re.I | re.M)
 _CARGO_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed", re.M)
 _GO_NOTHING = re.compile(r"\[no test files\]|\[no tests to run\]")
 _GO_RAN = re.compile(r"^ok\b(?!.*\[no tests to run\])|^FAIL\b|^--- ", re.M)
 
 
 def ran_no_tests(output: str) -> bool:
+    output = _ANSI.sub("", output)
+    if _SOMETHING_RAN.search(output):
+        return False
     if _NOTHING_RAN.search(output):
         return True
     # One binary with no tests is normal for cargo and go, so these two count only if nothing ran anywhere.

@@ -1,6 +1,6 @@
 ---
 name: occam-rust
-description: Rust engineering guidance on ownership, error handling and panics, unsafe invariants, async cancellation and blocking, crate structure, naming, test results. Use alongside occam when writing, debugging or reviewing Rust where these matter.
+description: Rust guidance on ownership, errors and panics, unsafe invariants, async cancellation and blocking, crates, naming, test results. Use alongside occam to write, debug or review Rust where these matter.
 ---
 
 # Rust

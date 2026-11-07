@@ -11,7 +11,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from . import files as filesystem
+from . import files as filesystem, query_repo
 from .source import C_FAMILY, Source, is_test_path, language_of, load
 
 _HANDLERS = {"python": re.compile(r"^\s*except\b")}
@@ -27,6 +27,10 @@ MIN_FORMAT_LINES = 3
 MIN_FILE_LINES = 30
 MIN_ADDED_LINES = 8
 MIN_NAME = 3  # identifiers() doesn't count anything shorter, so such names can't be judged
+MIN_PARTNER_COMMITS = 5
+MIN_PARTNER_SHARE = 0.8  # the strict end of ROSE (Zimmermann et al., TSE 2005), so this stays one line and rarely wrong
+MAX_PARTNER_FILES = 10
+_NOT_A_PARTNER = re.compile(r"(?:^|/)(?:[^/]*\.lock|package-lock\.json|pnpm-lock\.yaml|go\.sum|CHANGELOG[^/]*)$")
 
 
 def _scope_note(rule: str, path: str, line: int, message: str) -> dict:
@@ -269,6 +273,30 @@ def _denser_than_the_file(by_path: dict, versions: _Versions) -> list[dict]:
     return notes
 
 
+# ---------------------------------------------------------------- usual partners
+
+def _partner_note(root: Path, path: str, changed: dict) -> list[dict]:
+    try:
+        history = query_repo.history(root, str(root / path), None, 100, 3)
+    except (filesystem.GitProblem, filesystem.OutsideProject):
+        return []
+    read = history["commits_read"]
+    # A shallow clone's oldest commit shows every file as added, which would look like everything changing together.
+    for row in history["changed_together"] if read >= MIN_PARTNER_COMMITS and not history["shallow"] else []:
+        partner = row["path"]
+        if partner not in changed and row["shared_commits"] / read >= MIN_PARTNER_SHARE and not _NOT_A_PARTNER.search(partner):
+            return [_scope_note("usual-partner", path, 1, f"{path} changed with {partner} in {row['shared_commits']} of its last {read} commits, and {partner} isn't in this change. Check nothing needs to follow.")]
+    return []
+
+
+def _usual_partners(root: Path, by_path: dict, changed: dict) -> list[dict]:
+    """A file that nearly always changes with another, when the other isn't here. Files added by this change have no history to compare."""
+    notes: list[dict] = []
+    for path in sorted(by_path)[:MAX_PARTNER_FILES]:
+        notes += _partner_note(root, path, changed)
+    return notes
+
+
 # ---------------------------------------------------------------- size
 
 def _size_line(root: Path, hunks: list, analyzed: set[str], changed: dict) -> str:
@@ -301,5 +329,5 @@ def review(root: Path, base: str | None, changed: dict, result) -> dict | None:
         if hunk[0] in changed and hunk[0] in analyzed:
             by_path.setdefault(hunk[0], []).append(hunk)
     versions = _Versions(root, base or "HEAD")
-    notes = [*_format_churn(by_path, versions), *_comments_lost(by_path, versions), *_orphans(root, hunks, result.project, result.findings, versions), *_denser_than_the_file(by_path, versions)]
+    notes = [*_format_churn(by_path, versions), *_comments_lost(by_path, versions), *([] if result.stats.get("partial") else _orphans(root, hunks, result.project, result.findings, versions)), *_denser_than_the_file(by_path, versions), *_usual_partners(root, by_path, changed)]
     return {"notes": notes, "size": _size_line(root, hunks, analyzed, changed)}

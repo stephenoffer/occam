@@ -39,9 +39,9 @@ _SECRET_FILE = re.compile(r"(^|/)(\.env(\.[\w-]+)?|\.npmrc|\.pypirc|id_rsa|id_ed
 _NOT_SECRET_FILE = re.compile(r"\.(example|sample|template|dist|defaults?)$|example|sample", re.I)
 _CONFIG_MODULE = re.compile(r"(?:^|/)(config|settings|conf|configuration)\.py$")
 _UTILITY_FILE = re.compile(r"(?:^|/)(utils?|helpers?|common|misc|shared)\.(?:py|js|ts|go|java|kt)$")
-_CONSEQUENCE = re.compile(r"(?:^|[/_.\-])(?:auth\w*|login|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac|tenan\w+|billing|payments?|invoices?|checkout|refunds?|ledgers?|migrat\w*|crypto\w*|webhooks?|signatures?|admin|sessions?)(?:[/_.\-]|$)", re.I)
+_CONSEQUENCE = re.compile(r"(?:^|[/_.\-])(?:auth(?!ors?(?:[/_.\-]|$))\w*|login|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac|tenan\w+|billing|payments?|invoices?|checkout|refunds?|ledgers?|migrat\w*|crypto\w*|webhooks?|signatures?|admin|sessions?)(?:[/_.\-]|$)", re.I)
 _LARGE_BINARY = 5_000_000
-_HIDES_CHECKS = re.compile(r"addopts.*(?:--ignore|--deselect|-k\s*[\"']?not\b)|^\s*(?:continue-on-error\s*:\s*true|ignore_errors\s*=\s*[Tt]rue|testPathIgnorePatterns)|^\s*(?:--ignore|--deselect)\b")
+_HIDES_CHECKS = re.compile(r"addopts.*(?:--ignore|--deselect|-k\s*[\"']?not\b)|^\s*(?:continue-on-error\s*:\s*true|ignore_errors\s*=\s*[Tt]rue|testPathIgnorePatterns)|^\s*(?:--ignore|--deselect)\b|^\s*collect_ignore(?:_glob)?\s*(?::[^=\n]+)?(?:\+?=|\.(?:append|extend)\b)")
 _SOURCE_LANGUAGES = {"python", "javascript", "typescript", "go", "rust", "java", "kotlin", "c", "cpp", "csharp", "swift", "ruby", "php", "scala"}
 
 
@@ -155,10 +155,11 @@ class Project:
         if table is not None:
             self.clone_index.add(path, table, record.get("fingerprints") or {"exact": [], "renamed": []})
 
-    def run(self, enabled: bool = True) -> list[Finding]:
+    def run(self, enabled: bool = True, whole: bool = True) -> list[Finding]:
+        """`whole` is False when some files weren't read. Only the first pass judges each file on its own, so only it can still run: a committed secret file stays reported."""
         passes = [self._repository_files, partial(imports.python_imports, self), partial(imports.foreign_imports, self), partial(imports.stdlib_attributes, self), partial(imports.local_attributes, self), self._dead_code, self._unused_options,
                   self._duplicates, self._twins, self._class_families, self._import_graph, self._tests, self._dependency_use, self._config_modules, self._utility_buckets, self._settings, self._hidden_checks]
-        for step in passes if enabled else []:
+        for step in (passes if whole else passes[:1]) if enabled else []:
             step()
         return self.findings
 
@@ -225,7 +226,7 @@ class Project:
     def _manifests(self) -> dict:
         if not hasattr(self, "_manifest_cache"):
             self._manifest_cache = manifests.read_manifests(self.root, self.files) if self.root else {
-                "python": {}, "node": {}, "rust": {}, "go": {}, "go_own": set(), "aliases": set(), "files": []}
+                "python": {}, "python_locked": set(), "node": {}, "rust": {}, "go": {}, "go_own": set(), "aliases": set(), "files": []}
         return self._manifest_cache
 
     def _python_paths(self) -> list[str]:
@@ -546,7 +547,9 @@ class Project:
                 parts.append(part)
         target = "/".join(parts)
         stripped = re.sub(r"\.(js|jsx|mjs|cjs)$", "", target)
-        files = self.__dict__.setdefault("_file_set", set(self.files))
+        if not hasattr(self, "_file_set"):  # building it costs a millisecond at 50,000 files, and this runs once per import
+            self._file_set = set(self.files)
+        files = self._file_set
         for option in (target, *(f"{stripped}{e}" for e in imports.JS_EXTENSIONS), *(f"{target}/index{e}" for e in imports.JS_EXTENSIONS)):
             if option in files:
                 return option
@@ -634,7 +637,7 @@ class Project:
     def _hidden_checks(self) -> None:
         for path in self.files:
             base = path.rsplit("/", 1)[-1]
-            if base in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "jest.config.js", "jest.config.ts", "vitest.config.ts") and self.root:
+            if base in ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "conftest.py", "jest.config.js", "jest.config.ts", "vitest.config.ts") and self.root:
                 try:
                     lines = (self.root / path).read_text(errors="replace").split("\n")
                 except OSError:

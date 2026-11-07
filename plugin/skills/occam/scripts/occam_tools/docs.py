@@ -41,7 +41,7 @@ _LEADS_SHOWN = 12
 _LONGEST_NAME = 300  # anything longer isn't a name or a path someone typed
 _LINT_SECONDS = 60
 
-_FENCE = re.compile(r"^\s*(`{3,}|~{3,})\s*([\w+-]*)")
+_FENCE = re.compile(r"^\s*(`{3,}(?!`)(?!.*`)|~{3,})\s*([\w+-]*)")  # CommonMark bars a backtick from a backtick fence's info string, so ```foo``` is inline code and opens nothing
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 _BACKTICKS = re.compile(r"`+")
 _LINK = re.compile(r"\]\(\s*<?([^)\s>]+)")
@@ -138,6 +138,11 @@ def _split_fences(text: str) -> tuple[list[Fence], str]:
     if opener:
         fences.append(Fence(language, start, "\n".join(body)))
     return fences, "\n".join(prose)
+
+
+def blank_fences(text: str) -> tuple[str, bool]:
+    """The text with code blocks blanked, keeping line numbers, and whether one was left open: a line added after the end only disappears inside a block."""
+    return _split_fences(text)[1], _split_fences(text + "\nx")[1].endswith("\n")
 
 
 def _blank(match: re.Match) -> str:
@@ -589,7 +594,7 @@ class _Run(NamedTuple):
 
 def _fact_section(run: _Run, relative: str, text: str) -> tuple[list[str], bool]:
     if not is_markdown(relative):
-        return ["  facts: NOT CHECKED, because only Markdown is parsed."], False
+        return [NOT_CHECKED_FACTS], False
     leads = document_leads(run.root, relative, text, run.index)
     heading = f"  facts: {len(leads)} {'lead' if len(leads) == 1 else 'leads'}"
     return [heading, *_capped([f"{relative}:{lead.line} {lead.rule}: {lead.message}" for lead in leads])], bool(leads)
@@ -602,6 +607,9 @@ def _before_section(run: _Run, text: str) -> tuple[list[str], bool]:
     if not changes:
         return [f"  against {run.before}: no number, code, link or code block changed"], False
     return [f"  against {run.before}: {len(changes)} facts changed", *_capped(changes)], True
+
+
+NOT_CHECKED_FACTS = "  facts: NOT CHECKED, because only Markdown is parsed."
 
 
 def _document_section(run: _Run, relative: str) -> tuple[list[str], bool, bool]:
@@ -630,7 +638,7 @@ def _refusal(paths: list[str] | None, before: str | None) -> str | None:
 
 
 def check(root: Path, paths: list[str] | None = None, before: str | None = None, register: str | None = None, allow_exec: bool = False) -> tuple[str, int]:
-    """Every document's facts and voice. Exit 1 when a fact is in doubt, the linter broke or a document couldn't be read. Exit 2 when nothing was checked."""
+    """Every document's facts and voice. Exit 1 when a fact is in doubt, the linter broke or a document couldn't be read. Exit 2 when no document had its facts checked, even if the linter ran, since a voice score says nothing about them."""
     refusal = _refusal(paths, before)
     if refusal:
         return refusal, 2
@@ -642,16 +650,20 @@ def check(root: Path, paths: list[str] | None = None, before: str | None = None,
     linter, refused = _choose_linter(root, allow_exec)
     run = _Run(root, build_index(root), linter, refused, before, filesystem.read_text(Path(before)) if before else None, register)
     lines = [f"occam docs: {len(documents)} documents." if len(documents) > 1 else "occam docs: 1 document."]
-    failed, linted = False, False
+    failed, linted, facts_checked = False, False, False
     for relative in documents:
         section, section_failed, section_linted = _document_section(run, relative)
         lines += section
         failed = failed or section_failed
         linted = linted or section_linted
+        facts_checked = facts_checked or (NOT_CHECKED_FACTS not in section and not any(line.startswith("  NOT CHECKED") for line in section)) or (run.old is not None and NOT_CHECKED_FACTS in section)
     lines.append("")
     if run.index.partial:
         lines.append(f"Only the first {_MAX_FILES} files were read for names, so a real name can look unknown here.")
     if linted:
         lines.append(f"Voice came from {linter}. It's a floor that doesn't show the prose reads well, so don't write to the number.")
     lines.append(_LIMITS)
+    if not facts_checked and not failed:
+        lines.append("No document had its facts checked, so this is no clean result.")
+        return "\n".join(lines), 2
     return "\n".join(lines), 1 if failed else 0

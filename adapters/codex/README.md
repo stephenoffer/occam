@@ -27,7 +27,7 @@ Codex skips plugin hooks until you review and trust them in `/hooks`, and a chan
 
 ## The audit tools
 
-`plugin/skills/occam/scripts/occam.py` runs the same on any host. `occam-audit` uses it from `../occam/scripts/occam.py`, so copy the skills as a set. State goes in `~/.cache/occam`, or a temporary folder if that isn't writable. If nothing is, `scan` still works without its cache, while the ledger, `goal` and `coord` can't run.
+`plugin/skills/occam/scripts/occam.py` runs the same on any host. `occam-audit` uses it from `../occam/scripts/occam.py`, so copy the skills as a set. State goes in `~/.cache/occam`, or a temporary folder if that isn't writable. If nothing is, `scan` still works without its cache, while `goal` and `coord` can't run.
 
 ## Optional: independent reviewer
 
@@ -36,16 +36,3 @@ Copy `reviewer.toml` to `.codex/agents/` or `~/.codex/agents/`, and `auditor.tom
 - **A custom agent can't be made read-only.** Per the docs, instructions can ask an agent not to edit, but they "don't create a separate read-only sandbox", and sandbox settings in the file don't override the parent. For a guaranteed read-only review, run it in a read-only session: `codex exec -s read-only "..."`.
 - Subagents spawn after a direct request or an applicable project or skill instruction.
 - Same-model reviewers are not statistically independent, and a reviewer's approval is a claim to inspect, not proof.
-
-## Optional: a check before finishing
-
-`../hooks/verify_on_stop.py` runs one fast check when the agent stops with local changes. To use it, merge `../hooks/codex-stop-check.example.json` into your own `.codex/hooks.json`, replacing the path and the check command. Review it first: this runs on your machine.
-
-- Codex skips hooks until you review and trust them with `/hooks`. Trust is recorded against a hash, so a changed hook needs trusting again.
-- Stop hooks must not print plain text on stdout when exiting 0. The script stays silent on success, and prints `{"decision": "block", "reason": ...}` to continue the turn.
-- A clean tree skips the check, so work the agent has already committed isn't checked here. Use CI for that.
-- The script honors `stop_hook_active`, so it blocks at most once per stop.
-- Use a fast check. It runs whenever the agent stops with local changes.
-- The docs call tool hooks "a useful guardrail, not a complete enforcement boundary", and that applies here too.
-
-Hooks are unsupported for public plugin directory submission, one more reason they stay out of the skill.

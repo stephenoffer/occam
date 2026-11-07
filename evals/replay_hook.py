@@ -44,6 +44,30 @@ SENT_BACK = {
 }
 
 
+def stops_in(trace: Path) -> list[tuple[int, str]]:
+    """Where the agent stopped: main-thread messages that are text with no tool call, and how many tool calls came before each."""
+    messages: dict[str, dict] = {}
+    seen = 0
+    for line in trace.open(errors="replace"):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if entry.get("type") != "assistant" or entry.get("parent_tool_use_id") or not isinstance(content, list):
+            continue
+        found = messages.setdefault(message.get("id") or f"line-{len(messages)}", {"text": [], "tools": False, "after": seen})
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                found["text"].append(block.get("text", ""))
+            elif isinstance(block, dict) and block.get("type") == "tool_use":
+                found["tools"] = True
+                seen += 1
+        found["after"] = seen
+    return [(found["after"], "\n".join(found["text"])) for found in messages.values() if found["text"] and not found["tools"]]
+
+
 def tool_calls(trace: Path) -> tuple[str, str, list[tuple[dict, dict | None]]]:
     """The run's working directory, its session id, and each main-thread tool call with its result."""
     cwd = session = ""
@@ -115,9 +139,27 @@ def replay_run(hook, run_dir: Path, case_dir: Path, scratch: Path) -> dict:
         text = json.dumps(fields)
         return {"session_id": session or "replay", "cwd": str(project), **json.loads(text.replace(cwd, str(project)) if cwd else text)}
 
-    found: dict = {"holds": collections.Counter(), "asks": collections.Counter(), "sent_back": []}
+    found: dict = {"holds": collections.Counter(), "asks": collections.Counter(), "sent_back": [], "send_backs": 0}
+
+    patched = False
+
+    def stop_here(text: str) -> None:
+        """A send-back's reply is usually a run's last message, so judging only that one misses the send-back that caused it."""
+        nonlocal patched
+        patch = run_dir / "diff.patch"
+        if not patched and patch.exists() and patch.read_text(errors="replace").strip():  # only the final diff is saved, so it stands in for each stop
+            subprocess.run(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=project, capture_output=True, timeout=30, check=False)
+        patched = True
+        stopped = (hook.stop(event(last_assistant_message=text)) or {}).get("hookSpecificOutput") or {}
+        said = classify(stopped.get("additionalContext", ""))
+        found["send_backs"] += bool(stopped.get("additionalContext"))
+        found["sent_back"] += [name for name in said if name not in found["sent_back"]]
+
+    stops = stops_in(run_dir / "trace.jsonl")
     hook.user_prompt(event(prompt=prompt_of(case_dir)))
-    for block, result in calls:
+    for number, (block, result) in enumerate(calls):
+        for _, text in [stop for stop in stops if stop[0] == number]:
+            stop_here(text)
         call = {"tool_name": block["name"], "tool_input": block.get("input") or {}}
         output = (hook.pre_tool(event(**call)) or {}).get("hookSpecificOutput") or {}
         reason = output.get("permissionDecisionReason", "")
@@ -133,13 +175,11 @@ def replay_run(hook, run_dir: Path, case_dir: Path, scratch: Path) -> dict:
             hook.post_tool(event(**call, tool_response={"stdout": result_text(result)}))
             if block["name"] in ("Agent", "Task"):
                 hook.subagent_stop(event(agent_id=block["id"], agent_type=str(call["tool_input"].get("subagent_type", ""))))
-    patch = run_dir / "diff.patch"
-    if patch.exists() and patch.read_text(errors="replace").strip():
-        subprocess.run(["git", "apply", "--whitespace=nowarn", str(patch)], cwd=project,
-                       capture_output=True, timeout=30, check=False)
-    message = (run_dir / "final_message.txt").read_text(errors="replace") if (run_dir / "final_message.txt").exists() else ""
-    stopped = (hook.stop(event(last_assistant_message=message)) or {}).get("hookSpecificOutput") or {}
-    found["sent_back"] = classify(stopped.get("additionalContext", ""))
+    last = [text for after, text in stops if after >= len(calls)]
+    for text in last:
+        stop_here(text)
+    if not last:  # a saved run may have no message of its own at the end
+        stop_here((run_dir / "final_message.txt").read_text(errors="replace") if (run_dir / "final_message.txt").exists() else "")
     return found
 
 
@@ -158,7 +198,7 @@ def replay(hooks: Path, sets: list[str], arm: str) -> list[dict]:
             with tempfile.TemporaryDirectory(prefix="occam-replay-") as scratch:
                 result = replay_run(hook, run_dir, Path(found), Path(scratch))
             runs.append({"run": str(run_dir.relative_to(RESULTS)), "case": case, "acceptance": graded.get("acceptance"),
-                         "holds": dict(result["holds"]), "asks": dict(result["asks"]), "sent_back": result["sent_back"]})
+                         "holds": dict(result["holds"]), "asks": dict(result["asks"]), "sent_back": result["sent_back"], "send_backs": result["send_backs"]})
     return runs
 
 
@@ -174,7 +214,7 @@ def summary(runs: list[dict]) -> str:
     total = max(1, len(runs))
     lines = [f"{len(runs)} runs. {sum(holds.values())} holds ({sum(holds.values()) / total:.2f} a run), {sum(asks.values())} asks."]
     lines += [f"  {count:4}  {kind}" for kind, count in holds.most_common()]
-    lines.append("Sent back at Stop, by reason (a run can have several):")
+    lines.append(f"Sent back at Stop in {sum(1 for run in runs if run['send_backs'])} runs, {sum(run['send_backs'] for run in runs)} times. By reason (a run can have several):")
     lines += [f"  {sum(count.values()):4}  {name}: {count['failing runs']} in failing runs, {count['passing runs']} in passing runs"
               for name, count in sorted(sent.items(), key=lambda item: -sum(item[1].values()))]
     return "\n".join(lines)

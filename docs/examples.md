@@ -10,15 +10,19 @@ These show what occam does. They were picked to show that, so they aren't a samp
 
 *"The stock report prints `1 items` when a count is one, e.g. `python -m stockreport data/sample.csv` shows `WIDGET: 1 items`. It should say `1 item`. Can you fix that?"*
 
-Both runs fixed it correctly, including the same bug on the total line, and both passed the hidden tests.
+Both arms fixed it, including the same bug on the total line, and passed the hidden tests in all 5 runs.
 
-| No skill: $0.14 | With occam: $0.26 |
+| No skill: $0.045 | With occam: $0.067 |
 |---|---|
-| I added a test for the single-item case in `tests/test_report.py`. Both tests pass, and running the sample report gives: [...] | **New test fails on the old code:** I ran it against a copy of the original `report.py` in a temp directory, and it failed on the `1 items` output.<br><br>**Not checked:** the project doesn't appear to have a linter or type checker set up, so I didn't run one. |
+| I fixed it in `stockreport/report.py`. [...] The existing test passes.<br><br>I also applied the same singular rule to the `Total:` line [...]<br><br>I didn't add a test for the singular case. | **Test:** I added `test_render_singular_item` in `tests/test_report.py`, covering a SKU with count 1 and a total of 1.<br><br>**Checks:** pytest passes (2 tests), and the sample CSV output looks right. I didn't confirm the new test fails on the old code. |
 
-Both saved plugin runs of this case say the new test failed on the old code. None of the four saved no-skill runs on Opus says so, though that doesn't show they didn't check. The extra cost was 91% against a target of 30%, because every code edit now loads the skill first.
+All 5 plugin runs added a regression test and said they hadn't confirmed it fails on the old code. None of the 5 no-skill runs added a test, though on Opus, no-skill runs of this case have. The extra cost was 51% against a target of 30%.
 
-<sub>Real runs on Opus 5.5: `smoke-sweep-2/without-0` and `smoke-plugin-2/with-0`, case `trivial-fix`. Development data, since these cases tuned the skill.</sub>
+**These runs don't test the small-edit exception.** All 5 plugin agents loaded the skill on their own, with no hold, so the exception never fired. The only runs where it fired passed the hidden tests 0 of 2 with an earlier wording, against 2 of 2 with no skill: both noticed the same bug on the total line and left it. Ten runs of one case, already tuned on, describe these runs and nothing more.
+
+An earlier version on Opus, where this fix waited for the skill, reported "**New test fails on the old code:** I ran it against a copy of the original `report.py`", at $0.26 against $0.14. That isn't typical: none of the 8 newest plugin runs of this case reports doing it, and 7 of them say they didn't.
+
+<sub>Real runs on Sonnet 5.5: `trivial-wording-noskill/with-3` and `trivial-wording-plugin/with-3`, case `trivial-fix`, plugin hash `0a5ca967e98637cb`, with mean cost over 5 runs per arm. The earlier Opus run is `smoke-plugin-2/with-0`, against `smoke-sweep-2/without-0`. Development data, since these cases tuned the skill.</sub>
 
 ### Someone else's uncommitted work
 
@@ -54,7 +58,7 @@ The hook can't tell a bad edit from a good one. It costs a turn and makes the ag
 
 ### A report that doesn't match what happened
 
-Each of these checks compares the agent's final message with what the hook recorded. The agent is sent back once, then allowed to stop.
+Each of these checks compares the agent's final message with what the hook recorded. Each complaint sends the agent back once per state of the code, at most 5 times without a check passing, and then it's allowed to stop.
 
 | What happened | The agent says | The hook replies |
 |---|---|---|
@@ -178,7 +182,7 @@ On the `dirty-tree-failing-suite` case, a regex diagnostic for surfacing an adja
 
 ## Invoking it
 
-The skill loads automatically from its description, and with the Claude Code plugin the first code edit won't go through until it has. A plain copy of the skill on Claude Code is invoked as `/occam`.
+The skill loads automatically from its description, and with the Claude Code plugin, the first code edit beyond a small one won't go through until it has. A plain copy of the skill on Claude Code is invoked as `/occam`.
 
 | Task | Claude Code | Codex |
 |---|---|---|
@@ -220,7 +224,7 @@ Not: "This might affect some consumers. Should I proceed?"
 
 Not: "I found a bug in my change. Would you like me to fix it?"
 
-**One cell.** No plan, ledger or subagents, and the reply is a few lines:
+**One cell.** No plan or subagents, and the reply is a few lines:
 
 > `load_prices` will crash on any non-numeric row, and silently drops rows with a blank SKU (cell 3, line 14), so totals can be wrong with no error. Should fix. `requests.get` in cell 2 has no timeout, so a stalled server hangs this forever. Cell 5 uses `df`, which only cell 7 defines, so this fails on a fresh kernel. I read all of it but didn't run it, since it needs your API key.
 

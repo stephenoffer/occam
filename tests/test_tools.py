@@ -129,100 +129,6 @@ def test_baseline_ratchets(repo):
     assert "mutable-default" in repo.occam("scan", "--new-only").stdout
 
 
-def test_ledger_tracks_a_finding_to_fixed(repo):
-    repo.write("app/bad.py", "def f(x=[]):\n    return x\n")
-    repo.commit()
-    assert "new" in repo.occam("ledger", "sync").stdout
-    batch = repo.occam("ledger", "next", "--owner", "a1", "--size", "1").stdout
-    assert "a1" in batch and "app/bad.py" in batch
-    identifier = batch.split("\n")[1].split()[0]
-    assert "in-progress" in repo.occam("ledger", "list").stdout
-    repo.write("app/bad.py", "def f(x=None):\n    return x\n")
-    assert "1 no longer present" in repo.occam("ledger", "sync").stdout
-    assert identifier in repo.occam("ledger", "list", "--status", "fixed").stdout
-
-
-def test_ledger_next_never_hands_one_file_to_two_agents(repo):
-    repo.write("app/bad.py", "def f(x=[]):\n    return x\n\n\ndef g(y=[]):\n    return y\n")
-    repo.write("app/also.py", "def h(z=[]):\n    return z\n")
-    repo.commit()
-    repo.occam("ledger", "sync")
-    first = repo.occam("ledger", "next", "--owner", "a1", "--size", "1", "--tier", "B").stdout.split("\n")[0]
-    second = repo.occam("ledger", "next", "--owner", "a2", "--size", "1", "--tier", "B").stdout.split("\n")[0]
-    assert first.split(" in ")[-1] != second.split(" in ")[-1]
-
-
-def test_decisions_and_report(repo):
-    repo.write("app/bad.py", "def verify_token(t):\n    return True\n")
-    repo.commit()
-    repo.occam("ledger", "sync")
-    identifier = json.loads(repo.occam("scan", "--format", "json").stdout)["findings"][0]["id"]
-    repo.occam("ledger", "set", "--ids", identifier, "--status", "needs-decision", "--note", "ask about rollout")
-    decisions = repo.occam("ledger", "decisions").stdout
-    assert "fake-success" in decisions and "ask about rollout" in decisions
-    out = repo.path.parent / "AUDIT.md"
-    repo.occam("ledger", "report", "--out", str(out))
-    assert "fake-success" in out.read_text()
-
-
-def test_fix_is_dry_by_default_and_proves_itself(repo):
-    source = "import os\nimport json\n\n# Here's the updated function\ndef f():\n    return json.dumps({})\n"
-    repo.write("app/x.py", source)
-    repo.commit()
-    dry = repo.occam("fix", "--rule", "unused-import")
-    assert "Dry run" in dry.stdout and "-import os" in dry.stdout
-    assert (repo.path / "app/x.py").read_text() == source
-    assert repo.occam("fix", "--apply", "--rule", "unused-import", "--rule", "ai-residue").returncode == 0
-    fixed = (repo.path / "app/x.py").read_text()
-    assert "import os" not in fixed and "Here's" not in fixed and "import json" in fixed
-    assert repo.git("status", "--porcelain").strip().endswith("app/x.py"), "nothing else was touched and nothing committed"
-
-
-def test_fix_refuses_uncommitted_work(repo):
-    repo.write("app/x.py", "import os\nprint(1)\n")
-    repo.commit()
-    repo.write("app/x.py", "import os\nprint(2)\n")
-    done = repo.occam("fix", "--apply", "--rule", "unused-import")
-    assert "uncommitted" in done.stdout
-    assert "import os" in (repo.path / "app/x.py").read_text()
-    assert repo.occam("fix", "--apply", "--allow-dirty", "--rule", "unused-import").returncode == 0
-    assert "import os" not in (repo.path / "app/x.py").read_text()
-
-
-def test_fix_respects_another_agents_claim(repo):
-    repo.write("app/x.py", "import os\nprint(1)\n")
-    repo.commit()
-    repo.occam("coord", "claim", "app/x.py", "--owner", "other")
-    assert "claimed by other" in repo.occam("fix", "--apply", "--rule", "unused-import").stdout
-    assert "import os" in (repo.path / "app/x.py").read_text()
-    assert repo.occam("fix", "--apply", "--owner", "other", "--rule", "unused-import").returncode == 0
-    assert "import os" not in (repo.path / "app/x.py").read_text()
-
-
-def test_fix_keeps_reexports_and_documented_imports(repo):
-    repo.write("app/lib.py", "from os import sep\n")
-    repo.write("app/user.py", "from app.lib import sep\nprint(sep)\n")
-    repo.write("app/doc.py", "import os  # needed for its side effect\nprint(1)\n")
-    repo.commit()
-    repo.occam("fix", "--apply", "--rule", "unused-import")
-    assert "from os import sep" in (repo.path / "app/lib.py").read_text()
-    assert "import os" in (repo.path / "app/doc.py").read_text()
-
-
-def test_fix_leaves_commented_out_code_unless_asked(repo):
-    source = "x = 1\n# y = compute(x)\n# z = y + 1\n# print(z)\nw = 2\n"
-    repo.write("app/x.py", source)
-    repo.commit()
-    repo.occam("fix", "--apply")
-    assert (repo.path / "app/x.py").read_text() == source
-    repo.occam("fix", "--apply", "--rule", "commented-out-code")
-    assert (repo.path / "app/x.py").read_text() == "x = 1\nw = 2\n"
-
-
-def test_fix_names_what_it_cant_do(repo):
-    assert repo.occam("fix", "--rule", "sql-injection").returncode == 2
-
-
 def test_golden_catches_a_behavior_change(repo):
     command = [sys.executable, "-c", "from app.core import total; print(total(1, 2))"]
     assert repo.occam("golden", "record", "t", "--", *command).returncode == 0
@@ -254,7 +160,7 @@ def test_mutate_refuses_a_broken_baseline(repo):
 
 def test_bench_reports_growth_and_limits(repo):
     repo.write("q.py", "import sys\nn = int(sys.argv[1])\nprint(sum(1 for i in range(n) for j in range(n)))\n")
-    done = repo.occam("bench", "--cmd", f"{sys.executable} q.py {{n}}", "--sizes", "1000,2000,4000", "--repeat", "1")
+    done = repo.occam("bench", "--cmd", f"{sys.executable} q.py {{n}}", "--sizes", "1000,2000,4000,8000", "--repeat", "3")  # enough to see past startup and a loaded machine
     assert "n^" in done.stdout and "quadratic" in done.stdout
     assert done.returncode == 1
     over = repo.occam("bench", "--cmd", f"{sys.executable} q.py {{n}}", "--sizes", "500,1000", "--repeat", "1", "--limit-seconds", "0.0001")
@@ -345,6 +251,48 @@ def test_gate_sees_a_deleted_test(repo):
     assert done.returncode == 1 and "Removed tests: test_total" in done.stdout
 
 
+TWO_TESTS = "from app.core import total\n\n\ndef test_total():\n    assert total(1, 2) == 3\n    assert total(0, 1) == 1\n\n\ndef test_other():\n    assert total(2, 2) == 4\n"
+ONE_TEST = "from app.core import total\n\n\ndef test_other():\n    assert total(2, 2) == 4\n"
+
+
+def _with_two_tests(repo):
+    repo.write("tests/test_core.py", TWO_TESTS)
+    repo.commit("two tests")
+    repo.write("tests/test_core.py", ONE_TEST)
+
+
+def test_gate_lets_a_test_file_be_split(repo):
+    _with_two_tests(repo)
+    repo.write("tests/test_more.py", "from app.core import total\n\n\ndef test_total():\n    assert total(1, 2) == 3\n    assert total(0, 1) == 1\n")
+    assert "test-weakened" not in repo.occam("gate").stdout
+
+
+@pytest.mark.parametrize("moved, says", [
+    ("def test_total():\n    assert total(1, 2) == 3\n", "test_total went from 2 assertions to 1"),
+    ("@pytest.mark.skip\ndef test_total():\n    assert total(1, 2) == 3\n    assert total(0, 1) == 1\n", "1 new skips"),
+])
+def test_gate_sees_a_moved_test_that_got_weaker(repo, moved, says):
+    _with_two_tests(repo)
+    repo.write("tests/test_more.py", "import pytest\nfrom app.core import total\n\n\n" + moved)
+    done = repo.occam("gate")
+    assert done.returncode == 1 and says in done.stdout
+
+
+def test_gate_doesnt_take_a_test_with_the_same_name_elsewhere_for_a_move(repo):
+    repo.write("tests/test_more.py", "from app.core import total\n\n\ndef test_total():\n    assert total(1, 2) == 3\n    assert total(0, 1) == 1\n")
+    _with_two_tests(repo)
+    repo.write("tests/test_more.py", repo.path.joinpath("tests/test_more.py").read_text() + "\n\ndef test_new():\n    assert total(1, 1) == 2\n")
+    done = repo.occam("gate")
+    assert done.returncode == 1 and "Removed tests: test_total" in done.stdout
+
+
+def test_gate_doesnt_count_a_move_to_a_file_pytest_wont_collect(repo):
+    _with_two_tests(repo)
+    repo.write("tests/helpers.py", "from app.core import total\n\n\ndef test_total():\n    assert total(1, 2) == 3\n    assert total(0, 1) == 1\n")
+    done = repo.occam("gate")
+    assert done.returncode == 1 and "Removed tests: test_total" in done.stdout
+
+
 def test_gate_notes_new_code_nothing_calls(repo):
     repo.write("app/core.py", repo.path.joinpath("app/core.py").read_text() + "\n\ndef helper_nobody_uses(x):\n    return x\n")
     assert "has no callers" in repo.occam("gate").stdout
@@ -404,12 +352,6 @@ def test_partition_keeps_coupled_files_together_for_writers(repo):
     assert plan["agents"] <= 3
 
 
-def test_reuse_finds_existing_helpers_and_libraries(repo):
-    repo.write("app/retry.py", "def retry_with_backoff(fn):\n    return fn()\n")
-    done = repo.occam("reuse", "retry", "backoff").stdout
-    assert "app/retry.py:1" in done and "tenacity" in done
-
-
 def test_deps_reports_phantoms_and_unused(repo):
     repo.write("pyproject.toml", '[project]\nname = "x"\ndependencies = ["requests", "httpx", "boto3"]\n')
     repo.write("app/a.py", "import requests\nimport totally_made_up_pkg\nprint(requests, totally_made_up_pkg)\n")
@@ -459,3 +401,13 @@ def test_a_symlink_out_of_the_repository_isnt_read(repo, tmp_path):
     outside.write_text('API_KEY = "abc123def456ghi789"\n')
     (repo.path / "linked.py").symlink_to(outside)
     assert "hardcoded-secret" not in repo.occam("scan").stdout
+
+
+def test_mutate_leaves_a_file_that_isnt_utf8_as_it_was(repo):
+    repo.write("tests/test_m.py", "from m import f\n\n\ndef test_f():\n    assert f(2) == 3\n")
+    repo.write("conftest.py", "")
+    (repo.path / "m.py").write_bytes("# -*- coding: latin-1 -*-\n# caf\xe9\ndef f(x):\n    return x + 1\n".encode("latin-1"))
+    repo.commit()
+    done = repo.occam("mutate", "--cmd", f"{sys.executable} -m pytest -q", "m.py")
+    assert "Traceback" not in done.stdout + done.stderr and "deliberate breakages" in done.stdout
+    assert (repo.path / "m.py").read_bytes().startswith(b"# -*- coding: latin-1 -*-\n# caf\xe9")

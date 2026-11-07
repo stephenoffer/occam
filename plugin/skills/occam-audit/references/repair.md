@@ -2,7 +2,7 @@
 
 ## Ask first, once, with something concrete
 
-After the report, if there is anything beyond tier A and B inside an authorized fix, ask. Bundle related decisions, ask at most four things at a time, use the host's question tool if it has one, and always give your recommendation. `occam ledger decisions` collects what's waiting.
+After the report, if there is anything beyond tier A and B inside an authorized fix, ask. Bundle related decisions, ask at most four things at a time, use the host's question tool if it has one, and always give your recommendation.
 
 > `api/orders.py:41` returns every order in the table, with no paging, and `web/list.js` is its only caller. **Proposed:** add `limit` and `cursor`, default 50, and update the caller, which is ready on this branch. **Alternative:** keep the response shape and cap it silently at 1,000, which breaks anyone relying on the full list. **I recommend** paging. Apply it?
 
@@ -53,17 +53,17 @@ Report what you read and left alone separately from what you never examined.
 
 ## Doing a batch
 
-- `occam ledger next --owner NAME` returns a batch from one file and marks it in progress, so concurrent agents don't collide. On a shared tree, `occam coord claim` before editing and release after.
+- Give concurrent agents shards with no file in common, which `occam partition --mode write` finds. On a shared tree, `occam coord claim` before editing and release after.
 - Make the smallest correct change. Fix the root cause in the responsible component and every caller sharing the defect, rather than a wrapper around it.
-- Tier A: `occam fix` shows a diff, and `occam fix --apply` writes it. Python only, and narrow on purpose: by default it removes only brief comments that are plainly an assistant talking and give no reason, which it can prove changed no code. It refuses files with uncommitted work or another agent's claim, and won't overwrite a file that changed underneath it. `--rule unused-import` and `--rule commented-out-code` go further, but a proof of the edit isn't a proof the import was unneeded, so run the tests afterward and read its "check by hand" notes. The project's linter usually removes imports better. Everything else, including every other language, you fix by hand.
+- Tier A: you make the edit, and the diff shows it did only what it says. The project's linter usually removes unused imports better than you can by hand.
 - Run the checks that this batch could affect, plus `occam gate` on the result.
-- `occam ledger set --ids ... --status fixed --note "what changed and how you checked"`. Rerun `occam ledger sync` to confirm the finding is gone, not merely marked.
+- Rerun `occam scan` on what you changed to confirm the finding is gone.
 - Commit only if the user asked for it. Stage only your own files.
 - After three failed attempts at one finding, or if fixing it keeps moving the defect, stop and question the diagnosis.
 
 ## When you find something new
 
-Mid-repair you'll find more. Log it (`occam ledger sync`, or a note), finish the current batch, and don't widen the diff. The correction table in `occam` decides what to do: fix what's yours and small, ask about what changes behavior, and always surface a possible incident at once.
+Mid-repair you'll find more. Note it, finish the current batch, and don't widen the diff. The correction table in `occam` decides what to do: fix what's yours and small, ask about what changes behavior, and always surface a possible incident at once.
 
 ## Stopping
 

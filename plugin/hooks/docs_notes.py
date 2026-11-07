@@ -7,15 +7,15 @@ from pathlib import Path
 from typing import Callable
 
 from occam_evidence import AGENT_INSTRUCTIONS
+from scale_notes import TOOL
 
 REQUEST = re.compile(r"\b(?:write|draft|add|generate|create|make|update|improve|rewrite|polish)\b[^.?!\n]{0,60}"
                      r"\b(?:docs?|documentation|readme|api reference|docstrings?|changelog|release notes|user guide|usage guide|tutorial)\b"
                      r"|\bdocument (?:this|the|these|how|what|our|my)\b", re.I)
 SKILL = "occam-docs"
 _SUFFIXES = {".md", ".markdown", ".mdx", ".rst"}
-_TOOL = Path(__file__).resolve().parents[1] / "skills" / "occam" / "scripts" / "occam.py"
 POINTER = ("occam: for documentation, the `occam:occam-docs` skill covers writing it from the code, then a prose pass with `human-voice` "
-           f"if that's installed. `python3 {_TOOL} docs <file>` checks its names, paths, flags, links and example syntax against the code, "
+           f"if that's installed. `{TOOL} docs <file>` checks its names, paths, flags, links and example syntax against the code, "
            "and runs the human-voice linter if it can find one.")
 
 
