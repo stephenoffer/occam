@@ -410,5 +410,28 @@ def shape_hash(function: ast.AST) -> tuple[str, int]:
     return hashlib.sha1(" ".join(tokens).encode()).hexdigest()[:16], statements
 
 
+def exact_hash(function: ast.AST) -> str | None:
+    """For a short function, where structure alone matches unrelated code: a hash of its body with only its own parameters and locals renamed,
+    literals and outside names kept, and the docstring left out. None below two statements, where any two getters would match."""
+    own = {arg.arg for arg in ast.walk(function.args) if isinstance(arg, ast.arg)} | {
+        node.id for node in ast.walk(function) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+    body = function.body[1:] if ast.get_docstring(function, clean=False) is not None else function.body
+    names: dict[str, int] = {}
+    tokens: list[str] = []
+    statements = 0
+    for node in (inner for statement in body for inner in ast.walk(statement)):
+        if isinstance(node, ast.stmt):
+            statements += 1
+        if isinstance(node, ast.Name):
+            tokens.append(f"n{names.setdefault(node.id, len(names))}" if node.id in own else node.id)
+        elif isinstance(node, ast.Attribute):
+            tokens.append("." + node.attr)
+        elif isinstance(node, ast.Constant):
+            tokens.append(repr(node.value)[:60])
+        else:
+            tokens.append(type(node).__name__)
+    return hashlib.sha1(" ".join(tokens).encode()).hexdigest()[:16] if statements >= 2 else None
+
+
 def head_is_re(name: str) -> bool:
     return name.split(".")[0] in ("re", "regex")

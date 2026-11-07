@@ -209,3 +209,17 @@ def test_nothing_changed_says_nothing(tmp_path):
 def test_a_version_that_doesnt_exist_is_not_found(monkeypatch, registry, spec, document, status):
     monkeypatch.setattr(depcheck, "_fetch", lambda url: (200, document))
     assert depcheck.check_package(registry, spec)["status"] == status
+
+
+def test_a_partial_read_names_what_it_couldnt_check(tmp_path):
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    write(root, {"a.py": "x = 2\n"})
+    _, not_run = change_checks.notes(root, None, filesystem.changed_lines(root, None), [], {}, False)
+    assert {"callers", "reach", "env vars"} <= set(not_run)
+
+
+def test_a_skill_file_isnt_too_long_to_read_on_every_session():
+    from occam_tools import scan
+
+    assert "instructions-bloated" not in {f["rule"] for f in scan.scan_text("skills/x/SKILL.md", "x\n" * 500)}
+    assert "instructions-bloated" in {f["rule"] for f in scan.scan_text("AGENTS.md", "x\n" * 500)}

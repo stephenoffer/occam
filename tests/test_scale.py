@@ -104,8 +104,7 @@ def added(output):
 def test_hello_world_needs_no_skill_and_no_retry(session, name, body):
     session.prompt(f"write {name} that prints hello")
     before, _ = session.do(session.write_event(name, body))
-    assert "without the full skill" in added(before)
-    assert "everywhere it occurs" in added(before), "the rules arrive without loading the skill"
+    assert "everywhere it occurs" in added(before), "the rule card arrives without loading the skill"
 
 
 def test_a_question_with_no_edit_costs_nothing(session):
@@ -117,16 +116,16 @@ def test_one_line_fix_in_an_existing_file_goes_through(session):
     (session.project / "app.py").write_text("def greet():\n    return 'helo'\n")
     session.prompt("fix the typo in app.py")
     before, _ = session.do(session.edit_event("app.py", "helo", "hello"))
-    assert "without the full skill" in added(before)
+    assert "everywhere it occurs" in added(before)
 
 
-def test_small_note_comes_once(session):
+def test_the_rule_card_comes_once(session):
     session.prompt("fix it")
     (session.project / "app.py").write_text("a = 1\nb = 2\n")
     first, _ = session.do(session.edit_event("app.py", "a = 1", "a = 3"))
     second, _ = session.do(session.edit_event("app.py", "b = 2", "b = 3"))
-    assert "without the full skill" in added(first)
-    assert "without the full skill" not in added(second)
+    assert "everywhere it occurs" in added(first)
+    assert "everywhere it occurs" not in added(second)
 
 
 def test_a_small_edit_still_needs_a_check_before_stopping(session):
@@ -145,43 +144,53 @@ def test_a_small_edit_still_needs_a_check_before_stopping(session):
     ("fix the authorization check", "app.py", "a = 1", "a = 2"),
     ("speed up the report, it is too slow", "app.py", "a = 1", "a = 2"),
     ("fix it", "app.py", "a = 1", "async def f(): pass"),
-    ("fix it", "app.py", "a = 1", "\n".join(f"x{i} = {i}" for i in range(25))),
-    ("fix it", "app.py", "\n".join(f"x{i} = {i}" for i in range(25)), "a = 1"),
-    ("fix it", "app.py", "a = 1", "a = '" + "x" * 2000 + "'"),
 ])
-def test_what_is_not_small_is_still_held(session, prompt, name, old, new):
+def test_what_is_consequential_is_still_held(session, prompt, name, old, new):
     session.prompt(prompt)
     assert "has not been loaded" in (denied(session.attempt(session.edit_event(name, old, new))) or "")
 
 
-def test_replacing_a_whole_file_with_a_few_lines_is_held(session):
+# Until 2026-11-06 these were held for their size alone. Now they go ahead under the rule card, as Ponytail's whole ruleset does.
+@pytest.mark.parametrize("old, new", [
+    ("a = 1", "\n".join(f"x{i} = {i}" for i in range(25))),
+    ("\n".join(f"x{i} = {i}" for i in range(25)), "a = 1"),
+    ("a = 1", "a = '" + "x" * 2000 + "'"),
+])
+def test_size_alone_holds_nothing(session, old, new):
+    session.prompt("fix it")
+    assert denied(session.attempt(session.edit_event("app.py", old, new))) is None
+
+
+def test_replacing_a_whole_file_goes_ahead_with_the_rewrite_note(session):
     (session.project / "app.py").write_text("a = 1\n" * 500)
     session.prompt("fix it")
-    assert "has not been loaded" in (denied(session.attempt(session.write_event("app.py", "a = 1\n"))) or "")
+    output = session.attempt(session.write_event("app.py", "a = 1\n"))
+    assert denied(output) is None and "replaces a large part" in added(output)
 
 
 def test_replacing_a_file_too_large_to_compare_is_held(session):
+    """What it removes can't be read, so it can't be shown to be ordinary."""
     (session.project / "app.py").write_text("a = 1\n" * 500_000)
     session.prompt("fix it")
     assert "has not been loaded" in (denied(session.attempt(session.write_event("app.py", "a = 1\n"))) or "")
 
 
-def test_replace_all_is_held(session):
+def test_replace_all_goes_ahead(session):
     (session.project / "app.py").write_text("a = 1\n")
     session.prompt("rename it")
-    assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", "a", "b", replace_all=True))) or "")
+    assert denied(session.attempt(session.edit_event("app.py", "a", "b", replace_all=True))) is None
 
 
-def test_work_that_grows_past_small_gets_the_skill(session):
+def test_work_that_grows_stays_under_the_card(session):
     session.prompt("change these")
     for name in ("a.py", "b.py"):
         (session.project / name).write_text("a = 1\nb = 2\nc = 3\nd = 4\n")
     session.do(session.edit_event("a.py", "a = 1", "a = 2"))
     session.do(session.edit_event("b.py", "a = 1", "a = 2"))
     (session.project / "c.py").write_text("a = 1\n")
-    assert "has not been loaded" in denied(session.attempt(session.edit_event("c.py", "a = 1", "a = 2"))), "a third file isn't small"
+    assert denied(session.attempt(session.edit_event("c.py", "a = 1", "a = 2"))) is None, "a third file"
     session.do(session.edit_event("a.py", "b = 2", "b = 3"))
-    assert "has not been loaded" in denied(session.attempt(session.edit_event("a.py", "c = 3", "c = 4"))), "a fourth edit isn't small"
+    assert denied(session.attempt(session.edit_event("a.py", "c = 3", "c = 4"))) is None, "a fourth edit"
 
 
 def test_guards_unrelated_to_the_skill_still_apply_to_a_small_edit(session):
@@ -202,13 +211,13 @@ def test_the_shadow_note_still_reaches_a_small_edit(session):
 def test_nothing_rewards_keeping_a_fix_small(session):
     """Two paid runs saw a second copy of a bug and left it, after being told edits past a size were held. The size isn't announced, and neither is a penalty for growing."""
     start = added(session.send("session-start", source="startup"))
-    assert "small" not in start.lower() and "occam:occam" in start
+    assert "everywhere it occurs" in start and "occam:occam" in start
     session.prompt("fix it")
     (session.project / "app.py").write_text("a = 1\n")
     note = added(session.attempt(session.edit_event("app.py", "a = 1", "a = 2")))
-    assert "everywhere it occurs" in note
-    for word in ("small", "grows", "held", "required"):
-        assert word not in note.lower(), word
+    for text in (start, note):
+        for word in ("small", "grows", "held", "required"):
+            assert word not in text.lower(), word
 
 
 @pytest.mark.parametrize("words", [["ruby", "hello.rb"], ["java", "Hello.java"], ["javac", "Hello.java"], ["gcc", "hello.c", "-o", "hello"], ["cc", "hello.c"], ["clang++", "a.cc"],

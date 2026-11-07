@@ -7,6 +7,7 @@ import sys
 
 import pytest
 from query_support import Repo, python_repo
+from sh_support import BASHES, TOOL
 
 from occam_tools import query_repo
 from occam_tools.source import is_test_path
@@ -445,22 +446,76 @@ def test_reading_function_values_stays_fast_on_a_hostile_file(tmp_path):
     assert time.monotonic() - started < 30
 
 
+# ---------------------------------------------------------------- 8. occam.sh tests on a folder
+
+def run_sh(path, *args, bash=BASHES[0]):
+    return subprocess.run([bash, str(TOOL), *args], cwd=path, capture_output=True, text=True, timeout=120)
+
+
+@pytest.mark.parametrize("bash", BASHES)
+@pytest.mark.parametrize("git", [True, False], ids=["git", "plain"])
+@pytest.mark.parametrize("target", ["src", ".", "src/"])
+def test_occam_sh_expands_a_named_folder_as_occam_py_does(tmp_path, bash, git, target):
+    (tmp_path / "r").mkdir()
+    repo = Repo(tmp_path / "r", tmp_path / "s")
+    repo.write("src/handler.py", "def h():\n    pass\n")
+    repo.write("tests/test_x.py", "from handler import h\n")
+    if git:
+        repo.git("init", "-q")
+        repo.commit()
+    done = run_sh(repo.path, "tests", target, bash=bash)
+    assert done.returncode == 0 and done.stdout.startswith("1 of 1 test files") and "tests/test_x.py" in done.stdout
+    assert repo.query("tests", target)["tests_total"] == 1
+
+
+def test_occam_sh_still_says_when_no_test_names_a_folders_files(tmp_path):
+    repo = committed(tmp_path, {"src/handler.py": "x = 1\n", "other.py": "y = 1\n", "tests/test_x.py": "from other import y\n"})
+    done = run_sh(repo.path, "tests", "src")
+    assert done.returncode == 0 and done.stdout.startswith("0 of 1") and "No test names this" in done.stdout and "Folders named vendor" in done.stdout
+
+
+def test_occam_sh_refuses_a_folder_with_no_code(tmp_path):
+    repo = committed(tmp_path, {"data/a.txt": "x\n", "tests/test_x.py": "y = 1\n"})
+    done = run_sh(repo.path, "tests", "data")
+    assert done.returncode == 2 and "Nothing was checked" in done.stdout
+
+
+def test_occam_sh_counts_the_new_test_names_like_occam_py(tmp_path):
+    repo = committed(tmp_path, {"app/views.py": "x = 1\n", "app/views_tests.py": "y = 1\n", "app/tests.py": "z = 1\n", "lib/user.rb": "a = 1\n", "lib/user_spec.rb": "b = 1\n"})
+    assert run_sh(repo.path, "tests").stdout.startswith("3 test files")
+    assert "app/views_tests.py" in run_sh(repo.path, "tests", "app/views.py").stdout
+    assert "lib/user_spec.rb" in run_sh(repo.path, "tests", "lib/user.rb").stdout
+
+
 # ---------------------------------------------------------------- what roots a plain folder
 
-def test_a_gitignore_above_a_plain_folder_doesnt_root_it(tmp_path):
-    from query_support import OCCAM
-
-    def find(cwd):
-        return subprocess.run([sys.executable, str(OCCAM), "query", "find", "total"], cwd=cwd, env=env, capture_output=True, text=True, timeout=60).stdout
-
+@pytest.mark.parametrize("bash", BASHES)
+def test_a_gitignore_above_a_plain_folder_doesnt_root_it(tmp_path, bash):
     parent = tmp_path / "home"
     (parent / "project" / "src").mkdir(parents=True)
     (parent / ".gitignore").write_text("*.log\n")
     (parent / "sibling.py").write_text("total = 1\n")
     (parent / "project" / "a.py").write_text("total = 2\n")
-    env = {**__import__("os").environ, "OCCAM_STATE_DIR": str(tmp_path / "state"), "PYTHONDONTWRITEBYTECODE": "1"}
-    assert "a.py" in find(parent / "project") and "sibling.py" not in find(parent / "project")
-    assert "sibling.py" not in find(parent / "project" / "src"), "from below the plain folder, it roots where it started"
+    state = {"OCCAM_STATE_DIR": str(tmp_path / "state"), "PYTHONDONTWRITEBYTECODE": "1"}
+    env = {**__import__("os").environ, **state}
+    sh = subprocess.run([bash, str(TOOL), "find", "total"], cwd=parent / "project", env=env, capture_output=True, text=True, timeout=60)
+    assert sh.returncode == 0 and "1 files" in sh.stdout and "a.py" in sh.stdout and "sibling.py" not in sh.stdout
+    from query_support import OCCAM
+    py = subprocess.run([sys.executable, str(OCCAM), "query", "find", "total"], cwd=parent / "project", env=env, capture_output=True, text=True, timeout=60)
+    assert "a.py" in py.stdout and "sibling.py" not in py.stdout
+    # from below the plain folder, each roots where it started rather than at the parent's .gitignore
+    sh = subprocess.run([bash, str(TOOL), "find", "total"], cwd=parent / "project" / "src", env=env, capture_output=True, text=True, timeout=60)
+    py = subprocess.run([sys.executable, str(OCCAM), "query", "find", "total"], cwd=parent / "project" / "src", env=env, capture_output=True, text=True, timeout=60)
+    assert "sibling.py" not in sh.stdout and "sibling.py" not in py.stdout
+    # one in the starting folder does count, and a real marker above still does
+    (parent / "project" / "src" / ".gitignore").write_text("*.log\n")
+    (parent / "project" / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (parent / "project" / "src" / "b.py").write_text("total = 3\n")
+    sh = subprocess.run([bash, str(TOOL), "find", "total"], cwd=parent / "project" / "src", env=env, capture_output=True, text=True, timeout=60)
+    assert "b.py" in sh.stdout and "a.py" not in sh.stdout
+    (parent / "project" / "src" / ".gitignore").unlink()
+    sh = subprocess.run([bash, str(TOOL), "find", "total"], cwd=parent / "project" / "src", env=env, capture_output=True, text=True, timeout=60)
+    assert "src/b.py" in sh.stdout and "a.py" in sh.stdout
 
 
 # ---------------------------------------------------------------- 9. occam docs
@@ -508,23 +563,20 @@ def test_a_real_fence_still_hides_what_is_in_it(tmp_path):
 
 # ---------------------------------------------------------------- 10. smaller ones
 
-@pytest.mark.parametrize("git", [True, False], ids=["git", "plain"])
-@pytest.mark.parametrize("target", ["src", ".", "src/"])
-def test_query_tests_expands_a_named_folder(tmp_path, git, target):
-    (tmp_path / "r").mkdir()
-    repo = Repo(tmp_path / "r", tmp_path / "s")
-    repo.write("src/handler.py", "def h():\n    pass\n")
-    repo.write("tests/test_x.py", "from handler import h\n")
-    if git:
-        repo.git("init", "-q")
-        repo.commit()
-    assert repo.query("tests", target)["tests_total"] == 1
-
-
+@pytest.mark.parametrize("bash", BASHES)
 @pytest.mark.parametrize("shebang", ["#!/usr/bin/env sh", "#!/bin/dash", "#!/bin/sh", "#!/bin/ksh", "#!/usr/bin/env dash", "#!/bin/sh -e"])
-def test_query_reads_every_shell_shebang(tmp_path, shebang):
+def test_occam_sh_and_py_read_every_shell_shebang(tmp_path, bash, shebang):
     repo = committed(tmp_path, {"bin/tool": f"{shebang}\necho hi\n"})
+    output = run_sh(repo.path, "shell", bash=bash).stdout
+    assert output.startswith("1 shell scripts")
     assert repo.query("size")["languages"].get("shell")
+
+
+@pytest.mark.parametrize("bash", BASHES)
+@pytest.mark.parametrize("shebang", ["#!/usr/bin/env python3", "#!/usr/bin/env shellcheck", "#!/usr/local/shiny/run", "not a script"])
+def test_other_shebangs_arent_taken_for_shell(tmp_path, bash, shebang):
+    repo = committed(tmp_path, {"bin/tool": f"{shebang}\necho hi\n"})
+    assert "bin/tool" not in run_sh(repo.path, "shell", bash=bash).stdout
 
 
 @pytest.mark.parametrize("name", ["", "foo.", " ", "a.b."])
@@ -532,6 +584,8 @@ def test_find_with_no_name_is_a_bad_question(tmp_path, name):
     repo = committed(tmp_path, {"a.py": "foo = 1\n"})
     done = repo.occam("query", "find", name)
     assert done.returncode == 2 and "Nothing was checked" in done.stdout and "Nothing refers" not in done.stdout
+    sh = run_sh(repo.path, "find", name)
+    assert sh.returncode == 2 and "Nothing was checked" in sh.stdout
 
 
 @pytest.mark.parametrize("manifest, entry", [
@@ -556,3 +610,24 @@ def test_a_workspace_package_subpath_resolves_through_its_exports(tmp_path):
 def test_a_spec_is_only_a_test_where_that_name_means_one(path, expected):
     """`run_tests.py` reads as a test too. It's a name no pattern shared with bash can separate, and it does test-running work anyway."""
     assert is_test_path(path) is expected
+
+
+# ---------------------------------------------------------------- the same, for occam.py alone
+
+@pytest.mark.parametrize("git", [True, False], ids=["git", "plain"])
+@pytest.mark.parametrize("target", ["src", ".", "src/"])
+def test_query_tests_expands_a_named_folder(tmp_path, git, target):
+    (tmp_path / "r").mkdir()
+    repo = Repo(tmp_path / "r", tmp_path / "s")
+    repo.write("src/handler.py", "def h():\n    pass\n")
+    repo.write("tests/test_x.py", "from handler import h\n")
+    if git:
+        repo.git("init", "-q")
+        repo.commit()
+    assert repo.query("tests", target)["tests_total"] == 1
+
+
+@pytest.mark.parametrize("shebang", ["#!/usr/bin/env sh", "#!/bin/dash", "#!/bin/sh", "#!/bin/ksh", "#!/usr/bin/env dash", "#!/bin/sh -e"])
+def test_query_reads_every_shell_shebang(tmp_path, shebang):
+    repo = committed(tmp_path, {"bin/tool": f"{shebang}\necho hi\n"})
+    assert repo.query("size")["languages"].get("shell")

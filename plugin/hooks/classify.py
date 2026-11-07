@@ -11,6 +11,7 @@ from pathlib import Path
 import scale_notes
 
 REVIEWER = "code-reviewer"
+OWN_AGENTS = {REVIEWER, "auditor"}  # they carry their own briefs, so the rule card isn't repeated to them
 DOC_SUFFIXES = {".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc", ".org", ".csv", ".tsv", ".log",
                 ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf"}
 LANGUAGE_SKILLS = {
@@ -52,12 +53,16 @@ EXPLICIT_READ_ONLY = re.compile(r"(?<![\w-])(?<!\ba\s)(?<!\ban\s)(?:review|plan|
                                 r"|\b(?:fix|change|touch|edit|modify|update)\s+nothing\b", re.I)
 NOT_FROM_THE_USER = re.compile(r"\s*(<task-notification\b|<agent-message\b|<cross-session-message\b|Another Claude session sent a message)", re.I)
 REVIEW_OR_PLAN = re.compile(r"\b(review|audit|pull request|merge|plan how|how would you (add|build|change)|architecture)\b", re.I)
-HIGH_CONSEQUENCE = re.compile(
-    r"(^|[/_.\-])(auth|authn|authz|oauth|login|sessions?|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac"
-    r"|tenants?|tenancy|billing|payments?|invoices?|checkout|refunds?|ledgers?|migrations?|migrate|crypto|webhooks?"
-    r"|signatures?)([/_.\-]|$)",
-    re.I,
-)
+# A missed defect here is a breach, so these get a fresh reviewer. The rest of HIGH_CONSEQUENCE gets a self-review of the whole diff, which
+# Superpowers measured as catching about as much as a review subagent at a fraction of the time (its v5.0.6 release notes). Unmeasured here.
+_SECURITY_CRITICAL_WORDS = r"auth|authn|authz|oauth|login|sessions?|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac|tenants?|tenancy|crypto|signatures?"
+_MONEY_AND_DATA_WORDS = r"billing|payments?|invoices?|checkout|refunds?|ledgers?|migrations?|migrate|webhooks?"
+SECURITY_CRITICAL = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS})([/_.\-]|$)", re.I)
+HIGH_CONSEQUENCE = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS}|{_MONEY_AND_DATA_WORDS})([/_.\-]|$)", re.I)
+# Over-matching only brings back the reviewer agent, which every high-consequence file got until 2026-11-06, so this errs wide.
+ASKS_FOR_REVIEW = re.compile(r"\b(?:fresh|independent|second|separate|outside)[- ](?:review(?:er)?|look|opinion|pair of eyes)\b|\bcode[- ]?review(?:er|s)?\b"
+                             r"|\bindependently reviewed\b|\b(?:a|the|another) reviewer\b|\breview(?:ed)?\s+(?:it\s+|this\s+|them\s+)?(?:with|by)\s+(?:a\s+|an\s+)?(?:sub)?agent\b"
+                             r"|\b(?:get|have)\s+(?:it|this|that|them|the\s+(?:changes?|diff|code|fix|pr))\s+reviewed\b", re.I)
 SECURITY_PROMPT = re.compile(r"\b(authenticat\w*|authoriz\w*|tenant\w*|permissions?|credentials?|secrets?|vulnerab\w*|injection)\b", re.I)
 PERFORMANCE_PROMPT = re.compile(
     r"\b(p[59]\d|latency|throughput|slow(er|ness)?|performance|faster|speed up|scal(e|es|ing|able|ability)"

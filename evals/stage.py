@@ -65,7 +65,7 @@ def stage(suite: str, variant: str, out: Path, case_glob: str = "*") -> list[str
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", required=True, choices=["smoke", "holdout", "triggers", "e2e", "regression", "python", "hard"])
+    parser.add_argument("--suite", required=True, choices=["smoke", "holdout", "triggers", "e2e", "regression", "python", "hard", "reach"])
     parser.add_argument("--variant", required=True, choices=VARIANTS)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--case", default="*", help="glob of case names")

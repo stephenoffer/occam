@@ -708,7 +708,7 @@ def _silenced(note: dict, config: dict) -> bool:
     return note["rule"] in config.get("disable", []) or any(fnmatch.fnmatch(note["path"], pattern) or note["path"].startswith(pattern.rstrip("/") + "/") for pattern in config.get("ignore", []))
 
 
-def notes(root: Path, base: str | None, changed: dict, deleted: list, renamed: dict, whole: bool = True, checks: tuple = CHECKS) -> tuple[list[dict], list[str]]:
+def notes(root: Path, base: str | None, changed: dict, deleted: list, renamed: dict, whole: bool = True, checks: tuple = CHECKS, budget: float = RUNTIME_LIMIT) -> tuple[list[dict], list[str]]:
     """What this change seems to have left out, and which checks couldn't run. A check that breaks is listed as not run, and doesn't take the gate with it."""
     hunks = filesystem.diff_hunks(root, base)
     if hunks is None or not changed:
@@ -721,8 +721,8 @@ def notes(root: Path, base: str | None, changed: dict, deleted: list, renamed: d
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SyntaxWarning)  # a repository's own bad escapes aren't this tool's output
         for check in checks:
-            too_big = len(changed) > MAX_FILES_FOR_SEARCHES and check in ACROSS_THE_REPOSITORY
-            if too_big or time.monotonic() - started > RUNTIME_LIMIT:
+            needs_everything = (len(changed) > MAX_FILES_FOR_SEARCHES or not whole) and check in ACROSS_THE_REPOSITORY  # on a partial read, "nothing else uses it" can't be known
+            if needs_everything or time.monotonic() - started > budget:
                 not_run.append(_label(check))
                 continue
             try:

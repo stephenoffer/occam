@@ -19,7 +19,7 @@ Before this work, occam was a careful skill for making a change and reviewing a 
 |---|---|---|
 | Auditing an existing codebase | "Review" meant a diff. No method for a whole repository | `occam-audit`, with strategy by size from a cell to a monorepo |
 | Repairing one | Nothing beyond "fix the responsible component" | Tiers that decide permission, locking behavior first, an order of work, batches |
-| Tools | None. Every check depended on the model remembering | A standard-library CLI with 16 commands and 189 rules |
+| Tools | None. Every check depended on the model remembering | A standard-library CLI with 16 commands and 241 rules |
 | Large repositories | Nothing | `map`, `partition`, `baseline`. 1.5 million lines scanned in about 30 seconds |
 | Notebook cells and snippets | Nothing | `scan --stdin`, `.ipynb` parsing, cell locations, hidden-state rules |
 | Agent-written defects | Described in prose only | Deterministic rules. The plugin mentions what an edit just introduced, and sends the agent back at stop |

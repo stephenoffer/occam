@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 
 from .py_helpers import (
@@ -12,6 +13,7 @@ from .py_helpers import (
     _string_parts, _walk_own, builds_bind_markers, head_is_re, holds_at, is_literal_binding, looks_like_auth_check,
 )
 
+_BUILTINS = frozenset(dir(builtins))
 SQL_METHODS = {"execute", "executemany", "raw", "text", "query", "executescript", "read_sql", "read_sql_query", "fetch", "fetchrow", "fetchval"}
 SQL_TEXT_KEYWORDS = ("statement", "sql", "query", "stmt", "operation")
 SQL_RECEIVER = re.compile(r"(?:^|[._])(?:cur|cursor|conn|connection|db|database|session|engine)\d*(?:$|[._])", re.I)
@@ -112,7 +114,11 @@ def check_loop(ctx, node, loops, function) -> None:
                 ctx.add("nested-same-collection", child, f"Nested loop over {_dotted(node.iter)} again.")
                 break
         _csv_split(ctx, node)
-        if _is_index_loop(node.iter) and ctx.imports_numeric:
+    if isinstance(node, (ast.For, ast.AsyncFor)) and _is_index_loop(node.iter) and ctx.imports_numeric:  # at module level too, where notebook cells and scripts loop
+        frame = _row_by_position(node)
+        if frame:
+            ctx.add("dataframe-iterrows", node, f"Reads {frame} one row at a time by position.")
+        else:
             ctx.add("python-loop-over-array", node, "Python index loop in a module that uses numeric arrays.")
     handles_error_with_sleep = False
     for child in node.body:
@@ -122,6 +128,16 @@ def check_loop(ctx, node, loops, function) -> None:
                     handles_error_with_sleep = True
     if handles_error_with_sleep:
         ctx.add("handrolled-retry", node, "A loop that catches and sleeps is a hand-written retry.")
+
+
+def _row_by_position(loop: ast.For) -> str | None:
+    """`df.iloc[i]` with `i` from `range(len(df))`: the frame read that way, or None."""
+    index = loop.target.id if isinstance(loop.target, ast.Name) else None
+    for child in ast.walk(ast.Module(body=loop.body, type_ignores=[])):
+        if (index and isinstance(child, ast.Subscript) and isinstance(child.value, ast.Attribute) and child.value.attr in ("iloc", "loc", "iat", "at")
+                and isinstance(child.slice, ast.Name) and child.slice.id == index):
+            return _dotted(child.value.value) or "a frame"
+    return None
 
 
 def _is_index_loop(iterable: ast.AST) -> bool:
@@ -243,6 +259,10 @@ def check_call(ctx, node: ast.Call, statement: ast.AST, loops: int, function: as
         _in_loop(ctx, node, name, last, head, function)
     if not ctx.is_test:
         _gather(ctx, node, name, last, function)
+        if function is not None and name and _is_remote_call(name, last, head):
+            ctx.remote_defs.add((function.name, function.lineno))
+        if loops and name and "." not in name and name not in _BUILTINS and not (ctx.is_script or MIGRATION_PATH.search(ctx.path)):
+            ctx.loop_calls.append([name, node.lineno])
         _materialize(ctx, node, name, last, keywords)
         _reinvented(ctx, node, name, last, keywords, statement)
 

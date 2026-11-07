@@ -29,12 +29,6 @@ STOPPED_SHORT = re.compile(
     r"|\bremaining \w+ (?:still )?need to\b|\bremaining \w+ still need\b"
     r"|\bleft\b[^.\n]{0,40}\bfor (?:later|a follow-?up)\b"
     r"|\b(?:migration|split|refactor|port|conversion|move|work|change) is (?:incomplete|partial|unfinished)\b"
-    r"|\b(?:this|that|here)(?:'s|\s+is|\s+seems\s+like|\s+looks\s+like)\s+(?:a\s+)?(?:good|natural|logical|clean|sensible)\s+(?:stopping point|place to stop)\b(?![^.\n]{0,40}\bnext\b)"
-    r"|\b(?:reached|hit)\s+a\s+(?:good|natural|logical|clean|sensible)\s+(?:stopping point|checkpoint|place to stop)\b"
-    r"|\b(?:I'll|I\s+will|we'll|we\s+will|let's|I\s+can|we\s+can)\s+(?:continue|finish|pick\s+(?:this|it)\s+up|carry\s+on)\b[^.\n]{0,40}\bin\s+a\s+(?:new|fresh|later|separate|future|next)\s+session\b"
-    r"|\b(?:I'm|I\s+am|I've|I\s+have|we're|we've)\s+(?:leaving|left|treating|treated|marking|marked)\b[^.\n]{0,40}\bas\s+(?:a\s+)?(?:known limitation|future work)\b"
-    r"|\b(?:I'm|I\s+am|we're)\s+(?:running|getting)\s+(?:low|short)\s+on\s+(?:context|tokens)\b"
-    r"|\bgiven\s+the\s+(?:session length|length of this session)\b[^.\n]{0,30}\b(?:I|we)\s+(?:stopped|stop|will stop|am stopping)\b"
     r"|^\W*(?:why I didn't|what stayed|not done\b)", re.I | re.M)
 AS_REQUESTED = re.compile(r"\bas (?:you )?(?:asked|requested)\b(?<!not all of them as you asked)|\bper your\b", re.I)
 NOT_ALL = re.compile(r"\bnot all\b", re.I)

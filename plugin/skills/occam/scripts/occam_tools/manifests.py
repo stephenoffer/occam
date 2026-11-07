@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import subprocess
@@ -19,6 +20,19 @@ IMPORT_TO_DIST = {
     "rest_framework": "djangorestframework", "github": "pygithub", "bson": "pymongo", "gridfs": "pymongo", "ldap": "python-ldap", "telegram": "python-telegram-bot",
     "cairo": "pycairo", "gi": "pygobject",
 }
+# Python packages common enough that an import of one is a real package, missing or undeclared here, not an invented name. Short on purpose:
+# an invented package is usually an obscure name, and `deps --online` checks the rest.
+WELL_KNOWN = {
+    "numpy", "pandas", "scipy", "matplotlib", "seaborn", "plotly", "requests", "httpx", "aiohttp", "urllib3", "flask", "django", "fastapi", "starlette",
+    "uvicorn", "gunicorn", "pydantic", "sqlalchemy", "alembic", "psycopg", "pymysql", "redis", "celery", "boto3", "botocore", "jinja2", "click", "typer",
+    "rich", "tqdm", "pytest", "hypothesis", "torch", "torchvision", "tensorflow", "keras", "jax", "transformers", "datasets", "tokenizers", "polars",
+    "pyarrow", "dask", "ray", "numba", "networkx", "sympy", "statsmodels", "xgboost", "lightgbm", "openai", "anthropic", "langchain", "lxml", "openpyxl",
+    "xlrd", "markdown", "docutils", "sphinx", "toml", "tomli", "msgpack", "orjson", "ujson", "protobuf", "websockets", "paramiko", "cryptography",
+    "kubernetes", "docker", "pymongo", "elasticsearch", "kafka", "pika", "prometheus_client", "opentelemetry", "sentry_sdk", "structlog", "loguru",
+    "marshmallow", "attrs", "cachetools", "tenacity", "filelock", "psutil", "packaging", "setuptools", "wheel", "pip", "six", "certifi", "chardet",
+    "idna", "pytz", "tzdata", "arrow", "pendulum", "faker", "freezegun", "responses", "moto", "playwright", "selenium", "scrapy", "PyQt5", "PySide6",
+    "pygame", "tkinter", "ipywidgets", "IPython", "nbformat", "jupyter", "streamlit", "gradio", "dash", "bokeh", "altair", "duckdb", "pyspark",
+} | set(IMPORT_TO_DIST)
 NODE_BUILTINS = {"assert", "async_hooks", "buffer", "child_process", "cluster", "console", "constants", "crypto", "dgram", "diagnostics_channel", "dns",
                  "domain", "events", "fs", "http", "http2", "https", "inspector", "module", "net", "os", "path", "perf_hooks", "process", "punycode",
                  "querystring", "readline", "repl", "stream", "string_decoder", "sys", "test", "timers", "tls", "trace_events", "tty", "url", "util", "v8",
@@ -174,6 +188,8 @@ def read_manifests(root: Path, files: list[str]) -> dict:
                         requirement = _requirement(quoted)
                         if requirement:
                             python[requirement] = name
+                elif base == "setup.py" and re.search(r"install_requires\s*=", text):
+                    python.update(_computed_requirements(path, name))
             elif base in ("Pipfile", "environment.yml", "environment.yaml", "conda.yaml"):
                 for line in path.read_text(errors="replace").split("\n"):
                     match = re.match(r"\s*-?\s*([A-Za-z][\w.-]+)\s*(?:=|$|[<>~!])", line)
@@ -202,6 +218,23 @@ def read_manifests(root: Path, files: list[str]) -> dict:
         except (OSError, ValueError):
             continue
     return {"python": python, "python_locked": python_locked, "node": node, "rust": rust, "go": go_modules, "go_own": go_own, "aliases": aliases, "files": seen}
+
+
+def _computed_requirements(setup: Path, name: str) -> dict[str, str]:
+    """`install_requires=dependencies['install_requires']`: the lists usually live in a module beside setup.py, which is read, never run."""
+    found: dict[str, str] = {}
+    for module in sorted(setup.parent.glob("*.py")):
+        if module.name != "setup.py" and re.search(r"depend|require", module.stem, re.I):
+            try:
+                strings = [item.value for node in ast.walk(ast.parse(module.read_text(errors="replace"))) if isinstance(node, (ast.List, ast.Tuple, ast.Set))
+                           for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)]  # list items, not the extras' names keying them
+            except (OSError, SyntaxError, ValueError, RecursionError):
+                continue
+            for quoted in strings:
+                requirement = _requirement(quoted) if re.match(r"[A-Za-z][\w.-]*(?:\[[\w,\s-]*\])?\s*(?:[<>=!~;]|$)", quoted) else None
+                if requirement:
+                    found[requirement] = f"{name.rsplit('/', 1)[0]}/{module.name}" if "/" in name else module.name
+    return found
 
 
 def stdlib_modules() -> set[str]:

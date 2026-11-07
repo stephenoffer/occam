@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: new-status
+tags: [reach]
+expected_outcome: |
+  Partial refunds get their own status everywhere statuses are listed, and an existing production database can store it.
+context:
+  scaffold_script: place-files.sh

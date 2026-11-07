@@ -1,5 +1,5 @@
 {
-  "description": "Keeps the important parts of occam from being skipped. Set OCCAM_HOOKS=off to disable.",
+  "description": "Keeps the important parts of occam from being skipped. Set OCCAM_HOOKS=guard for only the safety guards, or OCCAM_HOOKS=off to disable.",
   "hooks": {
     "SessionStart": [
       {
@@ -10,6 +10,21 @@
             "args": [
               "${CLAUDE_PLUGIN_ROOT}/hooks/occam_hook.py",
               "session-start"
+            ],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/occam_hook.py",
+              "subagent-start"
             ],
             "timeout": 10
           }

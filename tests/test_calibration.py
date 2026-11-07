@@ -9,6 +9,7 @@ __post__.sh (run in the workspace), __final_message__.txt and __trace__.jsonl.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -19,7 +20,7 @@ import pytest
 import grade_workspaces as grade
 
 EVALS = Path(__file__).resolve().parents[1] / "evals"
-CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard") for p in (EVALS / "cases" / suite).glob("*")
+CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard", "reach") for p in (EVALS / "cases" / suite).glob("*")
                if (p / "hidden").is_dir())
 SPECIAL = {"__post__.sh", "__final_message__.txt", "__trace__.jsonl", "EXPECT_FAIL"}
 
@@ -32,8 +33,14 @@ IMPORT_NAMES = {"pyyaml": "yaml", "scikit-learn": "sklearn", "pillow": "PIL", "p
 
 
 def skip_without_its_packages(case_dir: Path) -> None:
-    """A case that pins third-party packages can't be calibrated without them, and an import error would make every check fail for
+    """A case written for a newer Python, or one that pins third-party packages, can't be calibrated without them, and an import error would make every check fail for
     the wrong reason. CI installs them with `--group cases` where the Python version allows, and says so when it skips."""
+    floor = re.search(r'requires-python\s*=\s*">=\s*(\d+)\.(\d+)', (case_dir / "files" / "pyproject.toml").read_text()) \
+        if (case_dir / "files" / "pyproject.toml").exists() else None
+    if floor:
+        probe = f"import sys; sys.exit(0 if sys.version_info >= ({floor.group(1)}, {floor.group(2)}) else 1)"
+        if subprocess.run([grade.PYTHON, "-c", probe], capture_output=True, timeout=60).returncode:
+            pytest.skip(f"{case_id(case_dir)} is written for Python {floor.group(1)}.{floor.group(2)} or later, and {grade.PYTHON} is older")
     lock = case_dir / "files" / "requirements.lock"
     if not lock.exists():
         return

@@ -20,6 +20,8 @@ Most AI-generated code has weak tests, so passing tests prove little. Before a t
 
 ## Order of work
 
+Before fixing a confirmed defect, search for its siblings, the same mistake written elsewhere (`occam query grep`, the clone findings), and fix them in the same batch, because fixing one of two copies is a defect too.
+
 Each step makes the next one safer or smaller:
 
 1. **Security and data loss.** Anything exploitable or lossy comes first, in its own batch.

@@ -1,0 +1,2 @@
+test_it_survives_regenerating_the_client
+test_the_committed_client_matches_the_generator

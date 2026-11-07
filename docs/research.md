@@ -244,3 +244,53 @@ A subagent read these for what occam still lacked. Numbers are self-reported unl
 | Repository rules with fixtures, fed by a lesson ladder | compound-engineering, [Trail of Bits](https://github.com/trailofbits/skills) `470419e` | A lesson costs tokens only when it hits | 200 to 300 lines |
 
 **Looked at and rejected:** model-rated type design, a model pass per check (`code-review`, Amp, Continue), `hookify`, phased `feature-dev`, a second model as architect or oracle, CodeScene's single score, and Aider's repo map, which adds tokens and overlaps `map`.
+
+## Re-evaluation for new code and audits at every size: added 2026-11-06
+
+The user asked to re-evaluate occam against the whole list of ways agents write bad code, for new code and for auditing and fixing AI-written codebases from a cell to a monorepo, and to check current discussions and similar skills. Two subagents did the reading, and I ran the tools on three things: a pasted notebook cell, a 190-line Flask app written to contain the usual AI defects, and SkyPilot (about 650,000 lines of Python, read-only). None of this measures whether an agent does better.
+
+### What running the tools found
+
+The guidance already named every item on the user's list (see `coverage-map.md`), so the gaps were in the tools. On the written app, the scanner and `gate` missed the commonest shapes of several defects they have rules for. On the cell and on SkyPilot, they reported real packages as invented.
+
+| Missed or wrong | Cause | Change |
+|---|---|---|
+| `return True` after the work and again in `except Exception` | `failure-reported-as-success` only knew `{"success": True}` | Same success value from the work and a broad handler. A narrow handler returning success is often deliberate (already deleted), so it doesn't count, and a handler whose comment gives a reason is a low-confidence lead, as `swallowed-exception` does. Both SkyPilot hits were such documented decisions |
+| A test calling the mock `@patch` handed it | `test-mocks-subject` only followed qualified names | Mocks passed as parameters are followed too, unless the test also calls code it imported by name |
+| A loop calling a helper, in another file, that queries | `query-in-loop` read one file | One hop across files, when the name is defined once and imported, and the helper isn't decorated (it may cache) |
+| Three copies of a 3-line function | `clone-function` needs 4 statements and 6 lines, below which shape alone matches unrelated code | Short functions match on their text, with literals and outside names kept, and only three copies or more count. On SkyPilot, every group this added was code repeated verbatim, such as one function in 7 to 15 cloud modules. Some repetition is deliberate, as in self-contained migrations. Structure alone gave 28 groups, about half of them unrelated functions |
+| `df.iloc[i]` in a `range(len(df))` loop in a cell | Loop rules only ran inside functions, and cells and scripts run at module level | Index loops are read at module level too, and row reads by position are `dataframe-iterrows` |
+| `pandas` in a cell called an invented package | Nothing declared, nothing installed | A short list of very common packages: undeclared if the repository declares anything, nothing if it declares nothing |
+| 382 high `phantom-import` leads on SkyPilot, including `sqlalchemy` 131 times | Its `setup.py` builds `install_requires` from a module beside it | `setup.py` with a computed `install_requires` reads the strings listed in a `*depend*` or `*require*` module beside it, parsed, never run. Dictionary keys, such as the names of extras, aren't packages |
+| `test-no-assert` on "should not raise" tests and on tests calling `smoke_tests_utils.run_one_test` | Only same-file helpers counted | A test saying nothing should raise isn't reported, and a call into a test-support module counts as a check |
+| `gate` said "No needless structure" for a new function with two parameters it never read, and "Comments" for three narrating comments | Comment rules are low confidence, which `gate` hid | `gate` warns on new top-level functions' unread parameters, and shows low-confidence comment leads on changed lines. Both only warn |
+
+All of these have a case that must fire and a near miss in `tests/test_ai_patterns.py`, which fails on the code before the change (16 of 17; the 17th is a near miss).
+
+**SkyPilot before and after** (same commit, every file read): 8,170 leads became 7,233. High-severity "hallucination" leads went from 416 to 94, `phantom-import` at high confidence from 347 to 47, and `test-no-assert` from 552 to 105. Added: 15 `query-in-loop` through a helper, 11 short `clone-function` groups, 2 `failure-reported-as-success` (since lowered, see above), and 3 `unused-dependency`, which were the extras' names until fixed.
+
+**Left alone, on purpose.** Extending `swallowed-exception` to `except Exception: return <default>` would also catch `try: parse(x); return True / except Exception: return False` validators, and that rule blocks in `gate`. A handler returning a default stays the reader's call. A lambda-style `handler(event, context)` that ignores `context` gets an `unread-parameter` warning it doesn't deserve, which a warning can afford.
+
+**Scale.** `map` on SkyPilot spent its 75 seconds and fell back to a table of contents by folder (90 s wall clock), as designed. `scan` read everything in 40 s and `partition` gave 128 shards with 6 readers. The noise is what an agent auditing it would meet first, which is why the precision fixes above came first.
+
+### New sources since the earlier passes
+
+Already cited in `large-codebase-failures.md`, and not repeated here: the OX, CodeRabbit, Veracode, Apiiro, Sonar and Faros reports, SusVibes, ImpossibleBench, SlopCodeBench and others. New, all preprints unless marked:
+
+| Source | Finding | Used for |
+|---|---|---|
+| [Pham and Ghaleb, MSR '26](https://arxiv.org/abs/2601.17627) | Functions and classes agents add are removed after a median 3 days, against 34 for people | Supports "It needs to exist" and `gate`'s unread-parameter warning |
+| [Kaddour et al.](https://arxiv.org/abs/2602.06948) | Agents succeeding 22% of the time predict 77%. Framing self-assessment as bug hunting calibrated best | The core's critique already asks for a counterexample. No change |
+| [TDAD](https://arxiv.org/abs/2603.17973) | TDD wording alone raised regressions from 6.08% to 9.94%. A map of which tests reach the change cut them to 1.82%. Small open models, about 100 instances | `gate`'s closing questions now ask whether the existing tests that reach the change ran, and point at `query impact --changed` |
+| [Khatri](https://arxiv.org/abs/2607.27250), [Lulla et al.](https://arxiv.org/abs/2601.20404) | Context files: no change in Claude Code's solve rate (53.3% v 55.6%), or 28.6% less runtime for Codex at comparable completion | Consistent with keeping instructions short. No change |
+| [Kim et al.](https://arxiv.org/abs/2512.08296) | Multi-agent against single: +80.8% on decomposable tasks, −70.0% on sequential planning. Not specific to code | Consistent with `collaboration.md`'s "don't split what can stay together". No change |
+| [ProgramBench](https://arxiv.org/abs/2605.03546), [NL2Repo-Bench](https://arxiv.org/abs/2512.12730) | Models favor single-file monoliths, stop early and lose cross-file coherence on whole repositories | Already covered by done-conditions and the `map` strategy |
+
+### Similar tools, latest versions
+
+Ponytail (`96608e0`) and Superpowers (`22f0b46`) haven't changed since the passes above, though Superpowers' release notes describe mechanisms not recorded before. The core skill's body has a 13,000-character cap from the cost goal, and was at 12,933, so nothing here went into it. Taken, outside the core:
+
+- **The suite defines green,** from Superpowers 7.0, where 11 of 12 runs ran only the test file they were given. Folded into the `gate` question above, which costs nothing until `gate` runs.
+- **Sibling search after a confirmed bug,** from Trail of Bits' variant analysis, in occam-audit's repair reference, since the audit skill's 1,400-word cap was spent too. Occam named "one of two copies fixed" as a failure, with no step for it.
+
+Not taken, for later decision: **awkward inputs as checks before coding** (Superpowers 7.0, whose evals had every implementer ship the same crash; it matches occam's own lead on `invoice-ledger-totals`, where a quantity-0 line broke totals in every no-skill run), which belongs in the core's "Know what done means" and needs about 120 characters of a budget that's spent, so it's the user's call; `gate` already asks about empty, huge and malformed input after the fact; a fresh agent disproving each serious audit finding (Anthropic's `code-review` and `claude-security`, Cloudflare), since occam-audit already asks the auditor to show nothing guards a finding, and the user approved self-review by default the same day; a script-checked coverage ledger with stable finding IDs (`claude-security`, Cloudflare), a marker for code that must stay as it is (addyosmani/agent-skills, compound-engineering), proving each lint or CI check fails on a known violation, and business-rule cards before a repair (Anthropic's `code-modernization`). A `SubagentStart` rule card (Ponytail) is being built by another session, with the user's approval. Rejected again, for the reasons above: a single quality score (desloppify), a review at every stop, persona framing.

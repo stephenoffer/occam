@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import re
 
 from .py_helpers import (
     ONCE_ONLY_CALLS,
     ABSTRACT_NAME, AUTH_CALL, AUTH_DECORATOR, AUTH_DEPEND, FUNCTION_NODES, GENERIC_TEST, HEDGE_NAME, HELPERS,
     PATTERN_CLASS, ROUTE_DECORATOR, TWIN_HEDGE, VAGUE_CLASS, _body, _call_name, _complexity, _decorator_names,
-    _docstring, _dotted, _has_sql, _last, _max_nesting, _names_in, _string_parts, _walk_own, looks_like_auth_check, shape_hash,
+    _docstring, _dotted, _has_sql, _last, _max_nesting, _names_in, _string_parts, _walk_own, exact_hash, looks_like_auth_check, shape_hash,
 )
 
 
@@ -34,7 +35,8 @@ def check_function(ctx, node: ast.AST, class_node: ast.ClassDef | None) -> None:
     hashed, statements = shape_hash(node)
     ctx.defs.append({"name": name, "line": node.lineno, "end": node.end_lineno, "kind": "method" if class_node else "function",
                       "class": class_node.name if class_node else None, "decorated": bool(decorators), "hash": hashed,
-                      "statements": statements, "length": length, "options": _options(node), "complexity": complexity, "params": len(params)})
+                      "statements": statements, "length": length, "options": _options(node), "complexity": complexity, "params": len(params),
+                      "exact": exact_hash(node) if statements < 4 or length < 6 else None})
     if not ctx.is_stub_file:
         _stub_rules(ctx, node, body, decorator_last, class_node)
     if not ctx.is_test:
@@ -379,7 +381,7 @@ def _test_evidence(ctx, node, name: str) -> dict:
         if isinstance(inner, ast.Assert):
             found["asserts"].append(inner)
         elif isinstance(inner, ast.Call):
-            found["checks"] = found["checks"] or _last(_call_name(inner)) in helpers
+            found["checks"] = found["checks"] or _last(_call_name(inner)) in helpers or _from_test_support(ctx, _call_name(inner) or "")
             if id(inner) in own:
                 _test_call(ctx, inner, name, found)
             else:
@@ -389,6 +391,28 @@ def _test_evidence(ctx, node, name: str) -> dict:
         elif id(inner) in own and isinstance(inner, ast.Try) and any(h.type is None or _last(_dotted(h.type)) in ("Exception", "BaseException") for h in inner.handlers):
             ctx.add("test-swallows", inner, f"{name} catches broad exceptions.")
     return found
+
+
+TEST_SUPPORT = re.compile(r"(?:^|[._])(?:tests?|testing|conftest|fixtures?)(?:$|[._])|test_?utils|_tests?_utils", re.I)
+MUST_NOT_RAISE = re.compile(r"\b(?:should|must|does|do|will)\s*(?:not|n't)\s+(?:raise|throw|crash|error|fail)|\bno\s+(?:exception|error)s?\b|\bwithout\s+(?:raising|an?\s+(?:error|exception))", re.I)
+
+
+def _from_test_support(ctx, called: str) -> bool:
+    """A call into the project's own test helpers, such as `smoke_tests_utils.run_one_test(test)`, which do their checking out of sight."""
+    origin = ctx.module_aliases.get(called.split(".")[0])
+    return bool(origin and TEST_SUPPORT.search(origin))
+
+
+def _says_it_must_not_raise(ctx, node) -> bool:
+    """A test whose point is that nothing raises, and which says so, fails exactly when it should."""
+    if MUST_NOT_RAISE.search(ast.get_docstring(node) or ""):
+        return True
+    commented = [line for line in range(node.lineno, (node.end_lineno or node.lineno) + 1) if line in ctx.comment_lines]
+    if not commented:
+        return False
+    if ctx.text_lines is None:
+        ctx.text_lines = ctx.text.split("\n")
+    return any(MUST_NOT_RAISE.search(ctx.text_lines[line - 1].split("#", 1)[-1]) for line in commented)
 
 
 def _is_checking_name(name: str) -> bool:
@@ -447,7 +471,7 @@ def _test_function(ctx, node, name, decorator_last) -> None:
         ctx.add("test-skipped", node, f"{name} is skipped.")
     found = _test_evidence(ctx, node, name)
     asserts = found["asserts"]
-    if not asserts and not found["checks"]:
+    if not asserts and not found["checks"] and not _says_it_must_not_raise(ctx, node):
         ctx.add("test-no-assert", node, f"{name} doesn't assert anything.")
     for check in asserts:
         if _is_tautology(check.test):
@@ -468,6 +492,7 @@ def _test_function(ctx, node, name, decorator_last) -> None:
             break
 
 
+_BUILTINS = frozenset(dir(builtins))
 MOCK_MACHINERY = re.compile(r"(?:monkeypatch|mocker|mock|unittest\.mock|patch)\.|(?:.*\.)?(?:assert_\w+|reset_mock|return_value|side_effect)$")
 
 
@@ -498,19 +523,42 @@ def _replaced_then_called(node) -> str | None:
         target = _replacement(decorator) if isinstance(decorator, ast.Call) else None
         if target:
             replaced[target] = 0
+    injected = _injected_mocks(node)
     calls = sorted((inner for inner in ast.walk(node) if isinstance(inner, ast.Call)), key=lambda inner: inner.lineno)
     called = None
+    via_parameter = other_bare_call = False
     for call in calls:
         target = _replacement(call)
         name = _call_name(call) or ""
         if target:
             replaced.setdefault(target, call.lineno)
+        elif name in injected:
+            called, via_parameter = injected[name], True
         elif "." in name and not MOCK_MACHINERY.match(name):
             matched = next((target for target, line in replaced.items() if call.lineno > line and (target == name or target.endswith("." + name))), None)
             if not matched:
                 return None
             called = matched
+        elif "." not in name and name not in _BUILTINS and not _is_checking_name(name):
+            other_bare_call = True
+    if via_parameter and other_bare_call:
+        return None  # it may be handing the mock to real code it imported by name
     return called
+
+
+def _injected_mocks(node) -> dict[str, str]:
+    """The parameters `@patch` decorators pass the test, by name, and what each replaces. The decorator nearest the function passes the first.
+    One the target can't be read from, or that is given its replacement, makes the count uncertain, so then nothing is mapped."""
+    patchers = [d for d in node.decorator_list if isinstance(d, ast.Call) and _last(_call_name(d) or "") in ("patch", "object", "multiple")]
+    targets = []
+    for decorator in patchers:
+        target = _replacement(decorator)
+        given = any(keyword.arg == "new" for keyword in decorator.keywords) or len(decorator.args) >= (2 if _last(_call_name(decorator) or "") == "patch" else 3)
+        if not target or given:
+            return {}
+        targets.append(target)
+    parameters = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args] if arg.arg not in ("self", "cls")]
+    return dict(zip(parameters, reversed(targets)))
 
 
 def _is_weak_assert(test: ast.AST) -> bool:

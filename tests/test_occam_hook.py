@@ -104,10 +104,10 @@ def test_every_handler_in_the_config_exists_and_paths_use_the_plugin_root():
 # ------------------------------------------------------------ the core skill gets loaded
 
 def test_code_edit_is_held_until_the_skill_is_loaded(agent):
-    agent.prompt("Fix the bug in app.py")
-    assert decision(agent.try_edit()) == "deny"
+    agent.prompt("Fix the bug in auth.py")
+    assert decision(agent.try_edit("auth.py")) == "deny"
     agent.load()
-    assert decision(agent.try_edit()) is None
+    assert decision(agent.try_edit("auth.py")) is None
 
 
 def test_skill_loaded_without_plugin_prefix_also_counts(agent):
@@ -119,7 +119,7 @@ def test_skill_loaded_without_plugin_prefix_also_counts(agent):
 def test_language_skill_alone_does_not_satisfy_the_gate(agent):
     agent.prompt("Fix it")
     agent.load("occam:occam-python")
-    assert decision(agent.try_edit()) == "deny"
+    assert decision(agent.try_edit("auth.py")) == "deny"
 
 
 def test_typing_the_skill_name_counts(agent):
@@ -168,9 +168,9 @@ def test_plan_mode_is_left_to_the_host(agent):
 
 def test_a_hold_gives_way_rather_than_wedging_the_session(agent):
     agent.prompt("Fix it")
-    assert decision(agent.try_edit()) == "deny"
-    assert decision(agent.try_edit()) == "deny"
-    output = agent.try_edit()
+    assert decision(agent.try_edit("auth.py")) == "deny"
+    assert decision(agent.try_edit("auth.py")) == "deny"
+    output = agent.try_edit("auth.py")
     assert decision(output) is None
     assert "worth stating in the final report" in added(output)
     assert "retry" not in added(output), "the edit has already been allowed, so it shouldn't say to retry"
@@ -178,7 +178,7 @@ def test_a_hold_gives_way_rather_than_wedging_the_session(agent):
 
 def test_parallel_edits_do_not_use_up_each_others_holds(agent):
     agent.prompt("Fix it")
-    for name in ("a.py", "b.py", "c.py"):
+    for name in ("auth.py", "payments.py", "tokens.py"):
         assert decision(agent.try_edit(name)) == "deny", "three edits in one response must all wait"
 
 
@@ -911,8 +911,9 @@ def test_bad_input_never_blocks(tmp_path, handler, stdin):
     env = {**os.environ, "CLAUDE_PLUGIN_DATA": str(tmp_path)}
     done = subprocess.run([sys.executable, str(HOOK), handler], input=stdin, capture_output=True, text=True, env=env, timeout=20)
     assert done.returncode == 0
-    if done.stdout.strip():
-        assert "deny" not in done.stdout and "block" not in done.stdout
+    if done.stdout.strip():  # the rule card says "blocked", so this reads the decision rather than the text
+        output = json.loads(done.stdout)
+        assert output.get("decision") != "block" and (output.get("hookSpecificOutput") or {}).get("permissionDecision") != "deny"
 
 
 def test_unwritable_state_fails_open(tmp_path):
@@ -934,7 +935,7 @@ def test_off_switch(agent):
 def test_sessions_are_isolated(agent):
     agent.prompt("Fix it")
     agent.load()
-    other = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("a.py")}, session_id="s2")
+    other = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("auth.py")}, session_id="s2")
     assert decision(other) == "deny"
 
 
@@ -948,7 +949,7 @@ def test_hostile_session_id_stays_in_the_data_directory(agent, tmp_path):
 def test_runs_on_the_stock_system_python(tmp_path):
     agent = Agent(tmp_path, python="/usr/bin/python3")
     agent.prompt("Fix it")
-    assert decision(agent.try_edit()) == "deny"
+    assert decision(agent.try_edit("auth.py")) == "deny"
     agent.load()
-    agent.edit()
+    agent.edit("auth.py")
     assert "No check has run" in added(agent.stop())

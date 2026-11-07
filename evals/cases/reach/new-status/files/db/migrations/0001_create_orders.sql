@@ -1,0 +1,6 @@
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    total_cents INTEGER NOT NULL,
+    refunded_cents INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'PAID', 'SHIPPED', 'REFUNDED', 'CANCELLED'))
+);

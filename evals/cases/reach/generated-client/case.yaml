@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: generated-client
+tags: [reach]
+expected_outcome: |
+  The order line shows the discount, and the change survives regenerating the client from the schema.
+context:
+  scaffold_script: place-files.sh

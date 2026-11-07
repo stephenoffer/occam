@@ -6,6 +6,9 @@ import ast
 import re
 from collections.abc import Iterator
 
+from .py_helpers import looks_like_auth_check
+from .rules_py_flow import _LINTER_DIRECTIVE
+
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _DECORATED_TWICE_ON_PURPOSE = re.compile(r"overload|setter|getter|deleter|register|dispatch")
 _REQUEST_READ = re.compile(r"^(?:await )?(?:flask\.)?request\.(?:args|GET|POST|form|values|json|data|query_params|params|headers|cookies|get_json|query_string|body|files)\b")
@@ -160,7 +163,7 @@ def _reports_success(value: ast.AST) -> bool:
     return False
 
 
-def _hidden_failures(tree: ast.Module) -> Iterator[tuple]:
+def _hidden_failures(tree: ast.Module, comment_lines: set | frozenset = frozenset(), text: str = "") -> Iterator[tuple]:
     for handler in ast.walk(tree):
         if not isinstance(handler, ast.ExceptHandler):
             continue
@@ -171,6 +174,52 @@ def _hidden_failures(tree: ast.Module) -> Iterator[tuple]:
                 yield "failure-reported-as-success", statement.lineno, "This handler catches a failure and returns success, so the caller can't tell.", {}
             elif not isinstance(statement.value, (ast.Constant, ast.Dict, ast.List)) and _FAKE_VALUE.search(_text(statement.value)):
                 yield "fallback-fake", statement.lineno, f"When the real call fails this returns `{_text(statement.value)[:50]}`, so a failure looks like data.", {}
+    yield from _same_answer_on_failure(tree, comment_lines, text)
+
+
+def _success_constant(value: ast.AST | None) -> object:
+    if isinstance(value, ast.Constant) and (value.value is True or (isinstance(value.value, str) and value.value.lower() in ("ok", "success", "succeeded"))):
+        return value.value
+    return None
+
+
+def _own_nodes(function: ast.AST) -> Iterator[ast.AST]:
+    """A function's nodes, not those of functions or classes defined inside it."""
+    stack = list(ast.iter_child_nodes(function))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (*FUNCTIONS, ast.ClassDef, ast.Lambda)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _same_answer_on_failure(tree: ast.Module, comment_lines: set | frozenset = frozenset(), text: str = "") -> Iterator[tuple]:
+    """`return True` after the work and again in `except Exception`. A narrow handler returning success is often deliberate, as when a missing
+    file means already deleted, so only a broad one counts. An authorization check doing this is `fail-open`'s."""
+    for function in ast.walk(tree):
+        if not isinstance(function, FUNCTIONS) or looks_like_auth_check(function):
+            continue
+        handlers = [node for node in _own_nodes(function) if isinstance(node, ast.ExceptHandler)
+                    and (node.type is None or (isinstance(node.type, ast.Name) and node.type.id in ("Exception", "BaseException")))]
+        if not handlers:
+            continue
+        inside = {id(node) for handler in handlers for node in ast.walk(handler)}
+        succeeded = {_success_constant(node.value) for node in _own_nodes(function) if isinstance(node, ast.Return) and id(node) not in inside} - {None}
+        for handler in handlers:
+            if any(isinstance(node, ast.Raise) for node in ast.walk(handler)):
+                continue
+            for statement in handler.body:
+                if isinstance(statement, ast.Return) and _success_constant(statement.value) in succeeded:
+                    reasoned = _states_a_reason(handler, comment_lines, text)  # "reachable, just restricted": a decision, though still one to question
+                    yield ("failure-reported-as-success", statement.lineno,
+                           f"{function.name} returns {_text(statement.value)} when it works and the same when it fails, so the caller can't tell.", {"confidence": "low"} if reasoned else {})
+
+
+def _states_a_reason(node: ast.AST, comment_lines, text: str) -> bool:
+    """A comment of a few words inside the node, beyond a bare instruction to a linter."""
+    lines = [line for line in range(node.lineno, (node.end_lineno or node.lineno) + 1) if line in comment_lines]
+    source = text.split("\n") if lines else []
+    return any(len(re.findall(r"[A-Za-z']{2,}", _LINTER_DIRECTIVE.sub("", source[line - 1].split("#", 1)[-1]))) >= 3 for line in lines if line <= len(source))
 
 
 def _is_outcome_rewrite(node: ast.AST) -> bool:
@@ -361,9 +410,9 @@ def _train_test_leak(tree: ast.Module) -> Iterator[tuple]:
             return
 
 
-def findings(tree: ast.Module, path: str, is_test: bool, is_script: bool) -> list[tuple]:
+def findings(tree: ast.Module, path: str, is_test: bool, is_script: bool, comment_lines: set | frozenset = frozenset(), text: str = "") -> list[tuple]:
     """(rule, line, message, overrides) for one parsed module."""
     found = [*_redefined(tree, is_test), *_test_tampering(tree, path, is_test, is_script), *_identical_branches(tree)]
     if is_test:
         return [*found, *_test_quality(tree)]
-    return [*found, *_wrong_arg_count(tree), *_self_attributes(tree), *_hidden_failures(tree), *_logging(tree, is_script), *_web(tree), *_concurrency(tree), *_train_test_leak(tree)]
+    return [*found, *_wrong_arg_count(tree), *_self_attributes(tree), *_hidden_failures(tree, comment_lines, text), *_logging(tree, is_script), *_web(tree), *_concurrency(tree), *_train_test_leak(tree)]

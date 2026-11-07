@@ -7,6 +7,7 @@ Limits and the ways around each one are in docs/failure-modes.md.
 from __future__ import annotations  # the stock macOS python3 is 3.9
 
 import os
+import re
 from pathlib import Path
 from typing import NamedTuple
 
@@ -14,7 +15,7 @@ import occam_evidence as evidence
 import scale_notes
 import scan_notes
 import unfinished
-from classify import DEPENDENCY_MANIFEST, HIGH_CONSEQUENCE, REVIEWER
+from classify import ASKS_FOR_REVIEW, DEPENDENCY_MANIFEST, HIGH_CONSEQUENCE, REVIEWER, SECURITY_CRITICAL
 from session_state import Session, record
 from shell_writes import absolute_path, project_root
 
@@ -23,6 +24,40 @@ WHOLE_REPORT = ("Do anything this asks for first, with no report until it's done
                 "one the reader sees last, and it may be the only one, and they haven't seen this note. So write the whole "
                 "report again, with this taken into account: what you found, including anything in the request that turned out wrong, what changed, what "
                 "was checked with its status, and what wasn't. If part of this note doesn't apply, just report what's true, without discussing the note.")
+
+
+# Superpowers replaced a review subagent with a checklist like this after measuring the same quality in far less time (v5.0.6). Unmeasured here.
+SELF_REVIEW = ("read it as its reviewer would: every caller and data path it reaches, the invariants it must keep, failure, retry and partial-write paths, "
+               "awkward inputs such as empty, zero, duplicate or very large, and whether a test would fail without the fix.")
+# A fixed line, because reading free text either passes "self-review: not done" or rejects "no issues found in my self-review" (a fresh review found both).
+SELF_REVIEW_LINE = "`Self-review:` followed by what it found"
+# A label at a line's start, after a sentence, or in a table cell; then a colon, a dash or a cell border; then what it found, on that line.
+_SELF_REVIEW_LINE = re.compile(r"(?:^|(?<=[.;!?])[ \t]+|\|)[ \t>*_#\-\d.)]*self[- ]review[*_]*[ \t]*(?::|\||[-\u2013\u2014](?=[ \t]))[*_]*[ \t]*([^\n|]*)", re.I | re.M)
+_LEADING = re.compile(r"^[\s>*_#\-\u2013\u2014\d.)(\[\"'`]+")
+_ANOTHER_LABEL = re.compile(r"^[A-Z][\w /-]{0,30}:")
+_NOT_DONE = re.compile(r"^(?:(?:i|we)\s+)?(?:not\b|none\b(?!\s+(?:found|seen|spotted|left|remain))|n/?a\b|no\s*[.!]?\s*$|skip|pending|to ?do\b|still to do|deferred"
+                       r"|later\b|tbd\b|unable|could ?n[o']t|can'?t|cannot|did ?n[o']t|was ?n[o']t|has ?n[o']t|have ?n[o']t|won'?t|will\b|no time|false\b"
+                       r"|[\u2717\u2718\u00d7x]\s*$|$)", re.I)
+
+
+def asks_for_a_review(prompt: str) -> bool:
+    return bool(ASKS_FOR_REVIEW.search(scale_notes.asked_for(prompt or "")))  # not what was pasted
+
+
+def needs_a_fresh_review(paths: list[str], prompt: str) -> bool:
+    """A fresh reviewer for security-critical changes or when the request asks for one. The rest of high consequence gets a self-review of the whole diff."""
+    return any(SECURITY_CRITICAL.search(path) for path in paths) or asks_for_a_review(prompt)
+
+
+def says_it_self_reviewed(message: str) -> bool:
+    for match in _SELF_REVIEW_LINE.finditer(message):
+        found = _LEADING.sub("", match.group(1)).strip()
+        if not found:  # a heading: its first line below is what it found, unless that's the next heading
+            below = next((line for line in message[match.end():].splitlines() if line.strip()), "")
+            found = "" if _ANOTHER_LABEL.match(_LEADING.sub("", below)) else _LEADING.sub("", below).strip()
+        if not _NOT_DONE.match(found):
+            return True
+    return False
 
 
 class Turn(NamedTuple):
@@ -57,6 +92,11 @@ def unreviewed_high_consequence(turn: Turn) -> str | None:
     risky = sorted({e["path"] for e in turn.edits if e.get("path") and HIGH_CONSEQUENCE.search(e["path"])})
     if not risky or any(e.get("name") == REVIEWER for e in session.after_last_edit("agent_done")):
         return None
+    if not needs_a_fresh_review(risky, session.prompt):
+        if says_it_self_reviewed(turn.message):
+            return None
+        return (f"This changed {', '.join(os.path.basename(p) for p in risky[:3])}, which is high consequence, "
+                f"and the message doesn't say the diff was reviewed. Before the report, review the whole diff yourself: {SELF_REVIEW} Then give the report a line starting {SELF_REVIEW_LINE}.")
     # A finished review says nothing of what it covered, so whoever briefed it decides whether a second one can cost less than the first.
     scope = ("If its earlier review finished and covered the whole diff, it needs the requirements, that review's findings and only what changed since, "
              "and should be told so. Otherwise it needs the requirements and the diff."

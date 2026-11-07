@@ -7,21 +7,24 @@ Checked against the official docs on 2026-11-05 and Claude Code 2.1.318. `evals/
 ## Install
 
 ```bash
-claude plugin marketplace add /path/to/occam
+claude plugin marketplace add stephenoffer/occam
 claude plugin install occam@occam
 ```
 
-This adds 11 skills, 2 agents and 8 hook events. `claude plugin details occam@occam` shows the inventory and estimated token cost. It takes effect in your next session.
+Inside a session, `/plugin marketplace add stephenoffer/occam` and `/plugin install occam@occam` do the same.
+
+This adds 11 skills, 2 agents and 9 hook events. `claude plugin details occam@occam` shows the inventory and estimated token cost. It takes effect in your next session.
 
 To try it for one session without installing anything:
 
 ```bash
-claude --plugin-dir /path/to/occam/plugin
+git clone https://github.com/stephenoffer/occam.git ~/occam
+claude --plugin-dir ~/occam/plugin
 ```
 
-**What you are opting into:** the default install is at user scope, so it applies to new sessions in every project. A marketplace added from a local path is read in place, so edits to `plugin/` go live in new sessions, with no version step. The hooks can deny edits and send the agent back to work. They run a Python script on your machine on each edit, shell command and read. To remove them, run `claude plugin uninstall occam@occam`. To turn them off for one session, start Claude Code with `OCCAM_HOOKS=off`.
+**What you are opting into:** the default install is at user scope, so it applies to new sessions in every project. Added from GitHub, it updates when you run `claude plugin marketplace update occam`. A marketplace added from a local path, such as `claude plugin marketplace add ~/occam`, is read in place, so edits to `plugin/` go live in new sessions, with no version step. The hooks can deny edits and send the agent back to work. They run a Python script on your machine on each edit, shell command and read. To remove them, run `claude plugin uninstall occam@occam`. To turn them off for one session, start Claude Code with `OCCAM_HOOKS=off`. To keep only the safety guards, start it with `OCCAM_HOOKS=guard`: the asks before destructive and hard-to-undo commands, the credential guards, read-only requests and edits that weaken a test stay, and the skill hold, every note, the review and the send-backs at Stop go. Setting either in a settings file needs a person to confirm.
 
-If you want the guidance with no enforcement, copy `plugin/skills/*` into `~/.claude/skills/` or `<repo>/.claude/skills/` instead. Check first that nothing there has the same name.
+If you want the guidance with no enforcement, copy the skills from a clone's `plugin/skills/` into `~/.claude/skills/` or `<repo>/.claude/skills/` instead. Check first that nothing there has the same name.
 
 ## What fires, and how
 
@@ -41,7 +44,7 @@ From the shell, only the destructive actions named on this page stop a command. 
 
 | Part | Fires when | Lifts when |
 |---|---|---|
-| `occam:occam` core skill | Before the first code edit in a session made with an edit tool, unless it's small: under 20 lines and 1,500 characters, in an ordinary source file, within 3 code edits and 2 files, with nothing consequential in the request, the path or the text. A small edit gets small mode's rules stated instead. This is best effort, and the rule is stated beside the edit. Whether the exception helps isn't measured yet: see [the small fix example](examples.md#the-same-small-fix-with-and-without-occam) | The skill is loaded |
+| `occam:occam` core skill | Before the first consequential code edit in a session made with an edit tool: one where the request, the path or the text touches access control, money, stored data, concurrency, performance, dependencies or the like, or a file that isn't ordinary source. Other edits, whatever their size, go ahead under the rule card given at session start. This is best effort, and unmeasured: until 2026-11-06 every edit past a small one waited, and the evaluated results describe that | The skill is loaded |
 | Read-only requests | The prompt says review-only, plan-only, "don't change anything" and similar. Edits to project files are denied for that turn, including by subagents. From the shell, that means any write except one plain command naming a path that isn't there yet. Only writes the hook can see count, so `find -delete` or `xargs rm` gets through | Plain words like "go ahead", or a person approving a plan or answering a question |
 | Weakened checks | A test edit removes assertions or adds a skip, or a test file is deleted from the shell. Right after a failed check, with no code changed since: check configuration changes or a new suppression in an existing file | Held once, and the report must then name it |
 
@@ -52,7 +55,7 @@ A subagent has nobody to ask, and a question it can't get answered leaves it wai
 | Part | Fires when |
 |---|---|
 | Destructive git | `reset --hard`, `stash`, `restore`, `checkout --`, `clean -f`, `rebase`, `push --force`, `branch -D`, `commit --amend`, always. A plain commit and staging aren't stopped, on any turn |
-| Hard-to-undo commands | Turning these hooks off in settings, recursive deletes of the root, home, the whole working directory or absolute paths outside temp, a download run straight in a shell, `terraform destroy`, `kubectl delete`, and drops through a SQL client |
+| Hard-to-undo commands | Turning these hooks off in settings. Recursive deletes of the root, home, the whole working directory or absolute paths outside temp, and Windows `rd /s` or `Remove-Item -Recurse` of the root or home. A download run straight in a shell. Destroys and deletes through infrastructure and cloud CLIs, such as `terraform destroy`, `kubectl delete`, `gcloud`, `az`, AWS `delete-*` and `terminate-*`, Heroku, Fly, Vercel and Railway. Docker volume removals and prunes, and Prisma and Rails database resets. Through a SQL client: drops, truncates, a `DELETE` with no filter, and an `UPDATE` with no `WHERE` |
 | Credentials | A credential shape in `curl` or `wget` arguments. In a web request it is **denied** and doesn't give way, and in a new edit it is **held once**. Values are never repeated |
 
 ### Sent back
@@ -66,7 +69,7 @@ Each complaint is sent back once per state of the code, at most 5 times without 
 | Honest final message | A check failed after the last edit, hasn't passed since and goes unmentioned, a test count appears in no output, a measured speedup has no before and after from one command, a result varied with nothing changed, or an install, deletion, manifest or check config goes unnamed. These are all sent back at the same time |
 | Finishing the request | The final message admits part of the request wasn't done, or a notebook this turn changed can't run top to bottom. Each fires once. Passes on a report that doesn't say so, and on what a static read of the notebook can't see |
 | Reading the final diff | The agent is already being sent back for another reason, having changed several files with no diff since |
-| `occam:code-reviewer` agent | The agent stops, having changed a high-consequence file with no finished review since the last edit. It can say it did a self-review instead. After an earlier review this turn, it can be a review of only what changed since, if that one finished and covered the whole diff |
+| A review of high-consequence work | The agent stops, having changed a high-consequence file with no finished review since the last edit. For auth, login, sessions, tokens, passwords, secrets, credentials, permissions, tenancy, cryptography and signatures, or when the request asks for a review, that's the `occam:code-reviewer` agent, and after an earlier review this turn it can cover only what changed since, if that one finished and covered the whole diff. For money, migrations and webhooks, a self-review of the whole diff is enough, given as a report line starting `Self-review:` with what it found; the reviewer agent counts too. Until 2026-11-06 every high-consequence file asked for the agent |
 | Scan at stop | The agent stops with findings from "Scan on edit" still present. It can say why they're fine |
 | Audit check at stop | An audit session stops with serious leads still raised in files it changed, new or not. It has to fix them or say they remain, so a report can't call them fixed unchecked |
 
@@ -84,12 +87,14 @@ Each complaint is sent back once per state of the code, at most 5 times without 
 | Very large source files | An edit touches, or leaves, a source file over 1,000 lines, generated files, notebooks and SQL aside. Mentioned once per file, before the edit if it is already that large. Splitting stays a separate decision |
 | Python facts | The code being written contains a known trap, such as `subprocess.run` without `check=`, including through a shell redirect or inline script; a new module named after a standard library one; the first notebook or test edit; a request to audit or split Python, or about a notebook. The fact itself is stated, at most three per edit and each once per session, with a path to more. Nothing is held, and code with no known trap adds nothing |
 | Large rewrites | An edit replaces 30 or more lines of existing source code. Noted once per session that comparing old and new on the same inputs is what shows its behavior survived |
-| Review before the report | The first edit to a high-consequence file. Noted once that the review comes once checks pass and before the report, so the report isn't written twice |
+| Review before the report | The first edit to a high-consequence file. Noted once that the review comes once checks pass and before the report, so the report isn't written twice: the reviewer agent for security-critical work or when asked, otherwise a self-review with its checklist |
 | A copy run beside a real one | A failing command ran both a copy of the old code and this code's check. Noted once to run this code's check alone before reporting |
 | A run of failed checks | Three in a row, after code changed. Noted once per streak |
 | Pushback | A prompt disputes a result after edits or checks |
 | Files that steer later sessions | The first edit to `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, a memory directory or similar. Noted once |
-| After compaction | The conversation is compacted. Noted that loading the skill restores it, and names a recorded goal |
+| Large repositories | Once each, at the moment it applies: instruction files such as `AGENTS.md` between an edited file and the root that the host doesn't load by itself, a commit that skips the repository's own checks, a snapshot update, a command that looks like it changes production data, and an install with a package manager other than the one the lockfile belongs to. Nothing is held |
+| Rule card | Session start, and each subagent other than occam's own. The rules that hold in every mode, about 300 tokens, in place of holding ordinary edits for the full skill. A session that began before the plugin did hears it once before its first code edit |
+| After compaction | The conversation is compacted. Noted that loading the skill restores it, with the rule card again, and names a recorded goal |
 | Long runs | At 30 code edits or 10 files. Noted once how to record a goal |
 | Scan on edit | An edit introduces a serious finding, such as a stub, an invented import or a secret. Only what this work added, each one once. A clean edit costs no tokens |
 | Documentation skill | The prompt asks for documentation, or a document is edited. Once per session, and not after `occam:occam-docs` has loaded. Files that steer agents don't count. Claude Code only |
@@ -114,7 +119,7 @@ Hooks can force a check to run. They can't make it the right check, or make the 
 
 It fails open. If `python3` is missing or the script errors, nothing is enforced, because a broken hook shouldn't wedge your session. It also gives way under pressure: a hold lifts after two retries of the same edit, and each complaint at Stop is sent back once per state of the code, at most 5 times without a check passing, so a false positive can't trap the agent. The agent is told to mention any unmet hold in its report.
 
-Subagents skip the load hold, because the coordinating agent answers for their work. The read-only and destructive git guards still apply to them, and their edits still count at Stop.
+Subagents skip the load hold, because the coordinating agent answers for their work, and hear the rule card instead. The read-only and destructive git guards still apply to them, and their edits still count at Stop.
 
 None of this makes it a security boundary. A determined or misdirected agent can get around it, so use deny rules, the sandbox and branch protection for rules that can't bend.
 

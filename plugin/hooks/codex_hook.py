@@ -126,11 +126,15 @@ HANDLERS = {"user-prompt": user_prompt, "pre-tool": pre_tool, "post-tool": post_
 
 
 def main(argv: list[str]) -> int:
-    if os.environ.get("OCCAM_HOOKS", "").lower() in ("off", "0", "false") or len(argv) != 2 or argv[1] not in HANDLERS:
+    level = os.environ.get("OCCAM_HOOKS", "").strip().lower()
+    if level in ("off", "0", "false") or len(argv) != 2 or argv[1] not in HANDLERS:
         return 0
     try:
         event = json.loads(sys.stdin.read() or "{}")
         result = HANDLERS[argv[1]](event if isinstance(event, dict) else {})
+        if level == "guard":  # only a decision gets through, as in occam_hook.guard_only
+            output = (result or {}).get("hookSpecificOutput") or {}
+            result = result if output.get("permissionDecision") in ("ask", "deny") else None
         if result:
             print(json.dumps(result))
     except Exception as error:  # occam: ignore[swallowed-exception] fails open, because a broken hook must not wedge a session

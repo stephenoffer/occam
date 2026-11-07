@@ -22,14 +22,15 @@ SMALL_SESSION_FILES = 2
 LONG_RUN_EDITS = 30
 LONG_RUN_FILES = 10
 REWRITE_MIN_LINES = 30
+CONSEQUENCE_CHARS = 200_000
 SEND_BACKS_WITHOUT_A_PASS = 5
 
 # Ordinary source files only. Configuration, infrastructure, lockfiles and SQL decide more than their size suggests.
 SMALL_SUFFIXES = {".py", ".pyw", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".go", ".rs", ".java", ".kt", ".kts", ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh",
                   ".rb", ".php", ".swift", ".cs", ".sh", ".bash", ".zsh", ".lua", ".pl", ".r", ".scala", ".dart", ".ex", ".exs", ".jl", ".hs", ".ml", ".clj", ".erl", ".m", ".mm", ".fs", ".zig",
                   ".html", ".htm", ".css", ".scss", ".vue", ".svelte"}
-# Best effort, on purpose. No word list can decide what's consequential, and these don't have to: a wrong hold costs what every edit used to, a skill load, and a miss
-# costs one edit under 20 lines with the rule stated right beside it in SMALL_NOTE, for an agent that judges this better than a pattern can.
+# Best effort, on purpose. No word list can decide what's consequential, and these don't have to: a wrong hold costs a skill load, and a miss
+# leaves an edit under the rule card from session start, for an agent that judges this better than a pattern can.
 NOT_SMALL_PATH = re.compile(r"auth|login|logout|passw|secret|token|credential|session|permission|rbac|(^|[/_.\-])(acl|iam|sso|prod)([/_.\-]|$)|tenan|billing|payment|invoice|checkout|refund|pricing|wallet|subscription"
                             r"|ledger|migrat|alembic|schema|database|(^|/)models?\.|settings|config|cors|crypto|encrypt|secur|admin|webhook|signature|saml|jwt|deploy|infra|terraform|k8s|kube|helm", re.I)
 NOT_SMALL_PROMPT = re.compile(r"\b(secur\w*|o?auth\w*|log ?in|sign ?in|passw\w*|credential\w*|secret\w*|tokens?|jwt|sso|saml|sessions?|access control|acl|rbac|permission\w*|privilege\w*|encrypt\w*|decrypt\w*|crypto\w*"
@@ -45,10 +46,6 @@ GENERATED_MARK = re.compile(rb"@generated|DO NOT EDIT|(?i:(code|file) generated 
                             rb"|(?i:generated[^\n]*do not edit|do not edit[^\n]*generated)")
 NOT_MEASURED_IN_LINES = {".ipynb", ".sql"}
 
-# Nothing here may reward keeping a fix small. Two paid runs noticed a second copy of a bug and left it, after being told edits past a size were held.
-SMALL_NOTE = ("occam: this edit went ahead without the full skill. What applies: fix the defect everywhere it occurs, including other places with the same mistake, "
-              "run a relevant check on the result, and report what was and wasn't checked. If the work touches access control, money, stored data, public contracts "
-              "or concurrency, `occam:occam` covers it.")
 _CLOSING_PASTE = re.compile(r"</pasted_content>", re.I)
 _PASTE = re.compile(r"<pasted_content\b.*?</pasted_content>", re.S | re.I)
 
@@ -84,14 +81,24 @@ def stays_small(entries: list[dict], paths: list[str]) -> bool:
             and not any(entry.get("kind") == "prompt" and entry.get("not_small") for entry in entries))
 
 
+def is_consequential(relative: list[str], old: str, new: str, language_risk: str | None, entries: list[dict]) -> bool:
+    """Does this edit touch something where mistakes cost most, whatever its size: the path, what it writes or removes, or what the request named?
+    `language_risk` is what commonly goes wrong in this file's language."""
+    if not relative or not all(Path(item).suffix.lower() in SMALL_SUFFIXES and not NOT_SMALL_PATH.search(item) for item in relative):
+        return True
+    if any(entry.get("kind") == "prompt" and entry.get("not_small") for entry in entries):  # a request that named something consequential stays named
+        return True
+    written = f"{old}\n{new}"  # taking something out can matter as much as putting it in
+    if len(written) > CONSEQUENCE_CHARS:  # bounds the patterns' work, and an edit this large isn't ordinary anyway
+        return True
+    return bool(NOT_SMALL_TEXT.search(written) or (language_risk and re.search(language_risk, written, re.I)))
+
+
 def is_small(name: str, tool_input: dict, path: str, relative: list[str], old: str, new: str, language_risk: str | None, entries: list[dict]) -> bool:
-    """Is this edit, and the work so far, small and low consequence? `language_risk` is what commonly goes wrong in this file's language."""
-    if not all(Path(item).suffix.lower() in SMALL_SUFFIXES and not NOT_SMALL_PATH.search(item) for item in relative) or not relative:
-        return False
+    """Is this edit, and the work so far, small and low consequence?"""
     if not small_edit(name, tool_input, path, old, new) or not stays_small(entries, relative):  # the size comes first, because it also bounds the patterns' work
         return False
-    written = f"{old}\n{new}"  # taking something out can matter as much as putting it in
-    return not NOT_SMALL_TEXT.search(written) and not (language_risk and re.search(language_risk, written, re.I))
+    return not is_consequential(relative, old, new, language_risk, entries)
 
 
 def replaces_working_code(cwd: str, name: str, tool_input: dict, file_path: str) -> bool:

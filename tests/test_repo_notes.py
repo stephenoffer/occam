@@ -1,6 +1,7 @@
 """What a large repository expects, through the real hook: the commands a person now confirms, and the notes said once. See docs/large-codebase-failures.md."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,9 @@ def write(agent, name, text):
     "docker system prune -a", "docker volume rm a", "docker-compose down -v", "docker compose down -v", "python manage.py flush", "uv run python manage.py flush", "psql -c 'DELETE FROM users;'", "psql -c 'UPDATE users SET admin = true;'", "mongosh --eval 'db.dropDatabase()'", "kubectl delete pod a", "helm uninstall a",
     "Remove-Item -Recurse -Force C:\\", "rmdir /s /q C:\\", "Remove-Item -Recurse -Force ~",
     "kubectl delete pod a --dry-run=none", "RAILS_ENV=test rails db:reset && terraform destroy", "docker -H tcp://prod:2375 volume rm data", "sh -c 'docker volume rm a'",
+    "kubectl delete namespace help", "kubectl delete pod x -n help", "helm uninstall help", "kubectl delete pod x --dry-run=False", "kubectl -n prod delete pod a",
+    "redis-cli -h prod-cache flushall", "dropdb -h db.prod app", "RAILS_ENV=test rails db:prepare && rails db:drop", "mysql -e \"UPDATE t SET a='x'\"",
+    "psql -c \"-- tidy up\nDELETE FROM sessions\"", "psql -c \"BEGIN; UPDATE accounts SET balance = 0; COMMIT\"",
 ])
 def test_a_person_confirms(agent, command):
     assert decision(agent.try_bash(command)) == "ask", command
@@ -45,6 +49,8 @@ def test_a_person_confirms(agent, command):
     "python train.py --env prod --seed 42", "NODE_ENV=production npm run deploy:staging", "mkdir -p reset-prod", "RAILS_ENV=production rails db:migrate", "make deploy-prod",
     "git commit -m 'skip --no-verify in docs'", "git log -n 3", "git commit -m x", "git commit --no-verify -m x",
     "rg 'Remove-Item -Recurse' docs/", "git commit -m 'Run rd /s on Windows'", "Remove-Item -Recurse -Force build", "rmdir /s /q build",
+    "psql -c \"UPDATE users SET name = 'bob' WHERE id = 1\"", "mysql -e \"UPDATE t SET a='x' WHERE id=1\"", "psql -c 'DELETE FROM \"users\" WHERE id = 1'",
+    "aws s3 rm s3://b/logs --recursive --dryrun", "kubectl auth can-i delete pods", "kubectl delete pod a --dry-run=client",
 ])
 def test_ordinary_commands_go_ahead(agent, command):
     assert decision(agent.try_bash(command)) is None, command
@@ -125,7 +131,7 @@ def test_a_command_gets_its_note(agent, command, words):
     assert words in added(agent.try_bash(command))
 
 
-@pytest.mark.parametrize("command", ["git add src/a.py", "git push origin feature", "git push origin main --dry-run", "jest", "cat .env.example", "env FOO=1 python a.py", "cat notes.txt", "grep -q ^FOO= .env", "grep -c FOO .env", "env | cut -d= -f1", "env > /tmp/x", "cat certs/ca.pem"])
+@pytest.mark.parametrize("command", ["git add src/a.py", "git add -p .", "git push origin feature", "git push origin main --dry-run", "git push -n origin main", "cat .env.local.example", "jest", "cat .env.example", "env FOO=1 python a.py", "cat notes.txt", "grep -q ^FOO= .env", "grep -c FOO .env", "env | cut -d= -f1", "env > /tmp/x", "cat certs/ca.pem"])
 def test_the_near_miss_gets_no_note(agent, command):
     said = added(agent.try_bash(command)) or ""
     assert not any(word in said for word in ("stages everything", "default branch", "Updating snapshots", "real credentials"))
@@ -148,7 +154,7 @@ def test_changing_production_gets_a_note_and_isnt_held(agent, command):
     assert decision(said) is None and "production data" in added(said)
 
 
-@pytest.mark.parametrize("command", ["kubectl get deploy -n prod", "pytest -m prod -k migrate", "python train.py --env prod --seed 42", "NODE_ENV=production npm run migrate:test", "make -n deploy-prod migrate prod", "rails db:migrate", "docker logs prod"])
+@pytest.mark.parametrize("command", ["git reset prod", "helm rollback app 3 --namespace prod", "kubectl get deploy -n prod", "pytest -m prod -k migrate", "python train.py --env prod --seed 42", "NODE_ENV=production npm run migrate:test", "make -n deploy-prod migrate prod", "rails db:migrate", "docker logs prod"])
 def test_the_near_miss_doesnt_get_that_note(agent, command):
     assert "production data" not in (added(agent.try_bash(command)) or "")
 
@@ -164,10 +170,10 @@ def test_the_near_miss_on_a_package_manager_doesnt(agent, command):
     assert "uses yarn" not in (added(agent.try_bash(command)) or "")
 
 
-def test_upgrading_pip_itself_isnt_the_wrong_manager(agent):
-    write(agent, "uv.lock", "x\n")
-    assert "uses uv" not in (added(agent.try_bash("pip install --upgrade pip")) or "")
-    assert "uses uv" in added(agent.try_bash("pip install requests"))
+@pytest.mark.parametrize("command", ["pip install --upgrade pip", "pip install poetry", "pip install -e .", "pip install requests"])
+def test_pip_in_a_python_project_with_a_lock_gets_no_such_note(agent, command):
+    write(agent, "poetry.lock", "x\n")
+    assert "this project uses" not in (added(agent.try_bash(command)) or "")
 
 
 # ---------------------------------------------------------------- notes after reading
@@ -241,20 +247,12 @@ def test_a_pass_in_between_starts_the_count_again(agent):
 # ---------------------------------------------------------------- wording that stops short
 
 @pytest.mark.parametrize("message", [
-    "This is a good stopping point.", "We've reached a natural checkpoint, so I'll stop here.", "I'll continue this in a new session.", "I'm leaving the retry path as a known limitation.",
-    "I'm running low on context, so that's all for now.", "Given the session length, I stopped here.",
-])
-def test_stopping_short_in_these_words_is_sent_back(agent, message):
-    agent.edit()
-    agent.bash("pytest -q", output="3 passed")
-    assert "wasn't done" in added(agent.stop(message)) or "the rest" in added(agent.stop(message))
-
-
-@pytest.mark.parametrize("message", [
     "Done. Tests pass, and the known limitations in the README still hold.", "The retry path is a good place to add logging later, and I left it alone as you asked.",
     "The trainer now saves a clean checkpoint every 10 epochs. All 3 tests pass.", "The rate limiter logs a warning when clients are running low on tokens.", "I fixed the retry so it restarts from the last good checkpoint.",
     "The CLI now lets you pick it up in a new session with --resume.", "tmux support: you can carry on in a new session after detaching.", "The cookie's expiry is computed given the session length configured in settings.",
     "Given the length of this session, here's a summary of everything that changed. All 6 requirements are verified.", "Everything you asked for is done. All tests pass, so this is a natural stopping point before the next feature you mentioned.",
+    "Fixed the off-by-one in pager.py. That seems like a good place to stop; let me know if you want the docs updated too.", "I reached a good checkpoint: the migration is complete and all 3 tests pass.",
+    "I've left it as a known limitation, as it is not caused by this change.", "We can continue the docs work in a new session if you want; the requested fix is complete and tested.",
 ])
 def test_the_near_miss_isnt(agent, message):
     agent.edit()
@@ -305,3 +303,34 @@ def test_a_feature_or_a_bug_already_run_gets_no_such_note(tmp_path, prompt, ran_
     if ran_first:
         made.bash("pytest -q", ok=False)
     assert "Nothing has been run yet" not in (added(made.try_edit("app.py")) or "")
+
+
+def test_a_folder_whose_claude_md_the_host_loads_gets_no_note(agent):
+    write(agent, "svc/AGENTS.md", "rules\n")
+    write(agent, "svc/CLAUDE.md", "rules\n")
+    write(agent, "svc/a.py", "x = 1\n")
+    assert "AGENTS.md" not in (added(agent.try_edit("svc/a.py")) or "")
+
+
+def test_a_question_that_reads_a_lot_gets_no_note_about_editing(tmp_path):
+    made = Agent(tmp_path)
+    made.prompt("How does the job scheduler decide which cloud to use?")
+    said = [added(made.send("post-tool", tool_name="Read", tool_input={"file_path": f"/x/{n}.py"}, tool_response={"content": "x"})) for n in range(42)]
+    assert not any("files read" in text for text in said)
+
+
+def test_a_failing_shell_repro_counts_as_running_something(tmp_path):
+    made = Agent(tmp_path)
+    made.prompt("Fix the crash in the importer")
+    made.load()
+    made.load("occam:occam-python")
+    made.bash("curl -s localhost:8000/import", ok=False)
+    assert "Nothing has been run yet" not in (added(made.try_edit("app.py")) or "")
+
+
+def test_an_absolute_path_doesnt_hang_the_instructions_search():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin" / "hooks"))
+    import repo_notes
+
+    assert repo_notes.nearby_instructions("/nowhere/a/b.py", "/nowhere") == []

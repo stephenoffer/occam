@@ -12,12 +12,12 @@ Each row counts once, under the firmest thing occam has for it.
 
 | Level | Rows | What it means |
 |---|---|---|
-| Stops it or sends it back | 67 | A hook denies it, asks a person, holds it once, or sends the agent back because its message disagrees with the record. |
+| Stops it or sends it back | 64 | A hook denies it, asks a person, holds it once, or sends the agent back because its message disagrees with the record. |
 | Forces a step that can catch it | 52 | The agent is sent back until a check, a scan or a review has run. That step may or may not catch this failure. |
 | Finds it | 245 | `occam scan` or `occam gate` can report an instance from the code. These are leads, not proof, and a rule often catches only the common shape of a failure. |
 | Says it at the moment | 73 | A hook adds one note when it applies, or `gate` asks the question. Nothing is stopped. |
 | A tool answers it, if run | 137 | An `occam` command shows what's needed, and an agent or a person has to run it and judge. |
-| Guidance and tracking only | 141 | Text the agent may ignore, plus at most a record such as `goal` or `coord`. Nothing here notices the failure, so these are the weakest rows. |
+| Guidance and tracking only | 144 | Text the agent may ignore, plus at most a record such as `goal` or `coord`. Nothing here notices the failure, so these are the weakest rows. |
 | **Total** | **715** | |
 
 656 rows cite a source, some of those read only as an abstract or a snippet, as [Sources](#sources) says. The other 59 are marked `own`: known from practice and from the research agents' own knowledge, where a search found no study or report to cite. **Treat the counts as an upper bound.** A row counts under the firmest token it has. A fresh reviewer sampling 45 rows found 10 where a token barely applied, so three more readers went through every row, read what each rule really matches, and removed what didn't apply. That changed about four rows in ten. These were agents on the same model checking text and sometimes running a rule, so some of what's left will be wrong too. A row at any level can still get past, and even the first level means only the forms a hook can read: see [What this can't do](#what-this-cant-do).
@@ -42,7 +42,7 @@ Each row counts once, under the firmest thing occam has for it.
 | [Tests that don't test](#test-tests-that-dont-test) | 38 | 2 | 7 | 15 | 2 | 8 | 4 |
 | [Making the check pass instead of the code](#game-making-the-check-pass-instead-of-the-code) | 32 | 8 | 0 | 15 | 0 | 2 | 7 |
 | [Reports that don't match what happened](#report-reports-that-dont-match-what-happened) | 26 | 8 | 3 | 0 | 4 | 0 | 11 |
-| [Scope, constraints and instructions](#scope-scope-constraints-and-instructions) | 37 | 6 | 1 | 5 | 6 | 2 | 17 |
+| [Scope, constraints and instructions](#scope-scope-constraints-and-instructions) | 37 | 3 | 1 | 5 | 6 | 2 | 20 |
 | [Loops, sycophancy and giving way](#loop-loops-sycophancy-and-giving-way) | 28 | 1 | 0 | 3 | 19 | 4 | 1 |
 | [Parallel agents, handoffs and review](#team-parallel-agents-handoffs-and-review) | 40 | 0 | 3 | 9 | 4 | 5 | 19 |
 | [CI and infrastructure](#pipe-ci-and-infrastructure) | 31 | 2 | 5 | 10 | 0 | 8 | 6 |
@@ -778,9 +778,9 @@ The largest category in the one large study of real sessions. Most of it needs j
 | SCOPE-23 | Skips plan steps, most often reproducing the bug | [195] GPT-5 mini and DeepSeek models often skip reproduction; no counts; 16,991 trajectories | guide:reproduce-first note:edit-before-reproducing | tool:goal |
 | SCOPE-24 | Adds a compatibility shim where the task was to change the signature | [56] | guide:it-needs-to-exist | scan:pass-through |
 | SCOPE-25 | Stops to ask whether to continue when the task was clear | [36] permission-seeking 40 of 173 | guide:no-may-i | tool:goal |
-| SCOPE-26 | Announces a good stopping point with work unfinished | [36] premature stopping 18 of 173 | hook:stop-short | tool:goal |
-| SCOPE-27 | Labels a defect a known limitation rather than fixing it | [36] known-limitation labelling 14 and session-length excuses 4, of 173 | hook:stop-short | tool:goal |
-| SCOPE-28 | Cites session length as a reason to stop | [36] known-limitation labelling 14 and session-length excuses 4, of 173 | hook:stop-short | tool:goal |
+| SCOPE-26 | Announces a good stopping point with work unfinished | [36] premature stopping 18 of 173 | guide:no-silent-narrowing | tool:goal |
+| SCOPE-27 | Labels a defect a known limitation rather than fixing it | [36] known-limitation labelling 14 and session-length excuses 4, of 173 | guide:no-silent-narrowing | tool:goal |
+| SCOPE-28 | Cites session length as a reason to stop | [36] known-limitation labelling 14 and session-length excuses 4, of 173 | guide:compaction-not-a-reason | tool:goal |
 | SCOPE-29 | Implements the easier half of a multi-part issue and closes it | [107] 5 of 54 milestone issues affected; 1 of 5 PRs mentioned the omission; single user | guide:no-silent-narrowing | tool:goal |
 | SCOPE-30 | Stops short of a numeric goal, treating please continue as a small top-up | [16] PR #120640: coverage 71.8%, 74.7%, 74.9%, 74.9%, 75.1% against a 90% request; 'expand scope /... | tool:goal | tool:goal |
 | SCOPE-31 | Gives up at the first obstacle | [207] 18% of failed runs, 4% of wasted execution, median 2 remaining steps | hook:stop-short | tool:goal |

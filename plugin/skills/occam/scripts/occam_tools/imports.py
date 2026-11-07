@@ -65,7 +65,10 @@ def _python_import(project, path, item, declared, has_manifest, stdlib, modules,
         if has_manifest:
             project.add("undeclared-dependency", path, line, f"'{top}' works here only because it happens to be installed.")
         return
-    if has_manifest:
+    if top in manifests.WELL_KNOWN:  # real, so the question is only whether it's declared, and with nothing declared, as in a cell or script, that isn't one
+        if has_manifest:
+            project.add("undeclared-dependency", path, line, f"'{top}' isn't declared or installed here, so a clean install won't have it.")
+    elif has_manifest:
         lazy = {"confidence": "medium"} if item.get("lazy") else {}
         project.add("phantom-import", path, line, f"'{top}' isn't local, declared or installed. Check it exists before installing anything of that name.", **lazy)
     else:

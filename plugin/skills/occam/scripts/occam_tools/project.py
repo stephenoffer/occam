@@ -55,6 +55,8 @@ def _index_definition(path: str, definition: dict, by_hash: dict, by_name: dict,
     statements = definition.get("statements", 0)
     if definition.get("hash") and statements >= 4 and definition.get("length", 0) >= 6:
         by_hash[definition["hash"]].append((path, definition))
+    elif definition.get("exact"):
+        by_hash["exact:" + definition["exact"]].append((path, definition))  # short: the same code, not just the same shape, and three copies
     if definition["kind"] != "function" or definition.get("decorated"):
         return  # a route handler named after the service it calls isn't a second implementation
     bare = name.lstrip("_")
@@ -158,7 +160,7 @@ class Project:
     def run(self, enabled: bool = True, whole: bool = True) -> list[Finding]:
         """`whole` is False when some files weren't read. Only the first pass judges each file on its own, so only it can still run: a committed secret file stays reported."""
         passes = [self._repository_files, partial(imports.python_imports, self), partial(imports.foreign_imports, self), partial(imports.stdlib_attributes, self), partial(imports.local_attributes, self), self._dead_code, self._unused_options,
-                  self._duplicates, self._twins, self._class_families, self._import_graph, self._tests, self._dependency_use, self._config_modules, self._utility_buckets, self._settings, self._hidden_checks]
+                  self._duplicates, self._twins, self._queries_through_helpers, self._class_families, self._import_graph, self._tests, self._dependency_use, self._config_modules, self._utility_buckets, self._settings, self._hidden_checks]
         for step in (passes if whole else passes[:1]) if enabled else []:
             step()
         return self.findings
@@ -386,6 +388,26 @@ class Project:
                 where = ", ".join(f"{p}:{a}-{b}" for p, a, b in members[1:5])
                 self.add("clone-renamed", first[0], first[1], f"{cluster['length']} lines repeated with renamed identifiers at {where}.", related=[f"{p}:{a}" for p, a, _ in members[1:]])
 
+    def _queries_through_helpers(self) -> None:
+        """N+1 through a helper: a loop calling this repository's own function that queries or calls out itself, which a rule reading one file can't see.
+        The name has to be defined once, here or in what this file imports by name, and a decorated helper may cache, so it's left alone."""
+        definitions: dict[str, list] = defaultdict(list)
+        for path, facts in self.facts.items():
+            for definition in (facts or {}).get("defs", []):
+                if definition["kind"] == "function":
+                    definitions[definition["name"]].append((path, definition))
+        for path, facts in self.facts.items():
+            if not facts or is_test_path(path) or not facts.get("loop_calls"):
+                continue
+            imported = {name for item in facts.get("imports", []) for name in item.get("names", [])}
+            for name, line in facts["loop_calls"]:
+                found = definitions.get(name, [])
+                if len(found) != 1:
+                    continue
+                where, definition = found[0]
+                if definition.get("remote") and not definition.get("decorated") and (where == path or name in imported):
+                    self.add("query-in-loop", path, line, f"{name}() queries or calls out ({where}:{definition['line']}), and this runs it once per item.", related=[f"{where}:{definition['line']}"])
+
     def _twins(self) -> None:
         by_hash: dict[str, list] = defaultdict(list)
         by_name: dict[str, list] = defaultdict(list)
@@ -401,11 +423,13 @@ class Project:
         self._same_action(by_action)
 
     def _same_shape(self, by_hash: dict[str, list]) -> None:
-        for group in by_hash.values():
-            if len(group) >= 2:
+        for key, group in by_hash.items():
+            short = key.startswith("exact:")
+            if len(group) >= (3 if short else 2):
                 path, definition = group[0]
-                others = ", ".join(f"{p}:{d['line']} ({d['name']})" for p, d in group[1:5])
-                self.add("clone-function", path, definition["line"], f"{definition['name']} has the same structure as {others}.", related=[f"{p}:{d['line']}" for p, d in group[1:]])
+                others = ", ".join(f"{p}:{d['line']} ({d['name']})" for p, d in group[1:5]) + (f" and {len(group) - 5} more" if len(group) > 5 else "")
+                what = "is the same code as" if short else "has the same structure as"
+                self.add("clone-function", path, definition["line"], f"{definition['name']} {what} {others}.", related=[f"{p}:{d['line']}" for p, d in group[1:]])
 
     def _same_name(self, by_name: dict[str, list]) -> None:
         for name, group in by_name.items():

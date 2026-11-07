@@ -53,7 +53,7 @@ def test_a_loaded_skill_counts_and_doesnt_read_as_a_hook_stopping_it(tmp_path):
 
 
 def test_it_counts_a_hold_and_the_send_back(tmp_path):
-    found = run(tmp_path, [("Edit", {"file_path": "/recorded/project/app.py", "old_string": "a = 1\n" * 20, "new_string": "a = 2\n" * 20}, "occam: held", True),
+    found = run(tmp_path, [("Edit", {"file_path": "/recorded/project/auth.py", "old_string": "a = 1\n" * 20, "new_string": "a = 2\n" * 20}, "occam: held", True),
                            ("Skill", {"skill": "occam:occam"}, "Launching skill: occam:occam", False),
                            ("Skill", {"skill": "occam:occam-python"}, "Launching skill: occam:occam-python", False),
                            ("Edit", {"file_path": "/recorded/project/app.py", "old_string": "a = 1", "new_string": "a = 2"}, "ok", False),

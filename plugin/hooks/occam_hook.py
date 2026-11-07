@@ -3,11 +3,12 @@
 
 A skill is guidance the model may or may not follow. These hooks are the deterministic part:
 
-  session-start   says occam is active, and offers a reload after compaction
+  session-start   gives the rule card (rule_card.py), and offers a reload after compaction
+  subagent-start  gives a subagent the same rules, except occam's own agents, which carry their own briefs
   user-prompt     records the request, and notices review-only and plan-only requests
   expansion       records a skill the user typed by name
   subagent-stop   records a subagent that finished, so a review counts only once it has completed
-  pre-tool        holds code edits beyond a small one until the skill is loaded, holds edits on read-only turns,
+  pre-tool        holds consequential code edits until the skill is loaded, holds edits on read-only turns,
                   asks before git commands that could destroy someone's work, states what matters from a
                   reference once before the edit, mentions language skills once, holds edits that make
                   a check easier to pass or write a credential, and denies credentials in web requests
@@ -27,7 +28,8 @@ Limits, on purpose:
     rather than looping, and the user can lift them in plain words.
   * From the shell, only a named list of destructive actions stops a command. The other holds are for edit tools.
   * Shell commands are parsed best-effort. This is a guardrail, not a security boundary.
-  * OCCAM_HOOKS=off in the environment turns all of this off.
+  * OCCAM_HOOKS=off in the environment turns all of this off. OCCAM_HOOKS=guard keeps only what asks or denies to protect work, secrets
+    and a read-only request: no skill hold, notes, review or send-backs.
 
 Messages are written as facts rather than commands, as the Claude Code docs recommend.
 """
@@ -48,10 +50,11 @@ import docs_notes
 import in_place
 import occam_evidence as evidence
 import repo_notes
+import rule_card
 import scale_notes
 import scan_notes
 import stop_checks
-from classify import (REVIEWER, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
+from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, ASKS_FOR_REVIEW, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
                       PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, is_code, reads_as_read_only, visible_prompt)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
@@ -71,6 +74,12 @@ AGENT_TOOLS = {"Agent", "Task"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 APPROVAL_TOOLS = {"ExitPlanMode", "AskUserQuestion"}
 FOREGROUND_BLOCKING_TASKS = {"subagent", "workflow", "teammate", "cloud session"}
+GUARD = "guard"
+
+
+def level() -> str:
+    """OCCAM_HOOKS: off, guard, or anything else for the full set."""
+    return os.environ.get("OCCAM_HOOKS", "").strip().lower()
 
 
 # pylint's max-module-lines default. A prompt to look, not a limit: nothing is held.
@@ -185,11 +194,11 @@ def session_start(event: dict) -> dict | None:
                 old.unlink()
         except OSError:
             continue
+    record(event, kind="mentioned", name="card")
     if event.get("source") == "compact":
         return context("SessionStart", "The conversation was compacted, so the occam skill's full text may no longer "
-                                       "be in context. Loading `occam:occam` again restores it." + scale_notes.goal_reminder(event.get("cwd")) + design_notes.session_note(event.get("cwd")))
-    return context("SessionStart", "The occam plugin is active. Its `occam:occam` skill covers changing and reviewing "
-                                   "code. Code edits through edit tools usually wait until that skill has been loaded." + design_notes.session_note(event.get("cwd")))
+                                       "be in context. Loading `occam:occam` again restores it. " + rule_card.CARD + scale_notes.goal_reminder(event.get("cwd")) + design_notes.session_note(event.get("cwd")))
+    return context("SessionStart", rule_card.CARD + design_notes.session_note(event.get("cwd")))
 
 
 def python_project(event: dict) -> bool:
@@ -241,6 +250,14 @@ def subagent_stop(event: dict) -> dict | None:
     if name:
         record(event, kind="agent_done", name=name)
     return None
+
+
+def subagent_start(event: dict) -> dict | None:
+    """Session-start context never reaches a subagent, so it hears the rules here. Ponytail does the same through this event."""
+    plugin, _, name = (event.get("agent_type") or "").strip().rpartition(":")
+    if name in OWN_AGENTS and plugin in ("", "occam"):  # another plugin's code-reviewer isn't occam's, and hears the rules
+        return None
+    return context("SubagentStart", rule_card.SUBAGENT_CARD)
 
 
 def read_only_hold(known: list[str], unknown_path: bool, session: Session) -> dict | None:
@@ -330,6 +347,16 @@ def reads_as_small(event: dict, session: Session, tool_input: dict, edit_path: s
         event.get("tool_name", ""), tool_input, os.path.join(event.get("cwd") or os.getcwd(), edit_path), code, old, new, risk, session.entries)
 
 
+def needs_the_full_skill(event: dict, session: Session, code: list[str], old: str, new: str) -> bool:
+    """Consequential by the request, the path or what the edit writes or removes, whatever its size. The rule card from session start covers the rest."""
+    target = absolute_path(event, code[0]) if code else None  # code paths are relative to the project, not the working directory
+    if event.get("tool_name") == "Write" and not old and target and target.is_file() and target.stat().st_size > 0:
+        return True  # a file too large to read: what it removes can't be seen
+    language = LANGUAGE_SKILLS.get(Path(code[0] if code else "").suffix.lower())
+    risk = LANGUAGE_RISKS[language][1] if language and language != "occam-shell" else None
+    return any(applies for _, applies, _ in needed_references(code, scale_notes.asked_for(session.prompt))) or scale_notes.is_consequential(code, old, new, risk, session.entries)
+
+
 def notes_before_edit(event: dict, session: Session, tool_input: dict, code: list[str], small: bool) -> list[str]:
     """Facts for this edit, each once per session. A small edit on ordinary code adds only the rule it went ahead under."""
     file_path = code[0] if code else ""
@@ -338,8 +365,8 @@ def notes_before_edit(event: dict, session: Session, tool_input: dict, code: lis
     for reference, applies, why in needed_references(code, session.prompt):
         if applies and not session.has("reference", reference) and once(event, session, f"reference-{reference}"):
             notes.append(in_place.reference_note(reference, why, reference_path(reference)))
-    if small and once(event, session, "small"):
-        notes.append(scale_notes.SMALL_NOTE)
+    if not session.has("skill", CORE_SKILL) and once(event, session, "card"):  # a session that began before this plugin did never heard it
+        notes.append(rule_card.CARD)
     if language and not small and not session.has("skill", language) and once(event, session, language):
         notes.append(f"`occam:{language}` has {LANGUAGE_NAMES[language]} guidance on {LANGUAGE_RISKS[language][0]}.")
     if TEST_PATH.search(file_path) and not session.has("reference", "verification") and once(event, session, "verification"):
@@ -365,7 +392,7 @@ def notes_before_edit(event: dict, session: Session, tool_input: dict, code: lis
 def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     name = event.get("tool_name", "")
     edit_path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-    if evidence.SETTINGS_FILE.search(edit_path.replace("\\", "/")) and evidence.DISABLES_CHECKS.search(evidence.old_and_new_text(name, tool_input, event.get("cwd"))[1]):
+    if evidence.SETTINGS_FILE.search(edit_path.replace("\\", "/")) and evidence.disables_checks(evidence.old_and_new_text(name, tool_input, event.get("cwd"))[1]):
         return ask_a_person(event, "occam: this turns off the checks on this session's work. A person should confirm.")
     if not in_project(edit_path, event):
         note = instructions_note(event, session, edit_path)
@@ -399,9 +426,9 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     small = False
     if not session.has("skill", CORE_SKILL):
         small = reads_as_small(event, session, tool_input, edit_path, code, old, new)
-        if not small:
-            return hold(event, session, "skill", "the `occam:occam` skill has not been loaded in this session, and code "
-                                                 "edits are held until it is.", "Load it, then retry this edit.")
+        if not small and level() != GUARD and needs_the_full_skill(event, session, code, old, new):
+            return hold(event, session, "skill", "the `occam:occam` skill has not been loaded in this session, and consequential code "
+                                                 "edits are held until it is.", "Call the Skill tool with `occam:occam`, then retry this edit.")
     notes = notes_before_edit(event, session, tool_input, code, small)
     return context("PreToolUse", " ".join(notes)) if notes else None
 
@@ -524,16 +551,28 @@ def copy_mixed_in_note(event: dict, checks: list, command: str, passed: bool) ->
 
 
 def review_first_note(event: dict) -> dict | None:
-    """Stop asks for this review anyway, and a report written before it has to be written again, so say it when it first applies. Context costs no turn."""
+    """Stop asks for this review anyway, and a report written before it has to be written again, so say it when it first applies. Context costs no turn.
+    Said again if a later edit this turn turns a self-review into the reviewer agent, so the note never contradicts Stop."""
     session = Session(event)
-    if event.get("agent_id") or any(e.get("kind") == "mentioned" and e.get("name") == "review-first" for e in session.turn):
+    if event.get("agent_id"):
         return None
     risky = sorted({e["path"] for e in session.code_edits() if e.get("path") and HIGH_CONSEQUENCE.search(e["path"])})
     if not risky:
         return None
+    said = {e.get("name") for e in session.turn if e.get("kind") == "mentioned"}
+    if stop_checks.needs_a_fresh_review(risky, session.prompt):
+        if "review-first-agent" in said:
+            return None
+        record(event, kind="mentioned", name="review-first-agent")
+        security = [path for path in risky if SECURITY_CRITICAL.search(path)]
+        why = f"{os.path.basename(security[0])} is security-critical" if security else "the request asks for a review"
+        return context("PostToolUse", f"occam: {why}, so `occam:{REVIEWER}` reviews this once your checks pass, "
+                                      "before you write your report. It needs the requirements and the diff.")
+    if "review-first" in said:
+        return None
     record(event, kind="mentioned", name="review-first")
-    return context("PostToolUse", f"occam: {os.path.basename(risky[0])} is high consequence, so `occam:{REVIEWER}` reviews this once your checks pass, "
-                                  "before you write your report. It needs the requirements and the diff.")
+    return context("PostToolUse", f"occam: {os.path.basename(risky[0])} is high consequence, so once your checks pass and before you write your report, "
+                                  f"review the whole diff yourself: {stop_checks.SELF_REVIEW} Then give the report a line starting {stop_checks.SELF_REVIEW_LINE}.")
 
 
 def after_skill(event: dict, tool_input: dict, succeeded: bool) -> None:
@@ -561,7 +600,7 @@ def read_notes(event: dict, path: str) -> dict | None:
     has, mark = said_before(event, session, f"{agent}:" if agent else "")
     notes = [repo_notes.secret_file_read(path, has, mark), repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
     if not agent and not session.read_only:
-        notes.append(repo_notes.reading_without_editing(session.entries, has, mark))
+        notes.append(repo_notes.reading_without_editing(session.entries, scale_notes.asked_for(session.prompt), has, mark))
     said = [note for note in notes if note]
     return context("PostToolUse", " ".join(said)) if said else None
 
@@ -685,14 +724,14 @@ def post_failure(event: dict) -> dict | None:
 
 def stop(event: dict) -> dict | None:
     # Delegated work still underway will report back, and this runs again then. A dev server doesn't count.
-    if event.get("agent_id") or any(task.get("type") in FOREGROUND_BLOCKING_TASKS for task in event.get("background_tasks") or []):
+    if level() == GUARD or event.get("agent_id") or any(task.get("type") in FOREGROUND_BLOCKING_TASKS for task in event.get("background_tasks") or []):
         return None
     note = stop_checks.send_back(event, Session(event))
     return context("Stop", note) if note else None
 
 
 HANDLERS = {"session-start": session_start, "user-prompt": user_prompt, "expansion": expansion,
-            "subagent-stop": subagent_stop, "pre-tool": pre_tool,
+            "subagent-stop": subagent_stop, "subagent-start": subagent_start, "pre-tool": pre_tool,
             "post-tool": post_tool, "post-failure": post_failure, "stop": stop}
 
 
@@ -704,8 +743,14 @@ def _out_of_time(*_) -> None:
     raise OutOfTime(f"past {HOOK_SECONDS}s")
 
 
+def guard_only(result: dict | None) -> dict | None:
+    """At OCCAM_HOOKS=guard, only a decision gets through: an ask or a denial that protects work, secrets or a read-only request."""
+    output = (result or {}).get("hookSpecificOutput") or {}
+    return result if output.get("permissionDecision") in ("ask", "deny") else None
+
+
 def main(argv: list[str]) -> int:
-    if os.environ.get("OCCAM_HOOKS", "").lower() in ("off", "0", "false") or len(argv) != 2 or argv[1] not in HANDLERS:
+    if level() in ("off", "0", "false") or len(argv) != 2 or argv[1] not in HANDLERS:
         return 0
     timed = hasattr(signal, "setitimer")
     try:
@@ -714,6 +759,8 @@ def main(argv: list[str]) -> int:
             signal.setitimer(signal.ITIMER_REAL, HOOK_SECONDS, 1)
         event = json.loads(sys.stdin.read() or "{}")
         result = HANDLERS[argv[1]](event if isinstance(event, dict) else {})
+        if level() == GUARD:
+            result = guard_only(result)
         if timed:
             signal.setitimer(signal.ITIMER_REAL, 0)
         if result:

@@ -89,6 +89,7 @@ class Analyzer:
         self.classes: list[dict] = []
         self.attr_uses: list[dict] = []
         self.checking_functions: set[str] | None = None
+        self.text_lines: list[str] | None = None  # split once, when a rule needs a line's text
         self.module_aliases: dict[str, str] = {}
         self.top_names: set[str] = set()
         self.has_star = False
@@ -101,6 +102,8 @@ class Analyzer:
         self.imports_numeric = False
         self.uses_logging = False
         self.prints: list[int] = []
+        self.remote_defs: set[tuple[str, int]] = set()  # functions that query or call out themselves, so a loop calling one is N+1
+        self.loop_calls: list[list] = []  # [name, line] of bare-name calls inside a loop, resolved across files in project.py
         self.dynamic_namespace = bool(DYNAMIC_NAMESPACE.search(code_view))
         self.function_names: set[str] = set()
         self.camel_defs: list[ast.AST] = []
@@ -147,7 +150,11 @@ class Analyzer:
         self._whole_file_rules()
         rebound = {n.id for n in ast.walk(self.tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)} | {n.arg for n in ast.walk(self.tree) if isinstance(n, ast.arg)}
         uses = [use for use in self.attr_uses if use["head"] not in rebound]
+        for definition in self.defs:
+            if (definition["name"], definition["line"]) in self.remote_defs:
+                definition["remote"] = True
         return {
+            "loop_calls": self.loop_calls,
             "settings": defs.setting_names(self), "imports": self.imports, "defs": self.defs, "classes": self.classes, "attr_uses": uses,
             "top_names": sorted(self.top_names), "has_star": self.has_star, "has_getattr": self.has_getattr or self.dynamic_namespace,
             "exports": sorted(self.exports), "has_main_guard": self.has_main_guard, **self._call_facts(),
@@ -496,4 +503,4 @@ def analyze(text: str, path: str, code_view: str, comment_lines: set, is_test: b
         facts = analyzer.run()
     except RecursionError as error:
         return analyzer.findings, {}, f"RecursionError: {error}"
-    return [*analyzer.findings, *rules_py_agent.findings(tree, path, is_test, is_script)], facts, None
+    return [*analyzer.findings, *rules_py_agent.findings(tree, path, is_test, is_script, comment_lines, text)], facts, None

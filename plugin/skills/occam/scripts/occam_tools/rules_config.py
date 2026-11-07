@@ -207,12 +207,12 @@ def login_without_a_limit(text: str, language: str) -> Iterator[tuple]:
         yield "login-no-rate-limit", _line(text, match.start()), None, {}
 
 
-def _instruction_findings(text: str) -> Iterator[tuple]:
+def _instruction_findings(path: str, text: str) -> Iterator[tuple]:
     yield from hidden_characters(text, also_zero_width=True)
     for match in ADDRESSES_AN_AGENT.finditer(text):
         yield "instruction-injection", _line(text, match.start()), f"`{match.group(0)[:60]}` in a file agents obey. Check who wrote it and why.", {}
     lines = text.count("\n") + 1
-    if lines > MAX_INSTRUCTION_LINES:
+    if lines > MAX_INSTRUCTION_LINES and not path.endswith("SKILL.md"):  # a skill loads only when it applies
         yield "instructions-bloated", 1, f"{lines} lines, read on every session whether or not they apply. Move what's rarely needed somewhere it loads on demand.", {}
 
 
@@ -230,7 +230,7 @@ def findings(path: str, text: str) -> Iterable[tuple]:
         for match in _WIDE_AGENT.finditer(text):
             yield "agent-permission-widened", _line(text, match.start()), f"`{match.group(0)[:60]}` lets an agent act without a person. Someone should choose that knowingly.", {}
     elif AGENT_INSTRUCTIONS.search(path):
-        yield from _instruction_findings(text)
+        yield from _instruction_findings(path, text)
     elif YAML_FILE.search(path):
         yield from _yaml_findings(text)
     elif ENV_FILE.search(path):

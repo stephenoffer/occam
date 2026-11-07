@@ -38,6 +38,7 @@ _JUDGMENT = [
     "Did you honor every constraint the user stated, including ones from earlier in the conversation?",
     "Did you check the layers this touches, and name the ones you didn't? (`occam map` lists them.)",
     "Is the behavior right for empty, huge, malformed and concurrent input, where those can occur?",
+    "Did the existing tests that reach this change run on the final state, not only the ones you wrote? `occam query impact --changed` lists them.",
     "Does your report or pull request describe only what the diff contains, and name everything it changed? If you blame a failure on existing code, did you run it on the old code?",
     "Would a maintainer understand this and accept the diff, or call it overcomplicated? Does every changed line trace to the request, to what this change orphaned, or to a fix it had to make?",
 ]
@@ -598,8 +599,23 @@ def _new_definitions(root: Path, base: str | None, changed: dict[str, set[int]])
         old_names = {n.name for n in old_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
         for node in new_tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name not in old_names:
-                added.append((node.name, path, node.lineno))
+                added.append((node.name, path, node.lineno, _unread_parameters(node)))
     return added
+
+
+def _unread_parameters(node: ast.AST) -> list[str]:
+    """Parameters a new function never reads: options nobody needed yet. A decorated function's signature may be fixed by what calls it,
+    and a stub reads nothing by design, so neither counts, and neither does `_name`, `*args`, `**kwargs` or a body using `locals()`."""
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.decorator_list:
+        return []
+    body = node.body[1:] if ast.get_docstring(node) is not None else node.body
+    if all(isinstance(s, (ast.Pass, ast.Raise)) or (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)) for s in body):
+        return []
+    read = {n.id for s in body for n in ast.walk(s) if isinstance(n, ast.Name)}
+    if read & {"locals", "vars"}:
+        return []
+    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    return [a.arg for a in arguments if a.arg not in read and not a.arg.startswith("_") and a.arg not in ("self", "cls")]
 
 
 def _reuse_candidates(project, name: str, own_path: str) -> list[str]:
@@ -735,7 +751,8 @@ def _concern_lines(blockers: list[dict], warnings: list[dict], not_checked: tupl
 def _gate_findings(root: Path, base, changed, deleted, renamed, paths, result) -> list[dict]:
     """What this change introduced, including what a diff shows and a scan of the final files can't."""
     visible = scanner.filter_findings(result.findings, "medium")
-    in_changed_files = [f for f in visible if f["path"] in changed]
+    # Comment leads are low confidence across a whole repository, but on lines just written they're cheap to check and only ever warn.
+    in_changed_files = [f for f in visible if f["path"] in changed] + [f for f in result.findings if f["path"] in changed and f.get("category") == "comments" and f["confidence"] == "low"]
     findings = in_changed_files if paths else scanner.new_against_base(root, in_changed_files, base, renamed)
     for extra in _weakened_tests(root, base, changed, deleted, renamed):
         findings.append({**extra, "severity": "high", "confidence": "high", "category": "testing", "tier": "C", "score": 8.0, "layer": "test", "fix": "", "evidence": "", "id": ""})
@@ -772,6 +789,7 @@ def _not_checked(root: Path, paths, unread: list[str], result) -> list[str]:
 
 def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[str] | None = None, seconds: int | None = None) -> tuple[str, int]:
     """A skeptical read of this change. Blockers must be resolved or escalated before claiming it's done."""
+    started = time.monotonic()
     missing = [path for path in paths or [] if not Path(path).exists()]
     if missing:
         return (f"No such path: {', '.join(missing)}. Nothing was checked.", 2)
@@ -793,7 +811,9 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
     result = scanner.run_scan(root, paths or None, seconds=seconds, focus=sorted(changed))
     findings = _gate_findings(root, base, changed, deleted, renamed, paths, result)
     whole = not result.stats.get("partial")
-    change_notes, change_not_run = ([], []) if paths else change_checks.notes(root, base, changed, deleted, renamed, whole, change_checks.CHECKS if whole else change_checks.WITHIN_THE_DIFF)
+    limit = 75 if seconds is None else seconds  # the command line stops everything at its limit plus 35 seconds, so leave room for the rest
+    budget = change_checks.RUNTIME_LIMIT if not limit else max(0.0, min(change_checks.RUNTIME_LIMIT, limit + 10 - (time.monotonic() - started)))
+    change_notes, change_not_run = ([], []) if paths else change_checks.notes(root, base, changed, deleted, renamed, whole, budget=budget)
     blockers, warnings = _sort_gate_findings(findings)
     extras = _gate_extras(root, base, changed, result.project, gone, for_design, whole=whole)
     warnings += change_notes
@@ -803,7 +823,7 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
         orphaned = {(note["path"], note["line"]) for note in scope["notes"] if note["rule"] == "orphaned-by-change"}
         warnings = [w for w in warnings if not (w["rule"] in ("unreferenced-def", "orphan-module") and (w["path"], w["line"]) in orphaned)] + scope["notes"]
     lines = [f"occam gate: {len(changed)} changed files, {len(deleted)} deleted, {len(blockers)} blockers, {len(warnings)} warnings.", *report.partial_note(result.stats), *([scope["size"]] if scope and scope["size"] else []), "",
-             *_concern_lines(blockers, warnings, () if scope else ("scope",))]
+             *_concern_lines(blockers, warnings, (() if scope else ("scope",)) + (("change",) if change_not_run else ()))]
     unread = _unread(changed, result)
     lines += _not_checked(root, paths, unread, result)
     if change_not_run:
@@ -822,9 +842,11 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
 def _gate_extras(root: Path, base, changed, project, gone: tuple[str, ...], for_design: dict, whole: bool = True) -> dict:
     warnings: list[dict] = []
     counts = project.identifier_counts
-    for name, path, line in _new_definitions(root, base, changed):
+    for name, path, line, unread in _new_definitions(root, base, changed):
         if whole and counts.get(name, 0) <= 1 and not name.startswith("_") and not re.search(r"^(main|cli)$", name):
             warnings.append({"rule": "unreferenced-def", "path": path, "line": line, "message": f"New {name} has no callers. A function nothing calls isn't a feature.", "category": "dead-code"})
+        if unread:
+            warnings.append({"rule": "unread-parameter", "path": path, "line": line, "message": f"New {name} never reads {', '.join(unread[:4])}. Drop what nothing needs yet.", "category": "overengineering"})
         for hit in _reuse_candidates(project, name, path):
             warnings.append({"rule": "parallel-verbs", "path": path, "line": line, "message": f"New {name} may duplicate {hit}. Check it before keeping both.", "category": "duplication"})
             break

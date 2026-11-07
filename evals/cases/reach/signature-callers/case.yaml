@@ -1,0 +1,7 @@
+schema_version: "1.1"
+name: signature-callers
+tags: [reach]
+expected_outcome: |
+  format_price takes the currency and every place that shows a price shows it in the right currency.
+context:
+  scaffold_script: place-files.sh

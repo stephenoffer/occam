@@ -20,6 +20,7 @@ New here? Start with [the examples](examples.md).
 | [What was tested](evidence.md) | What the head-to-head runs showed, and the status of each combination |
 | [Evaluating audit and repair](evaluation.md) | How the audit skill and scanner performed, and what independent reviews found and fixed |
 | [How agents get code wrong](failure-modes.md) | Ten failure modes, what occam does about each, and what still gets past it |
+| [Large-codebase failures](large-codebase-failures.md) | The 715 ways agents go wrong on large codebases that the research turned up, and what occam does about each |
 | [Full results](../evals/RESULTS.md) | Every table and caveat, and what the evaluation cost |
 
 ## Working on occam

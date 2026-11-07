@@ -1,0 +1,5 @@
+{
+  "OrderSummary": {
+    "fields": [["id", "int"], ["total_cents", "int"], ["status", "str"], ["discount_cents", "int"]]
+  }
+}

@@ -50,6 +50,8 @@ Rank by consequence times defect signal: `occam map` combines findings, churn an
 
 All of it comes from text and syntax, so dynamic imports and plugin registration stay invisible, and each answer says so. `outline`, `functions`, `graph`, `impact` and `tests` read the scan's cached facts where they need the whole repository.
 
+With no Python 3.9 on the host, `scripts/occam.sh` answers the ones that need no parsing, with bash and git alone: `size`, `find`, `grep`, `history`, `leaks`, `markers`, `tests`, `commands`, `entry`, plus `shell`, which parses every script with `bash -n`. Its answers come from text, so it can't tell a comment from a use.
+
 ## Baseline and ratchet
 
 You can't fix a million-line repository in one pass, and shouldn't try. `occam baseline write` accepts today's findings, then `occam scan --new-only` reports only what's added. That stops things getting worse from day one, while you pay down the riskiest debt deliberately. `baseline write` stays on this machine, so for CI commit `baseline write --out FILE` and pass `scan --baseline FILE`. `--format sarif` feeds code scanning, and `--fail-on high` makes a CI gate.

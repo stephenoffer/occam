@@ -249,7 +249,7 @@ def test_a_whole_session_through_the_configured_hooks(session):
     sent_back = session("Stop", last_assistant_message="Done. All tests pass.")
     assert "No check has run since the last code edit" in sent_back["additionalContext"]
     assert "no check passed during this turn" in sent_back["additionalContext"]
-    assert "code-reviewer" in sent_back["additionalContext"]  # billing is high consequence
+    assert "review the whole diff yourself" in sent_back["additionalContext"]  # billing is high consequence, and a self-review or the reviewer will do
 
     session("PostToolUse", tool_name="Bash", tool_input={"command": "python3 -m pytest -q"}, tool_response={"stdout": "1 passed in 0.01s"})
     session("PostToolUse", tool_name="Agent", tool_input={"subagent_type": "occam:code-reviewer"}, tool_response={})
@@ -288,7 +288,7 @@ def test_a_small_edit_goes_ahead_with_its_rule_beside_it(session):
     code.write_text("label = 'items'\n")
     session("UserPromptSubmit", prompt="It prints `1 items`, it should say `1 item`.")
     said = session("PreToolUse", **edit(code, "label = 'items'\n", "label = 'item'\n"))
-    assert "permissionDecision" not in said and "went ahead without the full skill" in said["additionalContext"]
+    assert "permissionDecision" not in said and "everywhere it occurs" in said["additionalContext"]  # the rule card, since no session start was heard
 
 
 def test_the_hooks_step_aside_when_asked_and_when_broken(session):

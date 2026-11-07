@@ -31,9 +31,9 @@ The cases were almost all within reach of the agent alone before any skill exist
 - In the audits, plugin runs located as many defects as no skill and fixed fewer, a median of 48.5 of 60 serious ones against 55.
 - On hard cases, the plugin passed 3 of 9 runs against 4 of 9 with no skill. Both are below.
 
-### What it costs
+### What it costs, and what that pays for
 
-The full plugin cost 57% more than no skill on the Opus holdout and 85% more on Sonnet, with about twice the turns. The audit tests were the exception, at about 14% less over both, though runs took about 1.8 times as long.
+The full plugin cost 57% more than no skill on the Opus holdout and 85% more on Sonnet, with about twice the turns. In dollars, that's about 34 cents more per task on Opus and 12 cents on Sonnet. The largest single item is the fresh-context review of high-consequence changes, at about $0.21 to $0.26 per reviewed run on Opus and $0.08 on Sonnet. Where no reviewer runs, most of the extra is the guidance itself in context, not extra turns, and a held edit costs at most 3.5% of a run. The audit tests were the exception, at about 14% less over both, though runs took about 1.8 times as long.
 
 ### What's next
 
@@ -59,11 +59,12 @@ Unless a row says otherwise, this describes the plugin at hash `ee947fc74a0dc453
 |---|---|
 | Claude Code 2.1.318 with the plugin: end to end, smoke, holdout | **Verified** on real runs, with Opus 5.5 and Sonnet 5.5 |
 | Re-evaluation at `6e9b898640b2ac71`: one fresh case, and two holdout cases again | **Run** on Opus 5.5, 7 plugin runs and 3 no-skill runs. See [`evals/RESULTS.md`](../evals/RESULTS.md) |
-| `marketplace add` and `install` | **Verified** in a throwaway config: installs and lists 9 skills, 1 agent, 8 hook events. The plugin has since grown, and `claude plugin details occam@occam` lists 11 skills, 2 agents and 8 hook events |
+| `marketplace add` and `install` | **Verified** in a throwaway config: installs and lists 9 skills, 1 agent, 8 hook events. The plugin has since grown to 11 skills, 2 agents and 9 hook events |
 | Plain copy into `.claude/skills/` | **Verified** discovery of all 9 skills that existed then, one run |
 | Enforcement hook logic | **Verified** by the free test suite. On a clean export at `2475ede2a1bd683d`, Python 3.14 passed 4,799 with 1 skipped, and the stock macOS Python 3.9 passed 4,784 with 15 skipped and one timeout under load that passed alone |
 | Failure-mode checks | **Verified** by deterministic tests on cases we wrote, in `tests/test_failure_modes.py`. **Partly seen** in real runs (holds, person-confirm asks, failed-check note). The web denial and a Stop comparison sending an agent back have **not** been seen, and their effect alone isn't measured. The rule on changes right after a failed check was narrowed after these runs, using their traces |
 | `occam docs`, the `occam-docs` skill and the human-voice handoff | **Verified** by the free tests in `tests/test_docs_tool.py`, and by hand against the real human-voice linter at 0.1.0 and 0.9.0 on one small sample project. Run on 20 existing documents and six saved audit reports, where its 59 leads were all explainable, and on the READMEs of 14 other repositories, where it caught 3 links that really were dead. **Not run** on an agent: no evidence yet that agents use it or that their documents improve. It adds about 100 always-on tokens per session |
+| Rule card, `OCCAM_HOOKS=guard`, self-review default and subagent card, added 2026-11-06 | **Not run** on an agent. Free tests in `tests/test_lean_core.py`, and a replay of 73 saved runs through the old and new hooks, where the only change was 11 reviewer send-backs becoming self-review send-backs in the same runs. The replay can't show the card's effect, because those runs loaded the skill before editing. Every result above measured the old behavior: a skill hold on any edit past a small one, and the reviewer agent on every high-consequence file |
 | Codex | **Not run**: dropped for now, so no Codex behavior has been observed. Metadata and hook protocol are checked locally |
 | `skills-ref validate` | **Not run**: auto mode blocked running it from GitHub. Spec rules are tested locally, and two other validators pass |
 | Installed plugin at user scope | **Verified**, one real run, plus the end-to-end suite on Haiku 5.5 |

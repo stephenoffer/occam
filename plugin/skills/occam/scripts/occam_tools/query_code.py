@@ -419,7 +419,7 @@ def render_grep(data: dict) -> str:
     out += [f"{row['where']}  [{row['kind']}]  {row['text']}" for row in data["rows"]]
     out += more(data["total"] - len(data["rows"]))
     if data["too_large"]:
-        out.append(f"{data['too_large']:,} files over {filesystem.MAX_FILE_BYTES // 1_000_000} MB weren't searched.")
+        out.append(f"{data['too_large']:,} files over {filesystem.MAX_FILE_BYTES // 1_000_000} MB weren't searched. `occam.sh grep` reads them.")
     if data["left_out"]:
         out.append(data["left_out"])
     return "\n".join(out)

@@ -8,11 +8,13 @@ They don't import or execute the code they scan. `golden`, `mutate`, `bench` and
 
 State lives outside the repository, in `~/.cache/occam` or a temporary folder if that isn't writable, so nothing dirties your tree and a repository can't plant it. If nothing is writable, `scan` still works without its cache, while `goal` and `coord` can't run.
 
+If you installed the plugin, the tools are already on your disk. Otherwise, clone the repository with `git clone https://github.com/stephenoffer/occam.git ~/occam` and point the alias at `~/occam/plugin/skills/occam/scripts/occam.py`.
+
 ```bash
-alias occam='python3 /path/to/occam/plugin/skills/occam/scripts/occam.py'
+alias occam='python3 ~/.claude/plugins/marketplaces/occam/plugin/skills/occam/scripts/occam.py'
 
 occam map     # size, strategy, risky files, layers, how many agents
-occam scan    # leads across 19 rule families. Output is bounded
+occam scan    # leads across 20 rule families. Output is bounded
 occam query   # plain answers: who calls this, what a change reaches, who owns it
 occam gate    # critique your own change before calling it done
 ```
@@ -21,16 +23,16 @@ occam gate    # critique your own change before calling it done
 
 | Problem | Tool | What it does |
 |---|---|---|
-| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 189 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
+| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 241 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
 | Finding your way | `query` | Plain answers about the code, with bounded output: size, commands, entry points, outlines, callers, import graph, what a change reaches, which tests, churn, owners, public API, boundaries. See [Asking questions](#asking-questions) |
-| Not using what exists | `query find`, `deps` | Where a name is already defined and called. Is this package real? `--online` checks registries |
+| Not using what exists | `query find`, `deps` | Where a name is already defined and called. Is this package real, and that version? `--online` checks registries, and `--online --name pypi:x==1.2` checks the version exists before you add it |
 | Established analyzers | `tools` | Finds and runs ruff, mypy, semgrep, skylos, eslint, clippy and others, and they outrank occam's own rules |
 | Scale | `map`, `partition`, `baseline` | Strategy by size, disjoint shards, agent counts, and a ratchet |
 | Behavior and tests | `golden`, `mutate`, `bench` | Prove a refactor changed nothing, show which behavior no test protects, and measure growth |
 | Other agents | `coord` | Uncommitted work, worktrees, recent commits, advisory claims |
 | Goal-based work | `goal` | Requirements with checks, constraints, scope. Stale evidence and drift are caught |
 | Documents against the code | `docs` | Names, paths, flags, links and example syntax in Markdown, checked against the repository, and what a rewrite lost with `--before`. Adds a human-voice linter score if it's installed. See [Checking documents](#checking-documents) |
-| Self-critique | `gate` | Blockers across the whole list, new code nothing calls, likely duplicates, weakened tests, and the questions only you can answer. With git, also the change's size, formatting churn, comments lost, what it orphaned even in files it didn't touch, new code out of line with its file, files that nearly always change with these and aren't here, and cited code changing while the design doc doesn't |
+| Self-critique | `gate` | Blockers across the whole list, new code nothing calls, likely duplicates, weakened tests, and the questions only you can answer. With git, also the change's size, formatting churn, comments lost, what it orphaned even in files it didn't touch, new code out of line with its file, files that nearly always change with these and aren't here, and cited code changing while the design doc doesn't. Its "Reached everything it must" section warns about callers a change left behind, removed names still in use, unhandled enum members and the like |
 | A shared design | `design` | For work that crosses agents or sessions. `design for <path>` gives only what applies to a file, `design check` looks for drift, and `design decide` appends a decision. See [`DESIGN.md`](../DESIGN.md) for occam's own |
 
 ## Asking questions
@@ -63,6 +65,15 @@ Each query answers or exits 2, and a query stops after `--timeout` seconds, 900 
 
 **Limits.** These read text and syntax. Dynamic imports, plugin registration and wiring done in configuration stay invisible, so a name with no references isn't proof it's unused, and `impact` can miss tests. `boundaries` matches common names and libraries, so a custom layer won't show and a word like `balance` can mean something else. `api` goes by convention and can't see who really calls a name. Two agents have tried them, as described below, and no comparison has tested whether they change what an audit finds.
 
+### With no Python
+
+`scripts/occam.sh` answers the queries that need no parsing, with bash and git alone: `size`, `find`, `grep`, `history`, `leaks`, `markers`, `tests`, `commands`, `entry`, and `shell`, which runs `bash -n` over every script and looks for common defects. It keeps the same promises and switches off the same git settings as `occam.py`, and a test fails if the two lists differ. It works on bash 3.2, so stock macOS is fine. It can't tell a comment from a use, and it has no `outline`, `functions`, `api`, `boundaries`, `graph` or `impact`. `OCCAM_TIMEOUT` sets how long it runs before stopping with exit 2, 900 seconds by default. File names that git has to quote are left out, and it says how many.
+
+```bash
+bash ~/occam/plugin/skills/occam/scripts/occam.sh size
+bash ~/occam/plugin/skills/occam/scripts/occam.sh find handle_payment
+```
+
 ## Very large repositories
 
 `scan`, `map`, `gate`, `deps` and `partition` stop reading after about 75 seconds and say PARTIAL. `--max-seconds N` changes the limit, and 0 removes it. `gate --strict`, and `scan` with `--fail-on`, `--new-only`, `--baseline` or `--format sarif`, have no limit by default, since something else decides on those. `baseline write` reads everything.
@@ -89,11 +100,13 @@ The first three rows ran once, before the limits, and the rest on 2026-11-06, on
 | `query entry`, `markers`, `boundaries` | 31 to 95 s | under 155 MB |
 | `query functions`, first run | 32 s | 316 MB |
 | `query graph`, first run, then `impact`, `tests`, cached | 216 s, then 26 to 33 s | under 1 GB |
+| `occam.sh size`, `find`, `grep`, `history`, `tests`, `commands`, `shell` | 2 to 11 s | under 20 MB |
+| `occam.sh entry`, `markers` | 28 to 91 s | under 80 MB |
 
 
-Two public repositories with real history, on that same loaded laptop, stayed unchanged. On Homebrew/brew (345,000 lines, mostly Ruby, 53,604 commits) every query but `leaks` answered within 24 s and under 150 MB. On Django (543,000 lines, 35,000 commits) they answered within 38 s, peaking at 1.2 GB in `query markers`. `query leaks` read all 53,410 commits that added anything on Homebrew in 261 s and 480 MB on a quieter machine, and 36,104 on Django in 105 s.
+Two public repositories with real history, on that same loaded laptop, stayed unchanged. On Homebrew/brew (345,000 lines, mostly Ruby, 53,604 commits) every query but `leaks` answered within 24 s and under 150 MB. On Django (543,000 lines, 35,000 commits) they answered within 38 s, peaking at 1.2 GB in `query markers`. `query leaks` read all 53,410 commits that added anything on Homebrew in 261 s and 480 MB on a quieter machine, and 36,104 on Django in 105 s. `occam.sh leaks` read the same in about 29 minutes of CPU and 434 MB, so at this size it needs `OCCAM_TIMEOUT` raised from its 900 s default.
 
-`leaks` goes by shape and name, so expect noise. It flagged 390 commit and file pairs on Homebrew. Separately, six plain `git log -G` searches for token shapes found none across that history, so names account for most of these. Confirm each one.
+`leaks` goes by shape and name, so expect noise. It flagged 390 commit and file pairs on Homebrew (483 from `occam.sh`, which filters less). Separately, six plain `git log -G` searches for token shapes found none across that history, so names account for most of these. Confirm each one.
 
 Two agents have used these queries, one on that repository and one on a clone of Django (530,000 lines of Python, 35,000 commits), and what they reported wrong led to the Ruby support above and to fixes in `markers`, `history`, `entry`, `api` and `boundaries`. Afterward the Django agent's blunt advice stood: use `size`, `outline`, `functions`, `find` and `graph`, which were fast and mostly accurate, and check test selection and who owns what by hand. `impact` on a central file reaches nearly every test, because Django's are that connected. Those are two repositories with nothing to compare against, so they don't show that these tools improve an audit.
 
