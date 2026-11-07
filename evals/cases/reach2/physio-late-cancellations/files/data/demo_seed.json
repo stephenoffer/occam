@@ -1,0 +1,29 @@
+{
+  "clinics": [
+    {"id": 1, "name": "Leith Walk", "phone": "0131 496 0123"},
+    {"id": 2, "name": "Morningside", "phone": "0131 496 0456"},
+    {"id": 3, "name": "Stockbridge", "phone": "0131 496 0789"}
+  ],
+  "clinicians": [
+    {"id": 1, "name": "Aisha Patel", "clinic_id": 1, "slot_minutes": 45,
+     "sessions": [{"weekday": 0, "starts": "09:00", "ends": "17:00"},
+                  {"weekday": 1, "starts": "09:00", "ends": "17:00"},
+                  {"weekday": 3, "starts": "12:00", "ends": "20:00"}]},
+    {"id": 2, "name": "Callum Reid", "clinic_id": 1, "slot_minutes": 45,
+     "sessions": [{"weekday": 1, "starts": "08:00", "ends": "12:30"},
+                  {"weekday": 2, "starts": "08:00", "ends": "16:00"},
+                  {"weekday": 4, "starts": "08:00", "ends": "16:00"}]},
+    {"id": 3, "name": "Morag Lindsay", "clinic_id": 2, "slot_minutes": 60,
+     "sessions": [{"weekday": 0, "starts": "10:00", "ends": "18:00"},
+                  {"weekday": 2, "starts": "10:00", "ends": "18:00"}]},
+    {"id": 4, "name": "Tomasz Nowak", "clinic_id": 3, "slot_minutes": 45,
+     "sessions": [{"weekday": 3, "starts": "09:00", "ends": "17:00"},
+                  {"weekday": 4, "starts": "09:00", "ends": "13:00"}]}
+  ],
+  "patients": [
+    {"id": 1, "name": "Fiona MacLeod", "phone": "07700 900111", "funding": "self", "registered_on": "2025-04-02"},
+    {"id": 2, "name": "Daniel Okafor", "phone": "07700 900222", "funding": "insurer", "registered_on": "2025-06-19"},
+    {"id": 3, "name": "Eilidh Grant", "phone": "07700 900333", "funding": "self", "registered_on": "2026-01-08"},
+    {"id": 4, "name": "Ross Henderson", "email": "ross@example.invalid", "funding": "self", "registered_on": "2026-09-30"}
+  ]
+}

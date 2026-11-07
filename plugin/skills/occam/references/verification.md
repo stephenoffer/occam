@@ -21,10 +21,14 @@ Avoid a universal coverage target, a fixed test count, and redundant tests for t
 | Output hard to predict but relations are known | Metamorphic tests |
 | Parsers and untrusted input | Fuzzing, malformed and oversized cases |
 | Parts that must work together | Integration or contract tests, including features combined with one another, since each can pass alone and fail together |
-| Failure handling | Failure injection: timeouts, partial failure, permission denied, cancellation, recovery |
+| Failure handling | Failure injection: timeouts, partial failure, permission denied, cancellation, recovery, and that cleanup still ran afterwards |
 | Throughput and limits | Load tests against a stated workload |
+| State machines and repeated calls | Each allowed and forbidden transition, the same call twice, and a retry after a failure part way through |
+| A public contract that changed | A test that old calls, old stored data and old clients still work, or that the migration moves them |
 
-Consider empty, null, malformed, boundary, oversized, duplicate, concurrent and permission-denied cases. Include Unicode, timezones, precision, ordering and platform differences when they can break the contract.
+Consider empty, null, malformed, boundary, oversized, duplicate, concurrent and permission-denied cases. Include Unicode, timezones, precision, ordering and platform differences when they can break the contract. At a bound, test both sides of it, the empty range and two ranges that meet, since `<` against `<=` is where pages lose or repeat a row.
+
+Fixtures are as large and varied as what the change meets, duplicates, wide records and skew included, and no more complex than the code they serve. Run integration tests on the database engine and major version production uses, since constraints, locking and SQL differ. A new test should pass alone and in shuffled order, and its fixtures shouldn't be shared mutable state.
 
 **Show a critical test can detect its failure.** For a bug, the regression test fails on the buggy version for the intended reason. Show that with an isolated checkout or fixture, never by reverting another contributor's changes. Where it matters, use targeted mutation testing or a deliberately faulty implementation.
 
@@ -39,18 +43,18 @@ Run the project's own tests, as far as the change reaches. Yours share your assu
 **Passing tests aren't the requirement.** Tests can pass while the combined behavior a user needs is broken. Exercise the real thing:
 
 - **CLI and API:** installation or startup, help and discovery, input validation, outputs, errors and recovery.
-- **UI:** actual user flows, plus empty, loading and error states.
+- **UI:** actual user flows, plus empty, loading and error states. After a rejected submission the form keeps what was typed and points at the field. A slow submit can't be sent twice. No state is shown by color alone. Focus lands somewhere sensible after a dialog opens or a row disappears. Check a narrow and a wide viewport, and keyboard as well as pointer.
 - **Libraries:** imports and public exports from a built artifact when packaging is affected.
 
 Don't leave verification to the user that you could do yourself.
 
 ## When a check fails
 
-Read the earliest error in the first failing run, not the loudest or the latest. Later errors are often its consequences. Go back to the first step that was wrong, because a fix stacked on a wrong step compounds, and agents rarely notice their own first mistake. Back out attempts that didn't work before trying the next, and keep a short list of what has been ruled out so it doesn't come back.
+Read the earliest error in the first failing run, not the loudest or the latest. Later errors are often its consequences. Go back to the first step that was wrong, because a fix stacked on a wrong step compounds, and agents rarely notice their own first mistake. Back out attempts that didn't work before trying the next, and keep a short list of what has been ruled out so it doesn't come back. Change one thing per attempt, so the result says which change mattered. A warning about an unawaited coroutine, a test that wasn't collected or an unclosed resource can be the defect itself.
 
 If you notice a way to pass without doing the work, such as a leaked answer, a fixture you could special-case, a threshold you could lower or the harness itself, don't take it. Report it.
 
-A result that varies between runs isn't a pass. Rerunning until green, adding retries and sleeping all hide it. Say it is flaky, and find the cause or report the failure rate you measured.
+Before trusting a pass, confirm the revision and which copy of the code ran: an installed package, another worktree or a stale build can be what the test imported. A result that varies between runs isn't a pass. Rerunning until green, adding retries and sleeping all hide it. Say it is flaky, and find the cause or report the failure rate you measured.
 
 ## Changing tests
 
@@ -70,6 +74,18 @@ For material checks, retain enough to reproduce and interpret: purpose, exact co
 Evidence stays usable while the code, configuration, dependencies and environment that matter are unchanged. An edit invalidates checks it could affect, including a final cleanup and including earlier review approval. Rerun those, not everything, and don't rerun expensive suites merely because another message arrived. Run repository-mandated checks, and broaden based on impact.
 
 Report implementation completion and verification completion separately when they differ.
+
+## Releases and running systems
+
+A release is verified by the artifact users get and by what happens after it ships.
+
+- **Run what CI runs,** with the repository's commands, and check that a change to path filters or job dependencies still runs the jobs this change needs.
+- **A failed required check stops the release.** Read the remote checks (`gh pr checks` or the CI page) before merging, tagging or publishing, rather than relying on a local run.
+- **Ship what you tested.** Build once, test that artifact, and promote it. A rebuild for release can pull different dependencies. Keep a record of which build, commit and dependency versions went where.
+- **Start it as production does,** with the built output, production configuration and a real port, and exercise one core path. Development mode hides missing assets, settings and startup failures.
+- **Roll out a risky change in stages,** behind a switch or to a small share of users first, with the signal that says go on or roll back.
+- **Name the signal.** A behavior change that matters in production names the metric or log line that shows it working. Alert on what users see, such as error rate, latency and jobs that stopped arriving, not only on exceptions. Keep labels bounded: a user id or raw path as a metric label grows without limit.
+- **A deploy is done when you've checked the outcome:** the rollout status, a smoke check against the running service and its error rate. A successful upload is not a working release.
 
 ## What goes in the report
 

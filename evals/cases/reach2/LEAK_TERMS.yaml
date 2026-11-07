@@ -1,0 +1,99 @@
+crew-overtime-rules:
+- costing
+- forecast
+- ledger
+- accrual
+- accrue
+- premium
+- on-cost
+- oncost
+- PREMIUM_AFTER
+- PREMIUM_FACTOR
+- split_premium
+- wage_accrual
+- wage_accrual.sql
+- base_week_min
+- show-sql
+- cost centre
+- cost_centre
+- CC-410
+- finance
+- auditor
+- roster
+- estimating
+- Halyard
+- crewworks
+- time-and-a-half
+handbook-search-accents:
+- .findoc/
+- index.json
+- store.py
+- reindex
+- post-merge
+- postings
+- entry.py
+- build.update
+- textproc
+- strip_marks
+- unicodedata
+- combining
+- NFKD
+- .findocignore
+- .findocrc
+- cafe-opening-hours
+- coffee-and-snacks
+- Löwenstrasse
+hardware-till-discounts:
+- backoffice
+- head office
+- tape
+- takings
+- inbox
+- mismatch
+- endofday
+- close_day
+- read_tape
+- check_record
+- KNOWN_VERSIONS
+- takings_for_day
+- StoreTakings
+- TapeLine
+- TapeSale
+- tape-format
+- journal
+- JOURNAL_VERSION
+- read_day
+- from_record
+- department
+- variance
+- banked
+- nominal
+- postings
+- finance
+- uploader
+- ADR 0002
+- BRH01
+physio-late-cancellations:
+- DNA
+- did not attend
+- monthly
+- deposit
+- billing
+- charge run
+- dna_fees
+- dna_fees.sql
+- clinician_month
+- clinician_month.sql
+- status = 6
+- status IN
+- patients/policy.py
+- needs_deposit
+- deposit_decision
+- DEPOSIT_AFTER_NO_SHOWS
+- RELEASES_SLOT
+- availability
+- run_charges
+- PracticePro
+- IntEnum
+- Kestrel
+- LATE_CANCELLED

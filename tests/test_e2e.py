@@ -249,7 +249,7 @@ def test_a_whole_session_through_the_configured_hooks(session):
     sent_back = session("Stop", last_assistant_message="Done. All tests pass.")
     assert "No check has run since the last code edit" in sent_back["additionalContext"]
     assert "no check passed during this turn" in sent_back["additionalContext"]
-    assert "review the whole diff yourself" in sent_back["additionalContext"]  # billing is high consequence, and a self-review or the reviewer will do
+    assert "code-reviewer" in sent_back["additionalContext"]  # billing handles money, so it gets the reviewer
 
     session("PostToolUse", tool_name="Bash", tool_input={"command": "python3 -m pytest -q"}, tool_response={"stdout": "1 passed in 0.01s"})
     session("PostToolUse", tool_name="Agent", tool_input={"subagent_type": "occam:code-reviewer"}, tool_response={})

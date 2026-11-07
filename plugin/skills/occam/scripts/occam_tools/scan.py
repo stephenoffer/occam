@@ -36,7 +36,7 @@ LARGE_REPOSITORY_FILES = 50_000
 _BATCH_FILES = 1024
 _BATCH_BYTES = 6_000_000  # the limit is checked between batches, and analysis runs at very roughly 400 KB per CPU second
 _MAX_CACHE_BYTES = 2_000_000_000  # about 22 million lines. It can always be rebuilt, and nothing else ever shrinks it
-_CACHE_SCHEMA = f"{VERSION}-10-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
+_CACHE_SCHEMA = f"{VERSION}-12-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
 _PARSER_LANGUAGES = {"python", "notebook"}
 
 

@@ -22,7 +22,7 @@ As with the razor: nothing beyond what the requirement needs, and nothing less. 
 |---|---|---|
 | Small | Local, understood, low impact, nothing in the row below | Targeted reading, smallest complete fix, a relevant check, a short self-review, one small test for new branching or parsing logic. No design document, plan file or subagent. |
 | Standard | A behavior change or feature across a few components | Stated acceptance conditions, a reuse and dependency check, tests that can fail, a check through the real entry point, an adversarial read of the diff. |
-| High consequence | Changes the behavior of authentication, authorization, tenancy, sensitive data, money, migrations, deletion, public contracts, concurrency, large workloads, native or unsafe code, or broad architecture | Also explicit invariants and failure analysis, negative and integration tests, performance or recovery evidence where relevant, a diff self-review, a fresh reviewer for security, decisions before consequential actions. |
+| High consequence | Changes the behavior of authentication, authorization, tenancy, sensitive data, money, migrations, deletion, public contracts, concurrency, large workloads, native or unsafe code, or broad architecture | Also explicit invariants and failure analysis, negative and integration tests, performance or recovery evidence where relevant, a diff self-review, a fresh reviewer for security or money, decisions before consequential actions. |
 
 Classify by effect, not size: a one-line authorization change is high consequence, and a mechanical rename can be small. "Keep it simple" doesn't lower a requested bar, and abstract production concerns don't make a script a platform.
 
@@ -84,7 +84,7 @@ When blocked, finish the independent work and report what's missing and unverifi
 
 Beyond a small change, run `gate`, reread the request, and inspect the actual diff as a skeptical maintainer who calls out anything overcomplicated. Look for a concrete counterexample: omitted behavior, unreachable additions, needless dependencies, duplicated knowledge, hidden state, error gaps, security issues, resource growth, tests that can't fail. Don't manufacture findings or rewrite correct code to show effort.
 
-For high-consequence work, self-review the whole diff before your report, labeled so, never as independent. For auth, tenancy, secrets or cryptography, or when asked, also use a fresh reviewer if available and authorized, with the requirements and diff, not your conclusion. If policy requires independent approval, report that gate as pending.
+For high-consequence work, self-review the whole diff before your report, labeled so, never as independent. For auth, tenancy, secrets, cryptography or money, or when asked, also use a fresh reviewer if available and authorized, with the requirements and diff, not your conclusion. If policy requires independent approval, report that gate as pending.
 
 Fix confirmed in-scope defects, then re-verify, since a correction invalidates earlier approval. Allow about three rounds. If findings recur, oscillate or relocate, re-diagnose or ask one question. At the cap, report "capped, not converged" with what's unresolved.
 

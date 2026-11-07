@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 import scan_notes  # beside this script, on sys.path because Python put it there
-from classify import AUDIT_REQUEST, is_code, reads_as_read_only, visible_prompt
+from classify import AUDIT_REQUEST, asks_to_act, declines, is_code, reads_as_read_only, visible_prompt
 from shell_writes import could_lose_work, shell_edits
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
@@ -55,19 +55,21 @@ def _relative(event: dict, path: str) -> str | None:
     return os.path.relpath(absolute, cwd) if absolute.startswith(cwd + os.sep) else None
 
 
-def _introduced(event: dict, state: dict, relative: str) -> list[dict]:
+def _introduced(event: dict, state: dict, relative: str, noting: bool = False) -> list[dict]:
     """Only what this work added. Without a recorded baseline or a committed version, nothing can be attributed to it."""
     root = Path(event.get("cwd") or os.getcwd())
     known = state["baselines"].get(relative)
     if known is None:
         known = scan_notes.committed_identities(root, relative)
-    return scan_notes.introduced(root / relative, relative, known)
+    return scan_notes.introduced(root / relative, relative, known, noting=noting)
 
 
 def user_prompt(event: dict) -> dict | None:
     state = _load(event.get("session_id"))
     words = visible_prompt(event.get("prompt") or "")
-    state["read_only"] = reads_as_read_only(words)
+    state["declined"] = declines(words, bool(state.get("asked")))
+    state["asked"] = False  # answered, so a turn that never reaches Stop can't carry it into the next prompt
+    state["read_only"] = reads_as_read_only(words) or state["declined"]
     state["audit"] = bool(AUDIT_REQUEST.search(words))
     _save(event.get("session_id"), state)
     return None
@@ -79,9 +81,11 @@ def pre_tool(event: dict) -> dict | None:
     command = (event.get("tool_input") or {}).get("command") or ""
     writes = bool(named) or (event.get("tool_name") == "Bash" and could_lose_work(shell_edits(command, event), command, event))
     if state["read_only"] and writes:
-        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": (
+        reason = ("occam: you asked whether to go ahead with this work, and the user said no, so edits to project files are held for this turn. "
+                  "Answer them without making the change. If they want it later, they can say so, for example with \"go ahead\".") if state.get("declined") else (
             "occam: the current request reads as review-only, audit-only or plan-only, so edits to project files are held for this turn. "
-            "Findings go in the report. If the request did authorize edits, the user can say so, for example with \"go ahead\".")}}
+            "Findings go in the report. If the request did authorize edits, the user can say so, for example with \"go ahead\".")
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}
     root = Path(event.get("cwd") or os.getcwd())
     for relative in filter(None, (_relative(event, path) for path in named)):
         if is_code(relative) and relative not in state["baselines"]:
@@ -99,7 +103,7 @@ def post_tool(event: dict) -> dict | None:
         if relative:
             if relative not in state["edited"]:
                 state["edited"].append(relative)
-            fresh += [finding for finding in _introduced(event, state, relative) if finding["id"] not in state["noted"]]
+            fresh += [finding for finding in _introduced(event, state, relative, noting=True) if finding["id"] not in state["noted"]]
     state["noted"] += [finding["id"] for finding in fresh]
     _save(session, state)
     if not fresh:
@@ -109,9 +113,13 @@ def post_tool(event: dict) -> dict | None:
 
 
 def stop(event: dict) -> dict | None:
-    if event.get("stop_hook_active"):
-        return None
     state = _load(event.get("session_id"))
+    if not event.get("agent_id"):
+        state["asked"] = asks_to_act(event.get("last_assistant_message") or "")  # a "no" to it holds the next turn's edits
+        _save(event.get("session_id"), state)
+    # Edits are held on a read-only turn, so asking for a fix there would only send the agent into the hold.
+    if event.get("stop_hook_active") or state["read_only"]:
+        return None
     found = [finding for relative in scan_notes.within_budget(state["edited"]) for finding in _introduced(event, state, relative)]
     root = Path(event.get("cwd") or os.getcwd())
     remaining = scan_notes.still_raised_note([(root / relative, relative) for relative in state["edited"]]) if state["audit"] else None

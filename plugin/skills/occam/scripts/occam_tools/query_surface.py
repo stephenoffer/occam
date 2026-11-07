@@ -148,14 +148,22 @@ def _whole_signature(node: ast.AST) -> str:
         return ""
 
 
+def _source_of(node: ast.AST | None) -> str | None:
+    try:
+        return ast.unparse(node) if node is not None else None
+    except (AttributeError, ValueError, RecursionError):
+        return None
+
+
 def _python_entry(node: ast.AST, method: bool = False) -> dict:
     args = node.args
     positional = [*args.posonlyargs, *args.args]
     if method and positional and positional[0].arg in ("self", "cls"):
         positional = positional[1:]
     defaults_from = len(positional) - len(args.defaults)
-    params = [{"name": arg.arg, "required": index < defaults_from, "kind": "positional"} for index, arg in enumerate(positional)]
-    params += [{"name": arg.arg, "required": default is None, "kind": "keyword"} for arg, default in zip(args.kwonlyargs, args.kw_defaults)]
+    params = [{"name": arg.arg, "required": index < defaults_from, "kind": "positional", "default": _source_of(args.defaults[index - defaults_from]) if index >= defaults_from else None}
+              for index, arg in enumerate(positional)]
+    params += [{"name": arg.arg, "required": default is None, "kind": "keyword", "default": _source_of(default)} for arg, default in zip(args.kwonlyargs, args.kw_defaults)]
     return {"kind": "function", "line": node.lineno, "signature": _signature(node), "whole_signature": _whole_signature(node), "params": params, "star": bool(args.vararg), "double_star": bool(args.kwarg)}
 
 

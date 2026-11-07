@@ -3,7 +3,9 @@
 LARGE_CODEBASE_CASES = [
  ("ci-check-disabled", ".github/workflows/a.yml", "jobs:\n  t:\n    steps:\n      - run: pytest -q || true\n", "jobs:\n  t:\n    steps:\n      - run: pytest -q\n"),
  ("ci-check-disabled", ".github/workflows/b.yml", "jobs:\n  t:\n    continue-on-error: true\n    steps:\n      - run: pytest\n", "jobs:\n  t:\n    continue-on-error: false\n    steps:\n      - run: pytest\n"),
- ("ci-unpinned-action", ".github/workflows/a.yml", "steps:\n  - uses: foo/bar@main\n", "steps:\n  - uses: foo/bar@v4\n"),
+ ("ci-unpinned-action", ".github/workflows/a.yml", "steps:\n  - uses: foo/bar@main\n", "steps:\n  - uses: foo/bar@8e5e7e5ab8b370d6c329ec480221332ada57f0ab # v4\n"),
+ # The owner chose on 2026-11-07 to count a third party's tag as unpinned too, so the near miss is now a commit hash, and GitHub's own actions keep tags.
+ ("ci-unpinned-action", ".github/workflows/a.yml", "steps:\n  - uses: foo/bar@v4\n", "steps:\n  - uses: actions/checkout@v4\n"),
  ("ci-script-injection", ".github/workflows/a.yml", "steps:\n  - run: echo ${{ github.event.issue.title }}\n", "steps:\n  - run: echo $TITLE\n    env:\n      TITLE: ${{ github.event.issue.title }}\n"),
  ("ci-script-injection", ".github/workflows/c.yml", "steps:\n  - name: x\n    run: |\n      echo hi\n      echo ${{ github.head_ref }}\n", "steps:\n  - name: x\n    run: |\n      echo ${{ github.sha }}\n"),
  ("ci-untrusted-checkout", ".github/workflows/a.yml", "on: pull_request_target\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n", "on: pull_request\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"),

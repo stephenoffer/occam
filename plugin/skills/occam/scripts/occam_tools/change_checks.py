@@ -686,6 +686,124 @@ def _row_level_security(change: Change) -> Iterator[dict]:
             yield _note("table-without-rls", path, 1, f"This creates {table}, and other tables here enable row level security. Without it, this one is readable by anyone with the client key.")
 
 
+# Each language's own ways to step outside its memory safety. `-fno-sanitize-recover` makes a sanitizer build stricter, so
+# only `-fno-sanitize=` counts.
+_MEMORY_UNSAFE = {
+    "rust": re.compile(r"\bunsafe\s*(?:\{|fn\b|impl\b)|\.get_unchecked(?:_mut)?\("),
+    "c": re.compile(r"(?<![\w.])(?:memcpy|memmove|alloca)\s*\(|\breinterpret_cast\s*<"),
+    "cython": re.compile(r"\bboundscheck\(\s*False\s*\)|\bwraparound\(\s*False\s*\)"),
+    "build": re.compile(r"-fno-sanitize="),
+}
+# Linter and type checker settings. In a shared file only a linter's own section counts, and a per-file or per-module
+# exemption is the narrowed form the note asks for, so it isn't counted.
+_LINT_FILE = re.compile(r"(?:^|/)(?:\.flake8|\.?ruff\.toml|mypy\.ini|\.mypy\.ini|\.pylintrc|pylintrc|pyproject\.toml|setup\.cfg|tox\.ini)$")
+_SHARED_CONFIG = re.compile(r"(?:^|/)(?:pyproject\.toml|setup\.cfg|tox\.ini)$")
+_ESLINT_CONFIG = re.compile(r"(?:^|/)(?:\.eslintrc(?:\.\w+)?|eslint\.config\.\w+)$")
+_TSCONFIG = re.compile(r"(?:^|/)tsconfig(?:\.[\w-]+)?\.json$")
+_LINT_SECTION = re.compile(r"ruff|flake8|mypy|pylint|pyright|pydocstyle|pycodestyle|bandit|pyflakes|pytype", re.I)
+_NARROW_SECTION = re.compile(r"overrides|per-file|^mypy-", re.I)  # [[tool.mypy.overrides]] and mypy.ini's [mypy-pkg.*]
+_SECTION = re.compile(r"^\s*\[+([^\]]+)\]+\s*$")
+_KEY = re.compile(r"""^\s*["']?([\w.-]+)["']?\s*[=:](.*)$""")
+_EXEMPTING_KEY = re.compile(r"^(?:extend-ignore|ignore|disable|disable_error_code|disable-error-code|exclude|extend-exclude)$")
+_SWITCHED_OFF = re.compile(r"^(?:ignore_errors|ignore_missing_imports)$")
+_ENTRY = re.compile(r"[\w./*@-]+")
+_TS_LOOSENED = re.compile(r"""["'](strict|noImplicitAny|strictNullChecks)["']\s*:\s*false\b""")
+# An eslint rule name has a dash or a slash, which keeps `tabWidth: 0` out.
+_ESLINT_OFF = re.compile(r"""["']?([\w@/-]+)["']?\s*:\s*(?:["']off["']|0)\s*,?\s*$""", re.M)  # one class, so linear
+_NATIVE_BUILD_OR_SOURCE = re.compile(r"\.(?:pyx|pxd|pxi)$|(?:^|/)(?:CMakeLists\.txt|Makefile|meson\.build)$|\.cmake$")
+_LOWER_PRECISION = re.compile(r"\.half\(\)|\.to\([^)\n]*\b(?:b?float16|half)\b|(?:\b|_)dtype\s*=\s*[\w.]*\b(?:b?float16|half)\b|\bautocast\((?![^)\n]*enabled\s*=\s*False)"
+                              r"|\ballow_tf32\s*=\s*True\b|\bset_float32_matmul_precision\(\s*[\"'](?:high|medium)|\bquantize_(?:dynamic|per_tensor|per_channel|fx)\(|\bprepare_qat\(")  # torch's, not Decimal.quantize
+
+
+def _memory_safety_added(change: Change) -> Iterator[dict]:
+    """Code where a wrong index, length or lifetime corrupts memory without an error. Tests that pass don't show it's right,
+    so this asks for the tools that do."""
+    paths = [*change.source_files(), *(path for path in change.changed if _NATIVE_BUILD_OR_SOURCE.search(path) and not is_test_path(path))]
+    for path in dict.fromkeys(paths):
+        family = _memory_family(path)
+        pattern = _MEMORY_UNSAFE.get(family)
+        found = next((match for line in change.added(path) if not _COMMENT_LINE.match(line) for match in [pattern.search(line)]
+                      if match and (family == "build" or line[:match.start()].count('"') % 2 == 0)), None) if pattern else None  # source: not inside a string
+        if found:
+            yield _note("memory-safety-added", path, 1, f"This adds `{found.group(0).strip()[:40]}`, where a wrong index, length or lifetime corrupts memory and still passes tests. Run what checks it: Miri for Rust, AddressSanitizer and UBSan for C and C++, a bounds-checked build for Cython. State the invariant it relies on beside it.")
+
+
+def _memory_family(path: str) -> str | None:
+    if path.endswith((".pyx", ".pxd", ".pxi")):
+        return "cython"
+    if _NATIVE_BUILD_OR_SOURCE.search(path):
+        return "build"
+    language = language_of(path)
+    return "c" if language in ("c", "cpp") else language
+
+
+def _checks_relaxed(change: Change) -> Iterator[dict]:
+    """A new exemption in a linter or type checker's configuration switches a check off for everything after this change, not
+    just for it. Comparing the exemptions before and after, rather than reading added lines, keeps a removed exemption or a
+    `false` from reading as one."""
+    for path in change.changed:
+        added = sorted(_exemptions(path, change.now(path) or "") - _exemptions(path, change.before(path) or ""))
+        if added:
+            yield _note("checks-relaxed", path, 1, f"This adds lint or type-check exemptions in {path}: {', '.join(added[:3])}. Fix what they report, or narrow them to the files that need them and say why in your report.")
+
+
+def _exemptions(path: str, text: str) -> set[str]:
+    """What a configuration file exempts from its checks, one string per exempted rule, path or setting."""
+    if _TSCONFIG.search(path):
+        return {f"{name}: false" for name in _TS_LOOSENED.findall(text)}
+    if _ESLINT_CONFIG.search(path):
+        return {f"{name}: off" for name in _ESLINT_OFF.findall(text) if "-" in name or "/" in name}
+    return _ini_exemptions(text, bool(_SHARED_CONFIG.search(path))) if _LINT_FILE.search(path) else set()
+
+
+def _key_and_value(line: str, key: str) -> tuple[str, str]:
+    """A `key = value` line, or a continuation line of the key above it, as in a list spread over lines."""
+    keyed = _KEY.match(line)
+    if keyed:
+        return keyed.group(1), keyed.group(2)
+    if line[:1].isspace() or line.lstrip().startswith(("\"", "'", "]")):
+        return key, line
+    return "", ""
+
+
+def _ini_exemptions(text: str, shared: bool) -> set[str]:
+    """TOML and INI: values of exempting keys, including list items on the lines after the key."""
+    found, section, key = set(), "", ""
+    for line in text.split("\n"):
+        line = re.split(r"\s[#;]|^[#;]", line, maxsplit=1)[0]
+        header = _SECTION.match(line)
+        if header:
+            section, key = header.group(1).strip(), ""
+            continue
+        key, value = _key_and_value(line, key)
+        counts = (not shared or _LINT_SECTION.search(section)) and not _NARROW_SECTION.search(section)
+        if counts and _SWITCHED_OFF.match(key) and "true" in value.lower():
+            found.add(f"[{section}] {key}")
+        elif counts and _EXEMPTING_KEY.match(key):
+            found.update(f"[{section}] {key} {entry}" for entry in _ENTRY.findall(value) if entry.lower() not in ("true", "false"))
+    return found
+
+
+def _precision_lowered(change: Change) -> Iterator[dict]:
+    for path in change.source_files():
+        found = next((match for line in change.added(path) if not _COMMENT_LINE.match(line) and not line.lstrip().startswith(("import ", "from "))
+                      for match in [_LOWER_PRECISION.search(line)] if match), None)
+        if found:
+            yield _note("precision-lowered", path, 1, f"This lowers numeric precision (`{found.group(0)}`). Compare the results with full precision on the inputs most sensitive to rounding, against a tolerance you state, before calling it equivalent.")
+
+
+_TYPE_ESCAPE = re.compile(r"\b(?:typing\.)?cast\(|(?::|->)\s*(?:typing\.)?Any\b|\bAny\]|#\s*type:\s*ignore\[")
+
+
+def _types_silenced(change: Change) -> Iterator[dict]:
+    """A cast or an Any stops the type checker at that point, so a mismatch it would have caught goes through. More added than removed counts."""
+    for path in (path for path in change.source_files() if path.endswith((".py", ".pyi"))):
+        added = [match.group(0) for line in change.added(path) if not _COMMENT_LINE.match(line) for match in _TYPE_ESCAPE.finditer(line)]
+        removed = sum(1 for line in change.removed(path) for _ in _TYPE_ESCAPE.finditer(line))
+        if len(added) > removed:
+            yield _note("types-silenced", path, 1, f"This adds {len(added) - removed} type escapes, such as `{added[0].strip()}`. Each stops the type checker there, so fix the type it hides, or say why it's right.")
+
+
 def _scattered(change: Change) -> Iterator[dict]:
     source = [path for path in change.source_files() if not path.endswith(".md")]
     folders = {path.split("/")[0] for path in source if "/" in path}
@@ -694,7 +812,8 @@ def _scattered(change: Change) -> Iterator[dict]:
 
 
 # Reading only the diff and files it names, so these stay true on a partial read, when "nothing else mentions it" can't be known. They're cheap, so they run first.
-WITHIN_THE_DIFF: tuple[Callable[[Change], Iterator[dict]], ...] = (_agent_settings, _scattered, _guards, _generated_and_vendored, _lockfiles, _migrations, _test_changes, _snapshots, _complexity_rose, _stale_base)
+WITHIN_THE_DIFF: tuple[Callable[[Change], Iterator[dict]], ...] = (_agent_settings, _scattered, _guards, _generated_and_vendored, _lockfiles, _migrations, _test_changes, _snapshots, _complexity_rose, _stale_base,
+                                                                   _memory_safety_added, _checks_relaxed, _precision_lowered, _types_silenced)
 ACROSS_THE_REPOSITORY: tuple[Callable[[Change], Iterator[dict]], ...] = (_callers, _new_cases, _unregistered, _twins, _special_cased, _env_vars, _contracts, _deprecated_here, _owners, _boundaries, _new_hosts, _row_level_security, _reach)
 CHECKS = (*WITHIN_THE_DIFF, *ACROSS_THE_REPOSITORY)
 

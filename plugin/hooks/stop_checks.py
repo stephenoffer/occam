@@ -15,7 +15,7 @@ import occam_evidence as evidence
 import scale_notes
 import scan_notes
 import unfinished
-from classify import ASKS_FOR_REVIEW, DEPENDENCY_MANIFEST, HIGH_CONSEQUENCE, REVIEWER, SECURITY_CRITICAL
+from classify import ASKS_FOR_REVIEW, DEPENDENCY_MANIFEST, HIGH_CONSEQUENCE, MONEY, REVIEWER, SECURITY_CRITICAL
 from session_state import Session, record
 from shell_writes import absolute_path, project_root
 
@@ -45,8 +45,8 @@ def asks_for_a_review(prompt: str) -> bool:
 
 
 def needs_a_fresh_review(paths: list[str], prompt: str) -> bool:
-    """A fresh reviewer for security-critical changes or when the request asks for one. The rest of high consequence gets a self-review of the whole diff."""
-    return any(SECURITY_CRITICAL.search(path) for path in paths) or asks_for_a_review(prompt)
+    """A fresh reviewer for security and money, or when the request asks for one. Migrations and webhooks get a self-review of the whole diff."""
+    return any(SECURITY_CRITICAL.search(path) or MONEY.search(path) for path in paths) or asks_for_a_review(prompt)
 
 
 def says_it_self_reviewed(message: str) -> bool:

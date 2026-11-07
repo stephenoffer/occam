@@ -9,7 +9,7 @@ Run on 2026-11-05. Generated from the saved runs in `results/`, which are local 
 - **Regressions to report first.** On the holdout, the plugin passed 8/9 against 9/9 with no skill on both Opus 5.5 and Sonnet 5.5, and compact passed 8/9 on Opus. These cases were at the ceiling before any skill existed, so they could mainly detect harm.
 - **The Opus failures were silent regressions.** All three Opus arms first scored 9/9. A later check found one plugin run and one compact run had broken working behavior, and both had hit the time limit. A hidden check added after that catches them, and the scores above include it. No run that finished regressed. See "Regressions the acceptance tests missed".
 - **After a fix, the risk didn't recur.** The plugin passed 3/3 on a fresh case and 3/3 on the case that failed, with no run reaching the time limit, which meets the criteria set in advance. No skill also passed the fresh case 3/3, at 29% less cost and about half the time, so this doesn't show the plugin beating no skill. See "Re-evaluation after the rewrite fix".
-- **Real cost.** The plugin cost +57% on Opus and +85% on Sonnet over no skill on the holdout, and +40% on the fresh case, with about twice the turns on the holdout. The compact core cost -4%.
+- **Real cost.** The plugin cost +57% on Opus and +85% on Sonnet over no skill on the holdout, and +40% on the fresh case, with about twice the turns on the holdout. The compact core cost -4%. A Sonnet re-run after changes to lower the cost came in at +67% against +91% at the same pricing, with all 18 runs passing. By the rule fixed beforehand that's inconclusive, and other changes made since also affect it. See "Sonnet 5.5, cost re-run".
 - **One possible gain.** A blind model judge scored the skill arms' code as simpler when the run finished (3.86 against 2.44), with no difference on whether it would merge it. That is a lead from one model judge, not a measurement.
 - **The evaluated mechanisms work.** Every enforcement mechanism in the holdout version fired in real Claude Code, and trigger accuracy was 22/22. Some checks added since have not been seen acting. On smoke, a check after the last edit went from 12/14 runs to 14/14. Fallback behavior was honest when the shell or subagents were removed.
 - **Python guidance: no measured benefit, at about 23% more cost per run.** On seven new cases on Sonnet, the plugin passed 7/21 and no skill 5/19 as graded, but the plugin passed fewer on one case (0/3 against 1/3), so by the criteria set in advance it reads as not helping. With one unfair check dropped, the six cases with full runs tied at 7/18 each. The new Python references were read in only 1 of 21 plugin runs. See "Python suite". Direct pointers to the references, tested afterwards, didn't get them read either: 1 of 15 runs. A last case on moved APIs and sinks tied at 3/3, at about 35% more cost per run.
@@ -41,6 +41,33 @@ Written by a fresh subagent from scenario text, and the skill author did not rea
 | `refund-webhook-consumer` | Full plugin | 3/3 | $0.22 | 14.7 | 0/3 | 3/3 | 140 |
 
 The failure is a real defect: in one plugin run on `pricing-workbook-scale`, the agent's rewrite hung on a short-cycle input (`test_short_cycles_are_reported_and_recover`). One failure in nine doesn't show that the plugin caused it. It doesn't rule that out either.
+
+### Sonnet 5.5, cost re-run after the cost changes (post-evaluation)
+
+Run on 2026-11-06 from 22:50 to 23:00 for $2.58. The user approved it to check whether changes made to lower occam's cost showed up in a real run. The reading rule was fixed in `PREREGISTRATION.md` beforehand. It measured the user's commit `74dcd9f`, staged from a `git archive` (plugin hash `76d791a90487e331`, matching the ledger). Claude Code 2.1.319 ran it at the 5-minute cache, and the power log shows no sleep during it. These cases were seen before, so this speaks to cost only, not quality.
+
+| Case | Arm | Acceptance | Mean cost | Mean turns | Skill fired | Mean changed lines |
+|---|---|---|---:|---:|---:|---:|
+| `invoice-ledger-totals` | No skill | 3/3 | $0.09 | 4.3 | 0/3 | 60 |
+| `invoice-ledger-totals` | Full plugin | 3/3 | $0.27 | 12.7 | 3/3 | 54 |
+| `pricing-workbook-scale` | No skill | 3/3 | $0.14 | 7.0 | 0/3 | 127 |
+| `pricing-workbook-scale` | Full plugin | 3/3 | $0.16 | 10.0 | 3/3 | 142 |
+| `refund-webhook-consumer` | No skill | 3/3 | $0.09 | 4.7 | 0/3 | 136 |
+| `refund-webhook-consumer` | Full plugin | 3/3 | $0.11 | 7.3 | 3/3 | 120 |
+
+**Acceptance: 9/9 in both arms**, against the earlier 8/9 for the plugin and 9/9 for no skill.
+
+**Cost: +67% over no skill, against +91% before at the same 5-minute pricing. By the rule fixed beforehand that's inconclusive (+54% to +128%), so this doesn't show the cost fell.** Resampling the earlier runs moves this figure about 19 points by chance alone.
+
+- **Per plugin run at the 5-minute cache:** $0.179 against $0.206 before, with no skill steady at $0.107 against $0.108.
+- **Turns:** 10.0 against 13.8 before, and no skill 5.3 against 6.0. Most of the fall is on `refund-webhook-consumer`, from $0.22 and 14.7 turns to $0.11 and 7.3.
+- **What changed besides the cost changes:** plugin runs read a reference file 1 time in 9 against 6 before, and used the Read tool on repository files 0 times against 19, reading with shell commands instead. Other sessions removed the forced reference holds after the earlier run, and that may account for some of the fall. So none of it can be credited to the cost changes alone.
+
+**Mechanism, fixed beforehand:** earlier, all 3 reviewed `invoice-ledger-totals` runs wrote a report before starting their review. This time 1 of 3 did, which meets the bar of at most 1. The saving that note was for didn't appear, though. The reviewer runs in the background in both versions, so the 2 runs that started it first wrote their report while it ran, then wrote again once it finished. Long final messages per reviewed run were 2, 3 and 2, against 2, 2 and 2 before. The run with 3 reviewed twice. Reviewer cost per review was unchanged at about $0.075, at 3 to 5 commands each, so the ten-command limit never came into play. Messages carrying several tool calls didn't increase: 10 across plugin runs against 15 before.
+
+**A money corner the hidden tests miss, post-hoc:** `evals/invoice_probe.py` runs each saved query on a quantity-0 line with a huge price. Every Sonnet run got it wrong in both arms, here and before, reviewed or not, since the large price overflows to a float and breaks the total's text. On Opus, the reviewed plugin runs got it right 3 of 3 and no skill 0 of 3. The input came from a plugin run's report, so this is a lead. On the strength of it, the user kept the fresh reviewer on money changes.
+
+**Known defect in this version, not triggered here:** in `74dcd9f`, a hook re-scanned the whole command once for each program in it, so a very long command could reach the hook's 8-second limit and go unchecked. It was fixed afterwards in `d9ad0cc`. On all 399 saved Bash commands from these cases the old code took at most 1.3 ms, and it takes about 3,000 programs in one command to reach 2 seconds, so it didn't affect this run.
 
 ### Opus 5.5, primary
 

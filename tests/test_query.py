@@ -289,6 +289,29 @@ def test_api_names_what_can_break_a_caller(repo, before, after, reason):
     assert [row["name"] for row in changed] == ["f"] and reason in changed[0]["breaking"]
 
 
+@pytest.mark.parametrize("before, after, said", [
+    ("def f(a, retries=3):\n    pass\n", "def f(a, retries=0):\n    pass\n", ["default of retries changed from 3 to 0"]),
+    ("def f(a, *, strict=False):\n    pass\n", "def f(a, *, strict=True):\n    pass\n", ["default of strict changed from False to True"]),
+    # The same value, and a name whose value can't be read here, aren't reported.
+    ("def f(a, timeout=30):\n    pass\n", "def f(a, timeout=30.0):\n    pass\n", []),
+    ("def f(a, timeout=30):\n    pass\n", "def f(a, timeout=TIMEOUT):\n    pass\n", []),
+])
+def test_api_names_a_changed_default_apart_from_what_breaks(repo, before, after, said):
+    repo.write("app/mod.py", before)
+    repo.commit()
+    repo.write("app/mod.py", after)
+    changed = repo.query("api", "--base", "HEAD")["changed"]
+    assert [row["defaults"] for row in changed] == [said] and changed[0]["breaking"] == []
+
+
+def test_api_ignores_a_signature_only_reflowed(repo):
+    repo.write("src/core.ts", "export function total(a: number, b: number): number {\n  return a + b;\n}\n")
+    repo.commit()
+    repo.write("src/core.ts", "export function total(\n  a: number,\n  b: number,\n): number {\n  return a + b;\n}\n")
+    data = repo.query("api", "--base", "HEAD")
+    assert not [row for row in data["changed"] if row["breaking"]] and data["removed"] == []
+
+
 def test_api_doesnt_call_a_compatible_change_breaking(repo):
     repo.write("app/mod.py", "def f(a):\n    pass\n")
     repo.commit()

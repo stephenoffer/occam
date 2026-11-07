@@ -1,0 +1,9 @@
+[project]
+name = "kestrel-clinic"
+version = "0.9.0"
+description = "Appointments, charges and clinic figures for Kestrel Physio"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

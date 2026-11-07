@@ -535,6 +535,22 @@ def _lost_defaults(old: dict, new: dict) -> list[str]:
     return [f"default removed: {', '.join(lost)}"] if lost else []
 
 
+def _changed_defaults(old: dict, new: dict) -> list[str]:
+    """A caller that leaves the argument out gets different behavior with no change of its own. Only literals compare: `30` and `30.0` are the
+    same value, and whether `TIMEOUT` is still 30 can't be told from here, so a name or a call says nothing."""
+    now = {p["name"]: p.get("default") for p in new.get("params") or []}
+    changed = []
+    for param in old.get("params") or []:
+        before, after = param.get("default"), now.get(param["name"])
+        try:
+            differs = before is not None and after is not None and ast.literal_eval(before) != ast.literal_eval(after)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            continue
+        if differs:
+            changed.append(f"default of {param['name']} changed from {before} to {after}")
+    return changed
+
+
 def _positional(entry: dict) -> list[str]:
     return [p["name"] for p in entry["params"] if p["kind"] == "positional"]
 
@@ -556,7 +572,9 @@ def _lost_star_args(old: dict, new: dict) -> list[str]:
 def _breaking_reasons(old: dict, new: dict) -> list[str]:
     """What about a changed signature can break a caller. Without parsed parameters, all that can be said is that the text changed."""
     if "params" not in old or "params" not in new:
-        return ["signature text changed"] if _shape(old) != _shape(new) else []
+        before, after = _squeezed(_shape(old)), _squeezed(_shape(new))
+        read_whole = all(text.count("(") == text.count(")") for text in (before, after))  # a signature over several lines is read as its first
+        return ["signature text changed"] if read_whole and before != after else []
     return [reason for check in (_gone_params, _new_required, _lost_defaults, _reordered, _made_keyword_only, _lost_star_args) for reason in check(old, new)]
 
 
@@ -609,12 +627,18 @@ def api(root: Path, targets: list[str] | None, base: str | None, top: int) -> di
                 continue
             gone, fresh = _unmatched(_forms(item), _forms(after[name])), _unmatched(_forms(after[name]), _forms(item))
             for old, new in zip(gone, fresh):  # as many of each as can pair up changed, and what's left of one side went or came
-                signature.append({"where": f"{path}:{new['line']}", "name": name, "before": _shown(old), "after": _shown(new), "breaking": _breaking_reasons(old, new)})
+                signature.append({"where": f"{path}:{new['line']}", "name": name, "before": _shown(old), "after": _shown(new), "breaking": _breaking_reasons(old, new),
+                                  "defaults": _changed_defaults(old, new)})
             removed += _removed_rows(path, name, gone[len(fresh):], overload=True)
             added += [{"where": f"{path}:{new['line']}", "name": name + (new.get("signature") or ""), "kind": new["kind"]} for new in fresh[len(gone):]]
         added += [{"where": f"{path}:{form['line']}", "name": name, "kind": form["kind"]} for name, item in after.items() if name not in before for form in _forms(item)]
     return {"base": base, "files_compared": compared, "removed": removed, "changed": signature, "added": added[:top], "added_total": len(added), "top": top,
             "outside": sorted(outside.items(), key=lambda row: (-row[1], row[0])), "unread": unread, "computed": computed, "left_as_private": left_as_private}
+
+
+def _squeezed(signature: str) -> str:
+    """A signature without its layout: a formatter's line breaks and trailing commas don't change what a caller can pass."""
+    return re.sub(r"\s+|,(?=\s*[)\]}>])", "", signature)
 
 
 def _shape(entry: dict) -> str:
@@ -632,11 +656,11 @@ def _forms(entry: dict) -> list[dict]:
 
 def _unmatched(forms: list[dict], others: list[dict]) -> list[dict]:
     """Those of `forms` with no equal among `others`, each matched once."""
-    left = Counter(_shape(form) for form in others)
+    left = Counter(_squeezed(_shape(form)) for form in others)
     found = []
     for form in forms:
-        if left[_shape(form)] > 0:
-            left[_shape(form)] -= 1
+        if left[_squeezed(_shape(form))] > 0:
+            left[_squeezed(_shape(form))] -= 1
         else:
             found.append(form)
     return found
@@ -669,7 +693,7 @@ def render_api(data: dict) -> str:
     if data["changed"]:
         out += ["", "Signatures changed:"]
         for row in data["changed"][:data["top"]]:
-            out.append(f"  {row['where']}  {row['name']}  {'; '.join(row['breaking']) or 'looks compatible'}")
+            out.append(f"  {row['where']}  {row['name']}  {'; '.join(row['breaking'] + row.get('defaults', [])) or 'looks compatible'}")
             out.append(f"      was {row['before']}")
             out.append(f"      now {row['after']}")
     if data["added"]:

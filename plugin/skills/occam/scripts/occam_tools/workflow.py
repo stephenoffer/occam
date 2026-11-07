@@ -12,8 +12,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import files as filesystem
+from . import files as filesystem, manifests, query_code
 from .zero_tests import ran_no_tests
+
+_MANIFEST_SPECS = ("*pyproject.toml", "*requirements*.txt", "*requirements*.in", "*setup.py", "*setup.cfg", "*Pipfile", "*environment.yml", "*package.json", "*Cargo.toml", "*go.mod")
+# Limits `goal constrain --no` can check itself, beside a path that mustn't change.
+LIMITS = {"new-dependency": "No new dependencies", "new-file": "No new files", "api-break": "Keep the public API compatible"}
 
 
 _SCHEMA = """
@@ -215,7 +219,9 @@ def goal(root: Path, args) -> tuple[str, int]:
             return f"A goal is already recorded: {state['goal']}\n`occam goal clear` first if it's really finished with.", 2
         # No commit yet still has a base, the empty tree, or a later commit of a forbidden file couldn't be seen.
         head = (filesystem.run_git(root, "rev-parse", "HEAD") or "").strip() or (filesystem.empty_tree(root) if filesystem.in_git(root) else None)
-        _save(root, {"goal": text, "requirements": [], "constraints": [], "scope": [], "created": time.time(), "base": head, "snapshot": {} if filesystem.in_git(root) else _snapshot(root)})
+        in_git = filesystem.in_git(root)
+        _save(root, {"goal": text, "requirements": [], "constraints": [], "scope": [], "created": time.time(), "base": head,
+                     "snapshot": {} if in_git else _snapshot(root), "untracked": _untracked(root) if in_git else []})
         return f"Goal set: {text}\nAdd what must be true with `occam goal add \"...\" --check \"command\"`, and limits with `occam goal constrain`.", 0
     if args.action == "clear":
         with database(root) as db:
@@ -235,11 +241,23 @@ def goal(root: Path, args) -> tuple[str, int]:
         state = _change_goal(root, add)
         return f"R{len(state['requirements'])}: {text}" + ("" if args.check else "  (no check yet, so report it unverified until there is one)"), 0
     if args.action == "constrain":
-        if not text and not args.forbid:
+        limit = getattr(args, "no", None)
+        if args.forbid and limit:
+            return "One constraint at a time: --forbid or --no.", 2
+        if not text and not args.forbid and not limit:
             return "State the constraint.", 2
-        constraint = {"text": text or f"Don't change {args.forbid}", "forbid": _project_pattern(root, args.forbid or "") or args.forbid}
-        _change_goal(root, lambda current: current["constraints"].append(constraint))
-        return f"Constraint recorded: {constraint['text']}. Reread at every `goal verify`.", 0
+        constraint = {"text": text or LIMITS.get(limit) or f"Don't change {args.forbid}", "forbid": _project_pattern(root, args.forbid or "") or args.forbid}
+        if limit:
+            constraint["no"] = limit
+
+        def add(current: dict) -> None:
+            current["constraints"].append(constraint)
+            if limit == "new-file" and "untracked" not in current and filesystem.in_git(root):
+                current["untracked"] = _untracked(root)  # a goal from before this was recorded: what's untracked now counts as already there
+
+        _change_goal(root, add)
+        checked = "Checked" if args.forbid or limit else "Reread"
+        return f"Constraint recorded: {constraint['text']}. {checked} at every `goal verify`.", 0
     if args.action == "scope":
         _change_goal(root, lambda current: current.update(scope=[_project_pattern(root, item) for item in args.text]))
         return f"In scope: {', '.join(args.text)}. Changes elsewhere are reported as drift.", 0
@@ -342,7 +360,7 @@ def _verify(root: Path, state: dict, args) -> tuple[str, int]:
         failed += 1
         lines.append("  No requirements recorded, so nothing is verified.")
     try:
-        drift = _scope_problems(root, state, args.base)
+        drift = scope_problems(root, state, args.base)
     except filesystem.GitProblem as error:
         lines.append(f"NOT DONE: {error}")
         return "\n".join(lines), 2
@@ -368,16 +386,71 @@ def _project_pattern(root: Path, pattern: str) -> str:
     return os.path.normpath(pattern).replace(os.sep, "/")
 
 
-def _scope_problems(root: Path, state: dict, base: str | None) -> list[str]:
-    changed = _changed_files(root, state, base)
-    problems = []
+def new_dependencies(root: Path, base: str, changed: list[str], gone: list[str] | tuple = ()) -> list[str]:
+    """Packages a changed manifest declares that no manifest declared at `base`, as "name (manifest)". A manifest this change didn't touch reads
+    the same at base, so its declarations were already there, and a deleted one's are read at base, so a dependency moved between them isn't new."""
+    renamed = filesystem.removed_and_renamed(root, base)[1]
 
-    for constraint in state["constraints"]:
+    def at_base(name: str) -> str:
+        text = filesystem.file_at(root, base, renamed.get(name, name))
+        if text is None:
+            raise FileNotFoundError(name)
+        return text
+
+    touched = {*changed, *gone, *renamed.values()}
+    listed = filesystem.run_git(root, "ls-files", "-z", "--", *_MANIFEST_SPECS) or ""  # read_manifests keeps only real manifest names
+    untouched = [path for path in listed.split("\0") if path and path not in touched]
+    before, elsewhere, now = manifests.read_manifests(root, sorted(touched), at_base), manifests.read_manifests(root, untouched), manifests.read_manifests(root, changed)
+    return sorted(f"{name} ({now[ecosystem][name]})" for ecosystem in ("python", "node", "rust", "go") for name in now[ecosystem]
+                  if name not in before[ecosystem] and name not in elsewhere[ecosystem])
+
+
+def _untracked(root: Path) -> list[str]:
+    listed = filesystem.run_git(root, "ls-files", "-o", "--exclude-standard", "-z")
+    if listed is None:
+        raise filesystem.GitProblem("git couldn't list untracked files")
+    return sorted(name for name in listed.split("\0") if name)
+
+
+def _broken_limit(root: Path, base: str, limit: str, changed: list[str], already_untracked: list[str]) -> tuple[list[str], list[str]]:
+    """What in this change breaks one of LIMITS, compared with what the base held, and what couldn't be compared."""
+    base = filesystem.fork_point(root, base)  # what this branch did, not what the base has done since, as the diff of changed files reads it
+    if limit == "new-file":
+        added = filesystem.run_git(root, "diff", "--name-only", "-z", "--diff-filter=A", "--find-renames", "--ignore-submodules=dirty", base, "--")
+        if added is None:
+            raise filesystem.GitProblem(f"git couldn't list what was added since {base}")
+        # A file that was there, untracked, when the goal began isn't new, whether or not it has been added to git since.
+        return sorted(({name for name in added.split("\0") if name} | set(_untracked(root))) - set(already_untracked)), []
+    if limit == "new-dependency":
+        return new_dependencies(root, base, changed), []
+    found = query_code.api(root, None, base, top=50)
+    broken = [f"{row['where']} {row['name']} removed" for row in found["removed"]]
+    broken += [f"{row['where']} {row['name']}: {'; '.join(row['breaking'] + row.get('defaults', []))}" for row in found["changed"] if row["breaking"] or row.get("defaults")]
+    return broken, found["unread"]
+
+
+def _listed(hit: list[str]) -> str:
+    return ", ".join(hit[:5]) + (f" and {len(hit) - 5} more" if len(hit) > 5 else "")
+
+
+def _constraint_problems(root: Path, state: dict, base: str | None, changed: list[str], constraint: dict, costly: bool) -> list[str]:
+    if constraint.get("no") in LIMITS:
+        if (base or state.get("base")) is None:  # outside git a goal keeps only file sizes and times, so the base's contents are gone
+            return [f"NOT CHECKED: {constraint['text']}: needs git, to see what the base held"]
+        if constraint["no"] == "api-break" and not costly:
+            return [f"NOT CHECKED here: {constraint['text']}. `occam goal verify` checks it."]
+        hit, unread = _broken_limit(root, base or state["base"], constraint["no"], changed, state.get("untracked") or [])
+    else:
         pattern = _project_pattern(root, constraint.get("forbid") or "")
-        if pattern:
-            hit = [path for path in changed if fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("*/") + "/")]
-            if hit:
-                problems.append(f"VIOLATED: {constraint['text']}: {', '.join(hit[:5])}")
+        hit = [path for path in changed if fnmatch.fnmatch(path, pattern) or path.startswith(pattern.rstrip("*/") + "/")] if pattern else []
+        unread = []
+    return [*([f"VIOLATED: {constraint['text']}: {_listed(hit)}"] if hit else []), *([f"NOT CHECKED: {constraint['text']}: couldn't compare {_listed(unread)}"] if unread else [])]
+
+
+def scope_problems(root: Path, state: dict, base: str | None, costly: bool = True) -> list[str]:
+    """What breaks the goal's constraints and scope. Without `costly`, the public API isn't compared, since that reads every module."""
+    changed = _changed_files(root, state, base)
+    problems = [problem for constraint in state["constraints"] for problem in _constraint_problems(root, state, base, changed, constraint, costly)]
     if state["scope"]:
         scope = [_project_pattern(root, s) for s in state["scope"]]
         outside = [path for path in changed if not any(fnmatch.fnmatch(path, s) or path == s or path.startswith(s.rstrip("/") + "/") for s in scope)]

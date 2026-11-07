@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import change_checks, design, docs, files as filesystem, report, reuse, scan as scanner, surgical
 from .source import is_test_path, language_of
-from .workflow import NEEDS_A_SHELL, active_claims, claim_holder, database, needs_a_shell
+from .workflow import NEEDS_A_SHELL, active_claims, claim_holder, database, needs_a_shell, new_dependencies, scope_problems
 from .zero_tests import ran_no_tests
 
 _BLOCKING = {"truncation-marker", "fake-success", "stub-body", "stub-raise", "phantom-import", "phantom-local-import", "phantom-attribute", "undefined-name", "hardcoded-secret",
@@ -33,6 +33,7 @@ _CONCERNS = [
     ("dead-code", "No dead code left"), ("bloat", "No bloat"), ("comments", "Comments"), ("naming", "Naming"), ("performance", "Performance"),
     ("scalability", "Scalability"), ("architecture", "Architecture"), ("usability", "Usability"), ("reinvention", "Didn't reinvent"), ("language-practice", "Language practice"), ("notebook", "Notebooks"), ("docs", "Documents match the code"),
 ]
+_INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", "CONTRIBUTING.md", ".cursorrules", ".github/copilot-instructions.md")
 _JUDGMENT = [
     "Reread the original request. Is every part of it done, connected and reachable through the real entry point?",
     "Did you honor every constraint the user stated, including ones from earlier in the conversation?",
@@ -830,13 +831,14 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
         lines += ["", "NOT CHECKED, because the change is too large, time ran out or something couldn't be read: " + ", ".join(change_not_run) + "."]
     elif paths:
         lines += ["", "NOT CHECKED: what the change reaches elsewhere in the repository, which needs the diff. Run `gate` without paths for that."]
-    lines += ["", "Checks only you can make:", *[f"  ? {question}" for question in _JUDGMENT]]
+    lines += ["", "Checks only you can make:", *[f"  ? {question}" for question in [*_JUDGMENT, *_instructions_question(root, changed)]]]
     goal_line = _goal_line(root)
     if goal_line:
         lines += ["", goal_line]
+    goal_broken = "  VIOLATED: " in goal_line  # a constraint the user stated, broken, isn't ready whatever else passes
     if extras["others"]:
         lines += ["", extras["others"]]
-    failed = bool(blockers) or (strict and bool(warnings or unread))
+    failed = bool(blockers) or goal_broken or (strict and bool(warnings or unread))
     lines += ["", "NOT READY: fix these, or escalate each with a reason." if failed else "Automated checks are clear for what they could read. Finish the questions above, then report what you checked and what you didn't."]
     return "\n".join(lines), 1 if failed else 0
 
@@ -862,13 +864,29 @@ def _gate_extras(root: Path, base, changed, project, gone: tuple[str, ...], for_
         warnings.append({"rule": "module-untested", "path": source_changed[0], "line": 1, "message": f"{len(source_changed)} source files changed and no test did. Say why that's fine, or add one.", "category": "testing"})
     manifest_changes = [p for p in changed if re.search(r"(^|/)(pyproject\.toml|requirements[^/]*\.txt|package\.json|Cargo\.toml|go\.mod|setup\.py)$", p)]
     if manifest_changes:
-        warnings.append({"rule": "unused-dependency", "path": manifest_changes[0], "line": 1, "message": "Manifest changed. Check any new dependency with `occam deps --online --name ...`, and say why the existing options didn't fit.", "category": "bloat"})
+        added = _added_dependencies(root, base, changed, gone)
+        said = f"This adds {', '.join(added[:6])}{' and more' if len(added) > 6 else ''}." if added else "Manifest changed."
+        warnings.append({"rule": "unused-dependency", "path": manifest_changes[0], "line": 1, "message": f"{said} Check each new dependency exists and is the one meant with `occam deps --online --name ...`, and say why the existing options didn't fit.", "category": "bloat"})
     others = ""
     active = active_claims(root)
     claims = {path: claim_holder(active, path) for path in changed if claim_holder(active, path)}
     if claims:
         others = "Other agents hold claims on files in this diff: " + ", ".join(f"{p} ({o})" for p, o in sorted(claims.items())[:8])
     return {"warnings": warnings, "others": others}
+
+
+def _added_dependencies(root: Path, base: str | None, changed: dict, gone: tuple[str, ...]) -> list[str]:
+    try:
+        return new_dependencies(root, base or "HEAD", sorted(changed), gone)
+    except (OSError, ValueError):  # outside git, or git can't say: the note stays general
+        return []
+
+
+def _instructions_question(root: Path, changed: dict) -> list[str]:
+    """Instruction files in the folders holding this change, which can set rules a diff has to keep."""
+    folders = {"."} | {str(parent) for path in changed for parent in Path(path).parents}
+    found = sorted({str(Path(folder) / name) for folder in folders for name in _INSTRUCTION_FILES if (root / folder / name).is_file()})
+    return [f"Did you follow what {', '.join(found[:6])} ask of these files?"] if found else []
 
 
 def _goal_line(root: Path) -> str:
@@ -880,6 +898,11 @@ def _goal_line(root: Path) -> str:
             return "No goal recorded. For nontrivial work, `occam goal init` records what done means."
         total = len(state["requirements"])
         verified = sum(1 for r in state["requirements"] if r["status"] == "verified")
-        return f"Goal: {verified} of {total} requirements last verified. Run `occam goal verify` on the final state. Constraints to reread: {len(state['constraints'])}."
+        line = f"Goal: {verified} of {total} requirements last verified. Run `occam goal verify` on the final state. Constraints to reread: {len(state['constraints'])}."
     except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):  # a damaged goal store shouldn't stop the gate, or read as blockers
         return ""
+    try:  # against the goal's own base, which a gate run with --base doesn't change
+        problems = scope_problems(root, state, None, costly=False) if state.get("constraints") or state.get("scope") else []
+    except (OSError, ValueError, TypeError, KeyError) as error:  # GitProblem is a ValueError
+        problems = [f"Goal constraints NOT CHECKED: {error}"]
+    return "\n".join([line, *(f"  {problem}" for problem in problems)])

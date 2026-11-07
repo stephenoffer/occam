@@ -40,6 +40,17 @@ def write(agent, name, text):
     # From the second review: flags whose value isn't known, a wrapper, mixed environments, and a WHERE that is only a comment.
     "kubectl --as admin delete ns prod", "kubectl -v 6 delete ns prod", "kubectl --request-timeout 30s delete ns prod", "npx kubectl delete ns prod",
     "NODE_ENV=test RAILS_ENV=production rails db:reset", "export RAILS_ENV=test; export RAILS_ENV=production; rails db:drop", "psql -c 'DELETE FROM x -- WHERE id = 1'",
+    # From the third review: an export that doesn't reach the drop, sudo dropping it, settings Prisma ignores, helm's aliases, quoted and aliased tables.
+    "(cd spec/dummy && export RAILS_ENV=test && bin/rails db:reset) && bin/rails db:drop", "(export RAILS_ENV=test); rails db:drop", "bash -c 'export RAILS_ENV=test'; rails db:drop",
+    "export RAILS_ENV=test & rails db:drop", "export RAILS_ENV=test | true; rails db:drop", "export RAILS_ENV=test && sudo -u deploy rails db:drop",
+    "npx prisma migrate reset --force NODE_ENV=test", "helm del rel", "helm -n prod un rel", "psql -c 'TRUNCATE \"User\" CASCADE'", "psql -c 'UPDATE users AS u SET a = 1'",
+    "kubectl --username edit delete ns prod",
+    # From the fourth review. An export no longer excuses a reset at all: three rounds found new ways for one not to reach the command.
+    "export RAILS_ENV=test && rails db:reset", "cd api && export RAILS_ENV=test && rails db:reset", "bash -c 'export RAILS_ENV=test' && \\\n  rails db:drop",
+    "bash -c 'export RAILS_ENV=test'; rails db:drop # cleanup; done", "false && export RAILS_ENV=test; rails db:drop",
+    "RAILS_ENV=test sudo rails db:drop", "RAILS_ENV=test env -i rails db:drop", "helm --kube-as-user test uninstall rel",
+    "psql -c 'UPDATE users AS \"u\" SET a = 1'", "psql -c 'UPDATE ONLY users u SET a = 1'", "sqlcmd -Q \"UPDATE [dbo].[users] SET a = 1\"",
+    "RAILS_ENV=test env - rails db:drop", "RAILS_ENV=test env -uRAILS_ENV rails db:drop", "RAILS_ENV=test env --unset=RAILS_ENV rails db:drop", "RAILS_ENV=test exec -c rails db:drop",
 ])
 def test_a_person_confirms(agent, command):
     assert decision(agent.try_bash(command)) == "ask", command
@@ -55,9 +66,17 @@ def test_a_person_confirms(agent, command):
     "psql -c \"UPDATE users SET name = 'bob' WHERE id = 1\"", "mysql -e \"UPDATE t SET a='x' WHERE id=1\"", "psql -c 'DELETE FROM \"users\" WHERE id = 1'",
     "aws s3 rm s3://b/logs --recursive --dryrun", "kubectl auth can-i delete pods", "kubectl delete pod a --dry-run=client",
     # From the second review: a test reset chained, piped or exported, help, and a quoted `;`.
-    "cd api && RAILS_ENV=test bin/rails db:reset", "RAILS_ENV=test bundle exec rake db:reset 2>&1 | tail -20", "export RAILS_ENV=test && rails db:reset",
+    "cd api && RAILS_ENV=test bin/rails db:reset", "RAILS_ENV=test bundle exec rake db:reset 2>&1 | tail -20",
     "NODE_ENV=test npx prisma migrate reset --force && npm test", "bundle exec rake db:reset RAILS_ENV=test", "kubectl delete -h", "kubectl -n delete get pods",
     "psql -c \"UPDATE t SET a = 'x;y' WHERE id = 1\"",
+    "sudo RAILS_ENV=test rails db:reset", "FOO=1 RAILS_ENV=test rails db:reset", "nice env RAILS_ENV=test rails db:reset",
+    "psql -c 'INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET b = 2'", "mysql -e 'INSERT INTO t (a) VALUES (1) ON DUPLICATE KEY UPDATE b = 2'",
+    "psql -c 'CREATE TABLE a (id int, b int REFERENCES c ON UPDATE CASCADE ON DELETE SET NULL)'", "mysql -e 'DELETE a FROM a JOIN b ON a.id = b.id WHERE b.x = 1'",
+    # From the fifth review: a wider pattern asked about these, so the narrow one came back.
+    "psql -c 'INSERT INTO t (a, b) VALUES (1, 2)\nON CONFLICT (a) DO UPDATE\n  SET b = EXCLUDED.b'", "psql -c 'INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE  SET b = 2'",
+    "mysql -e 'CREATE TRIGGER trg BEFORE UPDATE ON users FOR EACH ROW SET NEW.updated_at = NOW()'", "psql -c 'REVOKE DELETE ON users FROM app'",
+    "psql -c 'REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public FROM readonly'", "psql -c 'CREATE TABLE a (b int REFERENCES c ON  UPDATE CASCADE ON DELETE SET NULL)'",
+    "psql -c 'UPDATE users AS u SET a = 1 WHERE u.id = 2'", "helm upgrade api ./chart",
 ])
 def test_ordinary_commands_go_ahead(agent, command):
     assert decision(agent.try_bash(command)) is None, command

@@ -9,7 +9,15 @@ The repository's layout and configured limits come first. This covers what commo
 - **`__init__.py`:** public re-exports and `__all__` at most. No I/O, heavy imports, or logic that works in only one import order.
 - **Module names:** `random.py`, `email.py`, `logging.py` or `types.py` next to a script shadow the standard library, and the failure shows up somewhere else entirely. A module named for what it serves doesn't become a dumping ground the way `utils.py`, `helpers.py` and `common.py` do.
 - **Import paths:** fix packaging rather than editing `sys.path`. An edit that works from one directory breaks from another.
-- **Dependencies:** a library declares ranges, and an application pins with a lockfile. A single-file script can declare its own with PEP 723 inline metadata. A typed library ships `py.typed`.
+- **Dependencies:** a library declares ranges, and an application pins with a lockfile. A single-file script can declare its own with PEP 723 inline metadata. A typed library ships `py.typed`. Test, lint and documentation tools go in a dev group or extra, not runtime dependencies. A package from an optional extra is imported inside the function that needs it, with an error naming the extra to install.
+
+## Environment and packaging
+
+- **Use the project's interpreter.** Run Python, tests and tools through its environment, such as `uv run`, `poetry run` or the virtualenv's `python`, and check `sys.executable` when a result surprises you.
+- **Install only into that environment, with its manager.** No global `pip install`, `sudo pip` or `--break-system-packages`. In a uv or Poetry project, `pip install` bypasses the lockfile, so use `uv add` or `poetry add` and commit the updated lockfile.
+- **Inspecting a package can run it.** `pip install`, `pip download` of an sdist and `setup.py` all execute the package's build code. Read its metadata or wheel instead, or build it in a sandbox.
+- **Supported versions.** Syntax and standard-library APIs newer than `requires-python` break users on the floor, so CI tests the floor. Check that every native dependency publishes wheels for the platforms and Python versions you support, or installs need a compiler.
+- **Type safety is claimed for what the checker covered.** Run it as CI runs it, over the package, not on one file. Prefer a dependency's own types to separate `types-*` stubs where it ships them.
 - **Configuration and logging:** read the environment once, at the edge, and pass values down. Applications configure logging at startup. Libraries only call `logging.getLogger(__name__)`, and leave handlers, `basicConfig` and `print` alone.
 
 ## Imports and dependency direction

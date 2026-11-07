@@ -1,0 +1,13 @@
+$store_name
+Till $till    Sale $sale
+$when
+----------------------------------------
+$lines
+----------------------------------------
+$total_line
+$tender_lines
+$change_line
+----------------------------------------
+Items: $items
+Returns within 28 days with receipt.
+Thank you for shopping with Brindle.

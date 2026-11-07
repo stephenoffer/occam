@@ -53,12 +53,15 @@ EXPLICIT_READ_ONLY = re.compile(r"(?<![\w-])(?<!\ba\s)(?<!\ban\s)(?:review|plan|
                                 r"|\b(?:fix|change|touch|edit|modify|update)\s+nothing\b", re.I)
 NOT_FROM_THE_USER = re.compile(r"\s*(<task-notification\b|<agent-message\b|<cross-session-message\b|Another Claude session sent a message)", re.I)
 REVIEW_OR_PLAN = re.compile(r"\b(review|audit|pull request|merge|plan how|how would you (add|build|change)|architecture)\b", re.I)
-# A missed defect here is a breach, so these get a fresh reviewer. The rest of HIGH_CONSEQUENCE gets a self-review of the whole diff, which
+# Security and money get a fresh reviewer: a missed defect there is a breach or a wrong charge, and the reviewer's one observed catch was on a money
+# path (Opus, invoice-ledger-totals, a post-hoc probe on 2026-11-06). The rest of HIGH_CONSEQUENCE gets a self-review of the whole diff, which
 # Superpowers measured as catching about as much as a review subagent at a fraction of the time (its v5.0.6 release notes). Unmeasured here.
 _SECURITY_CRITICAL_WORDS = r"auth|authn|authz|oauth|login|sessions?|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac|tenants?|tenancy|crypto|signatures?"
-_MONEY_AND_DATA_WORDS = r"billing|payments?|invoices?|checkout|refunds?|ledgers?|migrations?|migrate|webhooks?"
+_MONEY_WORDS = r"billing|payments?|invoices?|checkout|refunds?|ledgers?"
+_DATA_WORDS = r"migrations?|migrate|webhooks?"
 SECURITY_CRITICAL = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS})([/_.\-]|$)", re.I)
-HIGH_CONSEQUENCE = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS}|{_MONEY_AND_DATA_WORDS})([/_.\-]|$)", re.I)
+MONEY = re.compile(rf"(^|[/_.\-])({_MONEY_WORDS})([/_.\-]|$)", re.I)
+HIGH_CONSEQUENCE = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS}|{_MONEY_WORDS}|{_DATA_WORDS})([/_.\-]|$)", re.I)
 # Over-matching only brings back the reviewer agent, which every high-consequence file got until 2026-11-06, so this errs wide.
 ASKS_FOR_REVIEW = re.compile(r"\b(?:fresh|independent|second|separate|outside)[- ](?:review(?:er)?|look|opinion|pair of eyes)\b|\bcode[- ]?review(?:er|s)?\b"
                              r"|\bindependently reviewed\b|\b(?:a|the|another) reviewer\b|\breview(?:ed)?\s+(?:it\s+|this\s+|them\s+)?(?:with|by)\s+(?:a\s+|an\s+)?(?:sub)?agent\b"
@@ -120,3 +123,46 @@ def reads_as_read_only(words: str) -> bool:
     audit_only = bool(AUDIT_ONLY.search(words)) and not AUDIT_WITH_REPAIR.search(words)
     lifted = READ_ONLY_LIFTED.search(re.sub(r"go ahead and (?:audit|assess)\b", "", words, flags=re.I))
     return bool(explicit or READ_ONLY.search(words) or audit_only) and not lifted
+
+
+# "Shall I implement it?" "No." An agent going ahead anyway is a widely shared complaint (Hacker News, March 2026, 1,563 points).
+# A bare "no" is only a refusal after a question that asks, as its own verb, to do work. After "Should I keep the old API?" or
+# "Should I wait for your review before I commit?" a "no" means go ahead, so the verb has to come straight after the asking words.
+_WORK_VERBS = (r"(?:implement|apply|make|proceed|go ahead|start|fix|change|edit|write|add|update|commit|push|create|build|refactor|remove|"
+               r"delete|rename|migrate|patch|replace|rewrite|continue|install|deploy|merge|do (?:it|that|this|so|the)|"
+               r"open (?:a |the )?(?:pr|pull request|merge request)|take care of|handle (?:it|that|this))\b")
+_ASKING = r"\b(?:(?:shall|should|can|may) (?:I|we)|(?:do you want|would you like|want) me to|ok(?:ay)? (?:if I|to|for me to)|ready (?:for me )?to)"
+_ASKS_TO_DO = re.compile(rf"(?:{_ASKING}\s+|^\s*)(?:(?:now|just|then|quickly|go ahead and)\s+)*" + _WORK_VERBS + rf"|{_ASKING}\s*\?$", re.I)
+# A step before or beside the work: after "Should I create a branch first?" a "no" means skip it and carry on.
+_EXTRA_STEP = re.compile(r"\b(?:first|before|beforehand|after each|too|also|as well|additionally|in addition)\b", re.I)
+_DECLINE = r"(?:no|nope|nah|not yet|not now|not right now|no thanks|no thank you|don'?t|do not|hold off|hold on|wait|stop|never ?mind)"
+# Free words in a tail can't be work verbs, so "no, just tell me why and then fix it" stays a request.
+_FREE_WORD = r" (?!(?:fix|add|implement|change|update|write|make|build|create|remove|delete|use|apply|commit|push|then|and|but|instead)\b)[\w'-]+"
+_DECLINE_TAIL = (rf"(?:{_DECLINE}|thanks|thank you|please|for now|not that|(?:just )?leave it(?: as(?: it)? is| alone| for now)?|i don'?t want (?:that|it|this)|"
+                 r"keep it(?: as(?: it)? is)?|i'?ll (?:do|handle|take care of) it(?: myself)?|let'?s (?:talk|discuss)(?: it| this| that)?(?: first)?|"
+                 rf"(?:just|only) (?:explain|answer|tell me|describe|show me)(?:{_FREE_WORD}){{0,6}}|that'?s (?:fine|ok(?:ay)?)|it'?s fine|"
+                 r"(?:do not|don'?t) (?:change|touch|implement|do|edit|make|apply|fix)(?: (?:it|that|this|them|anything|any of it|the change|yet|now|for now|just yet)){0,2})")
+REFUSAL = re.compile(rf"^\W*{_DECLINE}(?:\W+{_DECLINE_TAIL})*\W*$", re.I)
+REFUSAL_LENGTH = 120  # a bare refusal is short, and the bound keeps the pattern's backtracking small
+
+# A request that could want a report, summary or notes file written. Generous on purpose: missing a hold costs less than a wrong one.
+ASKS_FOR_A_DOCUMENT = re.compile(r"\b(?:report|summar\w*|write[- ]?up|notes|document\w*|docs?|changelog|readme|markdown|status|progress)\b|\.(?:md|txt)\b", re.I)
+# The names agents give their own progress reports: upper case, Markdown, with a report word. Narrower than the scanner's `ai-report-file`
+# lead on purpose, since a wrong hold makes the agent write a real document twice: docs/workflow.md, REVIEW_CHECKLIST.md and test fixtures stay out.
+WORK_REPORT_NAME = re.compile(r"(?:^|/)(?:[A-Z0-9-]+_)*(?:SUMMARY|REPORT|COMPLETED?|COMPLETION|PROGRESS|STATUS)\.md$")
+NOT_A_WORK_REPORT = re.compile(r"(^|/)(tests?|testing|spec|__tests__|fixtures?|testdata|golden|\.github)/|(^|/)src/SUMMARY\.md$", re.I)
+
+
+def asks_to_act(message: str) -> bool:
+    """The message ends by asking whether to go ahead with work. An either-or question doesn't count, since "no" doesn't pick one."""
+    tail = (message or "")[-2000:].rstrip("*_` \t\r\n")[-400:]
+    if not tail.endswith("?"):
+        return False
+    question = re.split(r"(?<=[.!?])\s+|\n+", tail)[-1]
+    return bool(_ASKS_TO_DO.search(question)) and not re.search(r"\bor\b", question, re.I) and not _EXTRA_STEP.search(question)
+
+
+def declines(words: str, asked_to_act: bool) -> bool:
+    """A prompt that only says no, in answer to a question about doing work."""
+    words = words.strip()
+    return asked_to_act and len(words) <= REFUSAL_LENGTH and bool(REFUSAL.match(words))

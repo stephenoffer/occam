@@ -113,7 +113,7 @@ def test_every_source_cited_is_listed():
 
 
 def test_every_new_check_is_used_by_some_row():
-    tokens = {token for row in ROWS for token in tokens_of(row)}
+    tokens = {token for row in ROWS for token in tokens_of(row)} | set(re.findall(r"\bgate:[\w-]+", (ROOT / "docs" / "quality-catalog.md").read_text()))
     from occam_tools import change_checks  # noqa: PLC0415
 
     source = Path(change_checks.__file__).read_text()

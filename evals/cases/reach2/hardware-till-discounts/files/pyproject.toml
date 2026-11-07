@@ -1,0 +1,10 @@
+[project]
+name = "brindle-stores"
+version = "3.4.0"
+description = "Till, stock and head-office tools for Brindle Hardware"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "backoffice/tests"]
+addopts = "-q"

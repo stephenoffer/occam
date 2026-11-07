@@ -294,3 +294,78 @@ Ponytail (`96608e0`) and Superpowers (`22f0b46`) haven't changed since the passe
 - **Sibling search after a confirmed bug,** from Trail of Bits' variant analysis, in occam-audit's repair reference, since the audit skill's 1,400-word cap was spent too. Occam named "one of two copies fixed" as a failure, with no step for it.
 
 Not taken, for later decision: **awkward inputs as checks before coding** (Superpowers 7.0, whose evals had every implementer ship the same crash; it matches occam's own lead on `invoice-ledger-totals`, where a quantity-0 line broke totals in every no-skill run), which belongs in the core's "Know what done means" and needs about 120 characters of a budget that's spent, so it's the user's call; `gate` already asks about empty, huge and malformed input after the fact; a fresh agent disproving each serious audit finding (Anthropic's `code-review` and `claude-security`, Cloudflare), since occam-audit already asks the auditor to show nothing guards a finding, and the user approved self-review by default the same day; a script-checked coverage ledger with stable finding IDs (`claude-security`, Cloudflare), a marker for code that must stay as it is (addyosmani/agent-skills, compound-engineering), proving each lint or CI check fails on a known violation, and business-rule cards before a repair (Anthropic's `code-modernization`). A `SubagentStart` rule card (Ponytail) is being built by another session, with the user's approval. Rejected again, for the reasons above: a single quality score (desloppify), a review at every stop, persona framing.
+
+## Popular skills and developer complaints: added 2026-11-06
+
+The user asked how occam compares with the most popular skills and with what developers most dislike about AI-generated code. Two read-only subagents gathered this on the evening of 2026-11-06. **[P]** means the figure was read on the primary source, **[S]** that it came from secondary reporting. Popularity is adoption, not effectiveness, and stars can be bought: a paper at [ICSE 2026](https://conf.researchr.org/details/icse-2026/icse-2026-research-track/14/Six-Million-Suspected-Fake-Stars-on-GitHub-A-Growing-Spiral-of-Popularity-Contests) estimates about 6M suspected fake stars, with AI repositories the largest group outside malware.
+
+### The most-starred coding skills
+
+GitHub stars from the REST API at 2026-11-07 03:12 UTC, and skills.sh installs from each repository's page [P]. skills.sh counts only `npx skills` installs.
+
+| # | Repository | Stars | Installs | Close to occam |
+|---|---|---|---|---|
+| 1 | [mattpocock/skills](https://github.com/mattpocock/skills) | 316,815 | 32.0M | partly |
+| 2 | [obra/superpowers](https://github.com/obra/superpowers) | 313,664 | 3.8M, plus 1,009,371 from Claude's plugin directory | partly |
+| 3 | [affaan-m/ECC](https://github.com/affaan-m/ECC) | 298,635 | 1.6M | partly |
+| 4 | [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills) | 230,320 | 45.1K | yes |
+| 5 | [anthropics/skills](https://github.com/anthropics/skills) | 188,212 | 3.7M | no |
+| 6 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | 185,899 | 393.2K | yes |
+| 7 | [github/spec-kit](https://github.com/github/spec-kit) | 148,221 | mostly installed by its own CLI | no |
+| 8 | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | 146,216 | 914.8K | no |
+| 9 | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | 143,599 | mostly installed by pip | no |
+| 10 | [garrytan/gstack](https://github.com/garrytan/gstack) | 140,480 | 46.4K | partly |
+| 11 | [JuliusBrussee/caveman](https://github.com/JuliusBrussee/caveman) | 118,029 | 4.7M | no |
+| 12 | [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 114,066 | 106.7K | no |
+| 13 | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | 113,749 | 1.7M | yes |
+| 14 | [Leonxlnx/taste-skill](https://github.com/Leonxlnx/taste-skill) | 111,262 | 5.6M | partly |
+| 15 | [pbakaus/impeccable](https://github.com/pbakaus/impeccable) | 104,878 | 1.9M | partly |
+| 16 | [tt-a1i/archify](https://github.com/tt-a1i/archify) | 94,228 | 189.5K | no |
+| 17 | [Egonex-AI/Understand-Anything](https://github.com/Egonex-AI/Understand-Anything) | 91,126 | 36.0K | no |
+| 18 | [ruvnet/ruflo](https://github.com/ruvnet/ruflo) | 81,092 | 244.2K | no |
+| 19 | [Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec) | 74,177 | 61.0K | no |
+| 20 | [code-yeongyu/oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) | 70,751 | not checked | no |
+| 21 | [cathrynlavery/diagram-design](https://github.com/cathrynlavery/diagram-design) | 65,517 | 25.7K | no |
+| 22 | [gsd-build/get-shit-done](https://github.com/gsd-build/get-shit-done), archived | 64,155 | none | partly |
+| 23 | [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) | 60,364 | 32.3K | no |
+| 24 | [bmad-code-org/BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) | 55,085 | 452.8K | no |
+| 25 | [emilkowalski/skills](https://github.com/emilkowalski/skills) | 54,162 | 3.1M | no |
+
+Smaller projects closer to occam than most of the list: [stop-that-shit](https://github.com/lennney/stop-that-shit) (3,695 stars; scope guard, read-only review mode, file allowlist, and its own EVIDENCE.md reports no measured difference), [cc-safety-net](https://github.com/kenryu42/cc-safety-net) (1,934; shell guard), [destructive_command_guard](https://github.com/Dicklesworthstone/destructive_command_guard) (6,280; destructive git, `rm` and SQL), [aislop](https://github.com/scanaislop/aislop) (729; 50+ rules, a score, a per-edit hook), [desloppify](https://github.com/peteromallet/desloppify) (4,087), and Anthropic's [security-guidance](https://claude.com/plugins/security-guidance) plugin (241,800 directory installs; edit-time warnings and a model review of the diff at Stop).
+
+**What the popular ones share.** An 8 to 20 word pitch, often with a famous name or a character. One install step. Few concepts up front: Karpathy's file is four principles in 358 words. A before and after. Numbers above the fold where they have any. Most publish no evidence of effect. **What users complain about across the category:** tokens and plan limits (GSD, OpenSpec, gstack #2188, BMAD #511), slowness (Superpowers #743), too many questions (Superpowers #2530, mattpocock #44), skills that don't fire (agent-skills #620: 0 of 6 with code pasted in the prompt; Impeccable #744: 0 of 35 references read), and claims that don't survive outside testing (caveman #733: 65% advertised, 8.5% measured by JetBrains).
+
+### What developers complain about, and occam's answer
+
+Ranked by how often and how strongly each comes up across surveys, telemetry and threads. Most quantitative studies come from vendors selling a fix, and Faros and GitClear report correlations.
+
+| Complaint | Evidence | Occam | How firm |
+|---|---|---|---|
+| Plausible but wrong code | 66% name "almost right, but not quite", n=31,476 ([Stack Overflow 2025](https://survey.stackoverflow.co/2025/ai)) [P]. Maintainers would reject about half of test-passing SWE-bench PRs ([METR](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/)) [P] | Done-conditions, awkward inputs, `mutate` for tests that can't fail | Guidance and tools |
+| Review burden | Median time in review +441.5% ([Faros 2026](https://faros.ai/blog/ai-acceleration-whiplash-takeaways)) [P] | Reports name what wasn't checked. About a quarter as much code added in two large audits | Sent back for an unnamed install, deletion or failure |
+| Security holes | 56% then 62% security pass rate, with log injection flat at 13% ([Veracode 2026](https://www.veracode.com/?p=33104)) [P]. A client-side Supabase key with no RLS leaked 1.5M tokens ([Wiz](https://www.wiz.io/blog/exposed-moltbook-database-reveals-millions-of-api-keys)) [P] | 42 security rules in `scan`, client-visible service keys among them. `gate` names a new table without RLS where the others have it. Fresh reviewer for auth and secrets | Serious findings noted on edit, reviewer at Stop |
+| Duplication over reuse | Duplicated blocks +81% since 2023, moved code down from 21% to 3.8% ([GitClear 2026](https://www.gitclear.com/write_only_mode_ai_research)) [P] | "Use what exists" in the rule card, `query find`, clone rules in `scan`, likely duplicates by name in `gate` | Guidance and tools. A cross-file body comparison didn't fit a hook's time limit without a warm cache |
+| "Done" when it isn't | "Claude will pretend in 10 of 10 cases that task is done" ([HN](https://news.ycombinator.com/item?id=47358725)) [P]. Anthropic's Sonnet 5.5 docs say it "sometimes reports a change as done without running a check" [P] | Stop compares the final message with recorded checks | Sent back |
+| Ignored instructions | "Shall I implement it? No" ([HN, 1,563 points](https://news.ycombinator.com/item?id=47357042)) [P]. CLAUDE.md ignored in about half of sessions ([#17530](https://github.com/anthropics/claude-code/issues/17530)) [P] | **New:** a bare "no" to a question about doing work holds edits for that turn. Nested instruction files the host doesn't load are named. Rule card again after compaction | Denied for the turn |
+| Overengineering | "add a half dozen classes just to close that kind of hole" ([HN](https://news.ycombinator.com/item?id=50119223)) [P] | "Leave out features nobody asked for", overengineering rules, `gate` | Guidance and tools |
+| Deleted or weakened tests | "CC just deletes the failing tests" ([HN](https://news.ycombinator.com/item?id=46335427)) [P] | Edits that remove assertions, skip tests or suppress after a failure | Held once, report must name it |
+| Swallowed errors | "LLMs are mortally terrified of exceptions", 305 points ([HN](https://news.ycombinator.com/item?id=45530486)) [P]. Error-masking constructs +47% (GitClear) [P] | `swallowed-exception` noted on edit. **New:** a failure reported as success | Noted on edit |
+| Destroyed production | A Cursor agent deleted a production database and its backups in 9 seconds ([OECD incident](https://oecd.ai/en/incidents/2026-04-27-6153)) [P] | Destructive git, recursive deletes outside temp, `terraform destroy`, `kubectl delete`, `prisma migrate reset`, `DROP`, `DELETE` without `WHERE`, `FLUSHALL` | A person confirms |
+| Invented APIs and packages | 5.2% of commercial-model package suggestions don't exist (USENIX 2025) [S] | Phantom imports noted on edit, `deps` | Noted on edit |
+| Summary-file spam | Unrequested `SUMMARY.md` files ([Cursor forum](https://forum.cursor.com/t/why-does-claude-in-cursor-keep-creating-markdown-work-summary-files/150420)) [S] | **New:** a new upper-case report file such as `FIX_REPORT.md` the request didn't ask for | Held once per path |
+| Fake integrations | "mocks a failing HTTP request and hardcodes it to 200 OK" ([HN](https://news.ycombinator.com/item?id=43497006)) [P] | Stubs and fake success noted on edit. **New:** fallbacks to fake data, mocks in production code | Noted on edit. The new ones never send back, per `DESIGN.md`'s no-new-send-backs |
+| Token cost | Max quotas burned in about 19 minutes, March 2026 [S] | Occam itself costs more: +57% on Opus and +85% on Sonnet on the holdout. `OCCAM_HOOKS=guard` keeps only the protections | Not solved. The lean-core changes are unmeasured |
+
+Not covered: comprehension debt (an [Anthropic RCT](https://www.anthropic.com/research/AI-assistance-coding-skills) found 17% lower mastery with AI help) [P], and inconsistent conventions beyond `convention-mismatch` and `DESIGN.md`.
+
+### Taken, and not taken
+
+Taken, in the hooks: the three **new** rows above. Each is deterministic, fires only on its own trigger, and costs nothing otherwise. The new serious rules fired 0 times in 641 standard-library files and 5 times in 4,947 installed-package files, and `stub-raise` was left out after 70. A fresh review found five defects before landing, all fixed: a retried report file skipped the secret hold; the scanner's report-name pattern held `docs/workflow.md` and test fixtures, so the hold now uses a narrow upper-case pattern; a "no" after "Should I keep the old endpoint while we migrate?" was taken as a refusal, so the work verb must now be the question's own; "no don't touch the tests fix it" read as a refusal; and the fake-integration rules fired in Django's `tests.py`, `noxfile.py` and docs. A held file also saves no tokens, since the model has written it by the time the hook runs. A second review found three more, also fixed: a "no" to a preliminary step ("Should I create a feature branch first?") was taken as a refusal; upper-case fixtures, mdBook's `src/SUMMARY.md` and `.github` templates were held; and the test-path exclusion also skipped shipped code such as `src/ab_test.py`.
+
+Not taken:
+- **An interview before the work** (`grill-me`, #2 on skills.sh). The core skill asks only when a wrong guess would change the work, and unattended runs can't answer.
+- **A per-task file allowlist** (stop-that-shit). Its own evidence file reports no measured difference, and occam's scope rule covers the case without a list to maintain.
+- **A 0 to 100 quality score** (aislop, desloppify). desloppify makes the score the target, which invites gaming it, and occam treats findings as leads, not a grade.
+- **A model review of the diff at every Stop** (Anthropic security-guidance). Its cost doesn't show in Claude Code's figures, and occam's measured overhead is already its weakest point.
+- **Tables of excuses and rebuttals** (agent-skills, Superpowers). Long, and a [Signal or Noise](https://arxiv.org/abs/2608.23067) result found length-matched irrelevant text reproduced most of a skill's losses on some models.
+- **Candidates for later:** trigger evals with code pasted in the prompt (agent-skills #620), and offering the guard level as its own small install (mattpocock's git guardrails alone has 541.3K installs).

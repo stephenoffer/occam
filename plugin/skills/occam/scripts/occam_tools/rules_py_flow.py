@@ -158,7 +158,18 @@ def _csv_split(ctx, node) -> None:
             return
 
 
+# An access check names a user, a request or a permission predicate, which a lock's `self._owner` doesn't.
+_AUTH_WORD = re.compile(r"\b(?:is_(?:admin|staff|superuser|authenticated|authorized)|has_perms?|has_permissions?|has_roles?)\b"
+                        r"|\b(?:current_)?user\w*\.(?:roles?|permissions?|perms?|tenant\w*)\b|\brequest\.user\b"
+                        r"|\b(?:owner|tenant|account)_id\b.{0,80}\b(?:current_)?user\b|\b(?:current_)?user\b.{0,80}\b(?:owner|tenant|account)_id\b", re.I)
+
+
 def check_assert(ctx, node, function) -> None:
+    is_type_check = isinstance(node.test, ast.Call) and _call_name(node.test) == "isinstance"
+    if not is_type_check and _AUTH_WORD.search(ast.unparse(node.test)):
+        # Access checks are the costly case: run with -O and the check is gone while everything else still works.
+        ctx.add("assert-validation", node, "This access check is an assert, so python -O removes it and lets everyone through. Raise or deny instead.", severity="high", confidence="medium")
+        return
     params = {arg.arg for arg in function.args.args + function.args.kwonlyargs}
     if not function.name.startswith("_") and _names_in(node.test) & params:
         ctx.add("assert-validation", node, "This check disappears under python -O.")

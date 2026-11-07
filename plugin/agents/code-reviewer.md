@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Skeptical fresh-context review of a security-critical code change, such as authentication, authorization, tenancy, secrets or cryptography, or when asked for an independent review.
+description: Skeptical fresh-context review of a code change touching security or money, such as authentication, tenancy, secrets, payments or billing, or when asked for an independent review.
 tools: Read, Grep, Glob, Bash
 ---
 

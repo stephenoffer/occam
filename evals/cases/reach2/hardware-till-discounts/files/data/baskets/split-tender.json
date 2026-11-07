@@ -1,0 +1,9 @@
+{
+  "at": "2026-11-09T15:47:10",
+  "lines": [
+    {"sku": "TLS-HAM-16OZ"},
+    {"sku": "TLS-TAPE-5M"},
+    {"sku": "ELC-BULB-LED9", "qty": 4}
+  ],
+  "tenders": [{"type": "card", "pence": 2000}, {"type": "cash", "pence": 2000}]
+}

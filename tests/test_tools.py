@@ -222,6 +222,122 @@ def test_goal_constraints_and_scope_catch_drift(repo):
     assert done.returncode == 1 and "VIOLATED" in done.stdout and "DRIFT" in done.stdout
 
 
+def test_goal_limits_are_checked_not_just_reread(repo):
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests>=2"]\n')
+    repo.commit("manifest")
+    repo.write("notes.txt", "there before the goal\n")
+    repo.occam("goal", "init", "x")
+    repo.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    for limit in ("new-dependency", "new-file", "api-break"):
+        assert "Checked" in repo.occam("goal", "constrain", "--no", limit).stdout
+    # A version bump and an added private helper break none of them.
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests>=2.31"]\n')
+    repo.write("app/core.py", "def total(a, b):\n    return _sum(a, b)\n\n\ndef _sum(a, b):\n    return a + b if a > 0 and b > 0 else 0\n")
+    done = repo.occam("goal", "verify")
+    assert done.returncode == 0 and "VIOLATED" not in done.stdout, done.stdout
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests>=2.31", "left-pad"]\n')
+    repo.write("app/extra.py", "x = 1\n")
+    repo.write("app/core.py", "def total(a, b, c):\n    return a + b + c\n")
+    done = repo.occam("goal", "verify")
+    assert done.returncode == 1, done.stdout
+    assert "VIOLATED: No new dependencies: left-pad (pyproject.toml)" in done.stdout
+    assert "VIOLATED: No new files: app/extra.py" in done.stdout and "notes.txt" not in done.stdout
+    assert "VIOLATED: Keep the public API compatible: app/core.py:1 total" in done.stdout
+    assert "requests" not in done.stdout.split("No new dependencies")[1].split("\n")[0]
+    gate = repo.occam("gate").stdout
+    assert "VIOLATED: No new dependencies" in gate and "VIOLATED: No new files" in gate
+
+
+def test_goal_limits_outside_git_say_they_werent_checked(tmp_path):
+    folder = tmp_path / "plain"
+    (folder / "app").mkdir(parents=True)
+    (folder / "app" / "core.py").write_text("def total(a, b):\n    return a + b\n")
+    plain = Repo(folder, tmp_path / "state")
+    plain.occam("goal", "init", "x")
+    plain.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    plain.occam("goal", "constrain", "--no", "api-break")
+    done = plain.occam("goal", "verify")
+    assert done.returncode == 1 and "NOT CHECKED: Keep the public API compatible" in done.stdout and "ALL VERIFIED" not in done.stdout
+
+
+def test_a_file_untracked_when_the_goal_began_isnt_new_once_added(repo):
+    repo.write("notes.txt", "there before the goal\n")
+    repo.occam("goal", "init", "x")
+    repo.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    repo.occam("goal", "constrain", "--no", "new-file")
+    repo.git("add", "notes.txt")
+    assert "VIOLATED" not in repo.occam("goal", "verify").stdout
+
+
+def test_a_goal_from_before_untracked_files_were_recorded_counts_them_as_there(repo):
+    repo.write("notes.txt", "x\n")
+    repo.occam("goal", "init", "x")
+    state = repo.path.parent / "state"
+    import sqlite3
+    database = next(state.rglob("occam.db"))
+    with sqlite3.connect(database) as db:  # as a goal saved before this change looks
+        goal = json.loads(db.execute("SELECT value FROM kv WHERE key = 'goal'").fetchone()[0])
+        goal.pop("untracked")
+        db.execute("UPDATE kv SET value = ? WHERE key = 'goal'", (json.dumps(goal),))
+    repo.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    repo.occam("goal", "constrain", "--no", "new-file")
+    assert "VIOLATED" not in repo.occam("goal", "verify").stdout
+
+
+def test_a_module_that_cant_be_read_isnt_called_broken(repo):
+    repo.occam("goal", "init", "x")
+    repo.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    repo.occam("goal", "constrain", "--no", "api-break")
+    repo.write("app/core.py", "def total(a, b:\n")
+    done = repo.occam("goal", "verify").stdout
+    assert "VIOLATED" not in done and "NOT CHECKED: Keep the public API compatible: couldn't compare app/core.py" in done
+
+
+def test_moved_and_already_declared_dependencies_arent_new(repo):
+    repo.write("requirements.txt", "requests\nflask\n")
+    repo.write("web/package.json", '{"dependencies": {"left-pad": "1.0.0"}}')
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = []\n')
+    repo.commit("manifests")
+    (repo.path / "requirements.txt").unlink()
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests", "flask"]\n')
+    repo.write("package.json", '{"dependencies": {"left-pad": "1.0.0"}}')
+    done = repo.occam("gate").stdout
+    assert "This adds" not in done and "Manifest changed." in done
+
+
+def test_gate_isnt_ready_while_a_goal_constraint_is_broken(repo):
+    repo.occam("goal", "init", "x")
+    repo.occam("goal", "constrain", "--no", "new-file")
+    repo.occam("goal", "constrain", "--no", "api-break")
+    repo.write("app/extra.py", "x = 1\n")
+    done = repo.occam("gate")
+    assert done.returncode == 1 and "VIOLATED: No new files: app/extra.py" in done.stdout and "NOT CHECKED here: Keep the public API compatible" in done.stdout
+
+
+def test_goal_constrain_takes_one_kind_at_a_time(repo):
+    repo.occam("goal", "init", "x")
+    done = repo.occam("goal", "constrain", "--no", "new-file", "--forbid", "migrations/*")
+    assert done.returncode == 2 and "One constraint at a time" in done.stdout
+
+
+def test_gate_names_the_dependencies_a_change_adds(repo):
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests>=2"]\n')
+    repo.commit("manifest")
+    repo.write("pyproject.toml", '[project]\nname = "app"\ndependencies = ["requests>=2.31", "reqeusts-toolbelt"]\n')
+    done = repo.occam("gate").stdout
+    assert "This adds reqeusts-toolbelt (pyproject.toml)." in done and "requests (" not in done
+
+
+def test_gate_asks_about_the_instructions_covering_the_change(repo):
+    repo.write("CLAUDE.md", "Run make lint before finishing.\n")
+    repo.write("app/AGENTS.md", "Money is integer cents here.\n")
+    repo.write("docs/AGENTS.md", "Not about app.\n")
+    repo.commit("instructions")
+    repo.write("app/core.py", "def total(a, b):\n    return a + b\n")
+    done = repo.occam("gate").stdout
+    assert "Did you follow what CLAUDE.md, app/AGENTS.md ask of these files?" in done and "docs/AGENTS.md" not in done
+
+
 def test_goal_condition_is_usable_text(repo):
     repo.occam("goal", "init", "totals are correct")
     assert "goal verify" in repo.occam("goal", "condition").stdout

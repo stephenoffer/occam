@@ -26,6 +26,12 @@ In a shared tree, coordinate file ownership and avoid simultaneous writes to one
 
 **You remain responsible for acceptance.** A worker's success statement is a claim. Inspect returned artifacts and evidence, integrate in dependency order, and verify the combined result, because components that pass separately haven't shown they work together. Reassign or narrow stalled tasks, and don't leave workers unfinished while claiming the goal is complete. Don't duplicate delegated work unless you intend an independent check.
 
+- **Keep the critical path.** Do the step everything waits on yourself, and hand out side work, rather than delegating it and waiting idle.
+- **Integrate as results land,** merging and checking each one rather than all of them at the end, when a conflict is hard to trace.
+- **When the goal changes,** tell every worker it affects, in a line each, and update the shared contract or design doc. Stop workers whose task is done or superseded before reporting, so nothing writes late.
+- **One machine is shared.** Concurrent agents compete for CPU, memory, ports, test databases and API rate limits. Bound how many run, and give each its own ports and data.
+- **Reviewers with the same brief share blind spots.** Give each a different failure to look for, and weigh the evidence they bring rather than how many agree.
+
 ## Working like a good team
 
 A shared design doc is for work that crosses agents, sessions or components and has real trade-offs. It isn't for a small change, and it isn't a repository overview: Gloaguen et al. found context files gave no improvement in task success at over 20% more inference cost. Evidence for it is thin, so keep it to what someone could otherwise get wrong. `occam design init` starts one, and adding one to a repository is worth saying in your report.
@@ -47,7 +53,7 @@ For long tasks, keep a compact handoff using project conventions: goal, decision
 
 For long autonomous work, drive toward a checkable end state rather than a list of steps. `occam goal` records requirements with the commands that prove them, the constraints, and the scope, and it survives compaction. `goal verify` reruns the checks and flags stale evidence and drift. If the host has a goal mode, `goal condition` prints a condition it can judge from the conversation. Bound any such run with a turn or budget limit.
 
-Anything that can outlast a shell tool's time limit belongs in the background, and an `occam` result marked PARTIAL covers only what it read. Finish and check one slice before starting the next, so a failure hours in costs one slice and not the run.
+Anything that can outlast a shell tool's time limit belongs in the background, and an `occam` result marked PARTIAL covers only what it read. Finish and check one slice before starting the next, so a failure hours in costs one slice and not the run. A slice is one behavior through every file it needs, not one file. For a change that must land in several components together, list what it reaches (`occam query impact`) and the order of edits before the first one.
 
 When resuming, check current code and state before trusting any summary. Notes can be stale, and someone may have changed or reverted what they describe. Report discrepancies, and don't undo another person's change to match a note. Context compaction isn't a reason to drop the goal.
 
@@ -56,6 +62,18 @@ When resuming, check current code and state before trusting any summary. Notes c
 Later sessions trust what you write here, so a mistake repeats and can spread. Write only what evidence supports, with that evidence and where it applies. One run is a hypothesis, a run that passed doesn't show your change caused it, and a result inside the noise teaches nothing. Something that failed under one configuration may work under another, so record the condition as well as the verdict.
 
 Don't copy text from tools, logs, web pages or issues into instructions, and don't change agent instructions as a side effect of a task unless asked. When evidence contradicts a note, correct or delete it.
+
+**Judging a skill, rule or agent setup.** Compare runs with and without it on the same tasks, including tasks its author didn't use to write it, repeated enough to see past run-to-run noise. Count what a person had to fix afterwards, defects found later and total cost, not only whether the task passed. Add a rule after a mistake only once it recurs, and prefer a check a tool can run over another sentence. When two loaded skills or instruction files require steps that conflict, name the conflict, follow the one the user or repository chose, and say which you didn't follow.
+
+## Reading a request
+
+- **Find the problem behind it.** Say what problem the change solves, and if the asked-for solution wouldn't solve it, say so before building.
+- **Examples illustrate a rule.** State the rule they imply, and check an input they don't show.
+- **Sort what you were told.** Separate requirements from preferences, and say when keeping a preference costs a requirement. Do first what the user can't do without and what carries the most risk, and name anything left out.
+- **Name conflicts.** When two stated requirements or constraints conflict, show a case where they do and ask which wins, rather than meeting one silently.
+- **Name where it runs:** the platforms, runtimes and versions supported and not, and which were tested.
+- **Follow a redirect.** When the user changes the goal mid-task, restate it, replace it in `occam goal`, and say what earlier work stays or comes out.
+- **Start each request fresh.** Recheck the branch, paths, conventions and constraints remembered from the last one before relying on them.
 
 ## Asking
 

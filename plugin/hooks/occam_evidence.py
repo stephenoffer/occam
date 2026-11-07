@@ -49,29 +49,32 @@ SHELL_RUNS_DOWNLOAD = re.compile(r"\b(ba|z|da|k)?sh\b[^;&|\n]{0,200}(<\(|\$\()\s
 _TERRAFORM = (("destroy",), ("apply", "-auto-approve"), ("apply", "--auto-approve"), ("state", "rm"), ("state", "push"))
 _RAILS = (("db:drop",), ("db:reset",), ("db:schema:load",))
 _PRISMA = (("migrate", "reset"), ("--force-reset",), ("--accept-data-loss",))
-HARD_TO_UNDO = {"terraform": _TERRAFORM, "tofu": _TERRAFORM, "terragrunt": _TERRAFORM, "pulumi": (("destroy",),), "kubectl": (("delete",),), "helm": (("uninstall",), ("delete",)),
+HARD_TO_UNDO = {"terraform": _TERRAFORM, "tofu": _TERRAFORM, "terragrunt": _TERRAFORM, "pulumi": (("destroy",),), "kubectl": (("delete",),), "helm": (("uninstall",), ("delete",), ("del",), ("un",)),
                 "gcloud": (("delete",),), "az": (("delete",),), "doctl": (("delete",),), "fly": (("destroy",),), "flyctl": (("destroy",),), "heroku": (("apps:destroy",), ("pg:reset",)), "vercel": (("remove",), ("rm",)),
                 "railway": (("down",), ("delete",)), "supabase": (("db", "reset"),), "prisma": _PRISMA, "rails": _RAILS, "rake": _RAILS, "dropdb": ((),),
                 "docker": (("system", "prune"), ("volume", "rm"), ("volume", "prune"), ("compose", "down", "-v"), ("compose", "down", "--volumes")), "docker-compose": (("down", "-v"), ("down", "--volumes"))}
 _RUNS_ANOTHER_PROGRAM = {"bundle", "pnpm", "yarn", "npx", "bunx", "uv", "poetry"}
 # `help` counts only as the subcommand, and `-h` never: for redis-cli, dropdb and psql it names a host. A dry run says so with a value that means it.
 _ONLY_LOOKS = re.compile(r"--help|--dry-?run(?:=(?:client|server|true|all))?|--preview-only", re.I)
-_SUBCOMMAND_MUST_BE = {"kubectl": ("delete",), "helm": ("uninstall", "delete")}
+_SUBCOMMAND_MUST_BE = {"kubectl": ("delete",), "helm": ("uninstall", "delete", "del", "un")}
 # The subcommand is the first of these, so a flag's value is skipped whether or not the flag is known to take one.
 _SUBCOMMANDS = {"kubectl": {"annotate", "api-resources", "api-versions", "apply", "attach", "auth", "autoscale", "certificate", "cluster-info", "completion", "config", "cordon", "cp",
                             "create", "debug", "delete", "describe", "diff", "drain", "edit", "events", "exec", "explain", "expose", "get", "help", "kustomize", "label", "logs", "patch",
                             "plugin", "port-forward", "proxy", "replace", "rollout", "run", "scale", "set", "taint", "top", "uncordon", "version", "wait"},
-                "helm": {"completion", "create", "delete", "dependency", "env", "get", "help", "history", "install", "lint", "list", "ls", "package", "plugin", "pull", "push",
-                         "registry", "repo", "rollback", "search", "show", "status", "template", "test", "uninstall", "upgrade", "verify", "version"}}
-_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context", "--as", "--as-group", "--token", "-v"}
+                "helm": {"completion", "create", "del", "delete", "dependency", "env", "get", "help", "history", "install", "lint", "list", "ls", "package", "plugin", "pull", "push",
+                         "registry", "repo", "rollback", "search", "show", "status", "template", "test", "un", "uninstall", "upgrade", "verify", "version"}}
+_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context", "--as", "--as-group", "--token", "-v", "--username", "--password", "--request-timeout", "--cache-dir", "--tls-server-name",
+                  "--kube-as-user", "--kube-as-group", "--kube-token", "--kube-apiserver", "--kube-ca-file", "--kube-tls-server-name", "--registry-config", "--repository-config", "--repository-cache"}
 _AWS_DESTRUCTIVE = re.compile(r"(?:delete|terminate|deregister|purge)-[\w-]+")
 _ENVIRONMENT = re.compile(r"(?:RAILS_ENV|RACK_ENV|APP_ENV|NODE_ENV)=(.*)")
+_PASSES_THE_ENVIRONMENT = {"env", "sudo", "doas", "nice", "nohup", "time", "command", "exec"}
+_DROPS_THE_ENVIRONMENT = {"sudo", "doas", "su"}
 _WINDOWS_RECURSIVE_DELETE = re.compile(r"(?:^|[\s;&|(])(?:rmdir|rd|del|erase)\s+(?:/\w\s+)*/s\b(?:\s+/\w)*\s+(\S+)|\bRemove-Item\b(?=[^;&|\n]*\s-Recurse\b)((?:\s+-\w+)*)\s+(?!-)(\S+)", re.I)
 _TOO_MUCH_ON_WINDOWS = re.compile(r"^(?:[A-Za-z]:[\\/]?|[\\/]|~.*|%USERPROFILE%.*|\$env:USERPROFILE.*|\$HOME.*|\.\.?[\\/]?|\*)$", re.I)
 _QUOTED_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
 SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "mongosh", "mongo"}
-DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate\s+(?:table\s+)?\w+|dropDatabase)\b", re.I)
-_CHANGES_ROWS = re.compile(r"\b(?:delete\s+from|update\s+[\w.\"`]+\s+set)\b", re.I)  # anywhere in the statement, so a leading comment can't hide it
+DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate(?=\s+(?:table\s+)?[\w\"`\[])|dropDatabase)\b", re.I)
+_CHANGES_ROWS = re.compile(r"\b(?:delete\s+from|update\s+(?:only\s+)?[\w.\"`\[\]]+(?:\s+(?:as\s+)?[\w\"`]+)?\s+set)\b", re.I)  # anywhere in the statement, so a leading comment can't hide it
 # One left open runs to the end, as the database reads it, which also keeps this linear on a command full of openers.
 _SQL_TEXT_AND_COMMENTS = re.compile(r"'(?:[^']|'')*(?:'|\Z)|\"(?:[^\"]|\"\")*(?:\"|\Z)|--[^\n]*|/\*.*?(?:\*/|\Z)", re.S)
 NETWORK_CLIENTS = {"curl", "wget", "http", "https", "nc", "ncat"}
@@ -228,21 +231,33 @@ def _subcommand(program: str, args: list[str]) -> str | None:
     return None
 
 
+def _own_settings(words: list[str]) -> dict[str, str]:
+    """RAILS_ENV and the like as this command sets them: in front of the program, or as an argument for rails and rake, which read them there.
+    `sudo`, `doas`, `su` and `env -i` or `-u` start the environment again, so what came before them doesn't reach the program."""
+    settings: dict[str, str] = {}
+    reads_arguments = any(os.path.basename(word) in ("rails", "rake") for word in words)
+    in_front, after_env, after_exec = True, False, False
+    for word in words:
+        plain = word.replace('"', "").replace("'", "")
+        match = _ENVIRONMENT.fullmatch(plain)
+        name = os.path.basename(plain)
+        if name in _DROPS_THE_ENVIRONMENT or (after_env and (plain == "-" or re.fullmatch(r"-[a-zA-Z]*[iu].*|--(?:ignore-environment|unset)\b.*", plain))) \
+                or (after_exec and re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", plain)):
+            settings.clear()
+        if match and (in_front or reads_arguments):
+            settings[plain.split("=", 1)[0]] = match.group(1)
+        elif not re.match(r"\w+=", plain) and not plain.startswith("-") and name not in _PASSES_THE_ENVIRONMENT:
+            in_front = False
+        after_env = name == "env" or (after_env and plain.startswith("-"))
+        after_exec = name == "exec" or (after_exec and plain.startswith("-"))
+    return settings
+
+
 def in_a_test_environment(commands: list[list[str]]) -> list[bool]:
-    """For each simple command, whether it runs with RAILS_ENV, NODE_ENV or the like set to `test`, by its own assignments and arguments or an earlier `export`.
-    Each command answers for itself, so a test reset chained to a real drop doesn't excuse the drop."""
-    exported: dict[str, str] = {}
-    answers = []
-    for words in commands:
-        own = dict(exported)
-        for word in words:
-            match = _ENVIRONMENT.fullmatch(word.replace('"', "").replace("'", ""))
-            if match:
-                own[match.group(0).split("=", 1)[0]] = match.group(1)
-        if words[:1] == ["export"]:
-            exported = own
-        answers.append(bool(own) and all(value == "test" for value in own.values()))  # NODE_ENV=test beside RAILS_ENV=production still asks
-    return answers
+    """For each simple command, whether it runs with RAILS_ENV, NODE_ENV or the like set to `test` by its own settings.
+    An earlier `export` doesn't count: whether it reaches the command depends on subshells, nested shells and branches
+    that three rounds of reviews found new ways around, and asking once for a test reset costs far less than missing a real one."""
+    return [bool(own) and all(value == "test" for value in own.values()) for own in map(_own_settings, commands)]  # NODE_ENV=test beside RAILS_ENV=production still asks
 
 
 def _empties_a_store(name: str, lowered: list[str]) -> str | None:

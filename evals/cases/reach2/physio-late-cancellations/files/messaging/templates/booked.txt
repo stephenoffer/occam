@@ -1,0 +1,1 @@
+Hi $first_name, you're booked in with $clinician at Kestrel Physio $clinic on $when. To change or cancel, call us on $clinic_phone.

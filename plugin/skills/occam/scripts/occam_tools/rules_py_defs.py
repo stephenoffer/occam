@@ -15,6 +15,10 @@ from .py_helpers import (
 
 
 FILE_SINKS = {"open", "os.path.join", "send_file", "Path", "pathlib.Path", "FileResponse", "os.remove", "shutil.copy"}
+FETCHER = re.compile(r"^(?:requests|httpx|aiohttp|urllib\.request|urllib3)\.(?:get|post|put|patch|delete|head|request|stream|urlopen)$|^urlopen$")
+# A `session` or `client` is an HTTP one only in a module that imports an HTTP library: `client.get(key)` is just as often Redis.
+SESSION_FETCHER = re.compile(r"^(?:self\.)?(?:\w+_)?(?:session|client|http)\.(?:get|post|put|patch|delete|head|request|stream)$")
+HTTP_IMPORT = re.compile(r"^[ \t]*(?:import|from)[ \t]+(?:requests|httpx|aiohttp)\b", re.M)
 REQUEST_SOURCE = re.compile(r"'(?:query|query_params|args|form|params|request|req|GET|POST|json|body)'")
 CHECKING_CALL = re.compile(r"(?:assert|check|verify|expect|ensure|validate|raises|fail|should)", re.I)
 ENCRYPTION_NAME = re.compile(r"(?:^|_)(?:encrypt|decrypt|cipher|obfuscate)", re.I)
@@ -276,6 +280,17 @@ def _route(ctx, node, decorators: list[str]) -> None:
             _handler_call(ctx, inner, node.name)
             if _call_name(inner) in FILE_SINKS and from_request & {n for argument in inner.args for n in _names_in(argument)}:
                 ctx.add("path-traversal", inner, f"{_call_name(inner)}() uses a value taken from the request.")
+            if _fetches_from(ctx, inner, from_request):
+                ctx.add("ssrf", inner, f"{_call_name(inner)}() fetches a URL taken from the request.")
+
+
+def _fetches_from(ctx, call: ast.Call, from_request: set[str]) -> bool:
+    """An HTTP call whose URL, its first argument or `url=`, is a value the handler took from the request."""
+    name = _call_name(call)
+    if not (FETCHER.match(name) or (SESSION_FETCHER.match(name) and HTTP_IMPORT.search(ctx.text))):
+        return False
+    fetched = [*call.args[:1], *(keyword.value for keyword in call.keywords if keyword.arg == "url")]
+    return bool(from_request & {n for argument in fetched for n in _names_in(argument)})
 
 
 def _names_from_request(node) -> set[str]:

@@ -1,0 +1,8 @@
+{
+  "at": "2026-11-09T11:02:41",
+  "lines": [
+    {"sku": "GDN-COMPOST-50", "qty": 3},
+    {"sku": "GDN-GLOVES-L"}
+  ],
+  "tenders": [{"type": "card", "pence": 2447}]
+}

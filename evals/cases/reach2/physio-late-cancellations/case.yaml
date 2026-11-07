@@ -1,0 +1,9 @@
+schema_version: "1.1"
+name: physio-late-cancellations
+tags: [reach2]
+expected_outcome: |
+  Appointments cancelled less than 24 hours ahead are recorded as late cancellations that free the slot
+  and otherwise count as no-shows everywhere: the nightly missed-appointment fee, the online-booking deposit
+  rule and the DNA figures in the monthly clinic report. Cancelling 24 hours or more ahead is unchanged.
+context:
+  scaffold_script: place-files.sh

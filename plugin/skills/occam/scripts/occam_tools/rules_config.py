@@ -35,6 +35,13 @@ _ALLOWED_TO_FAIL = re.compile(r"^[ \t]*(?:continue-on-error|allow_failure):[ \t]
 _RUNS_A_CHECK = re.compile(rf"{_RUN_PREFIX}{_TEST_COMMAND}", _M)
 LINES_AROUND_A_STEP = 6
 _BRANCH_REF = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:\s*[\w.-]+/[\w./-]+@(main|master|latest|HEAD|dev|develop)\s*(?:#.*)?$", _M)
+# A third party's tag can be moved to other code by whoever controls the action, so only a full commit hash stays put. GitHub's own `actions/`
+# and `github/` aren't third parties. The owner's decision, 2026-11-07.
+_TAG_REF = re.compile(r"^[ \t]*(?:-[ \t]*)?uses:\s*(?!(?:actions|github)/)([\w.-]+/[\w./-]+)@(?!(?:main|master|latest|HEAD|dev|develop)\b)(?![0-9a-f]{40}\b)([\w.-]+)\s*(?:#.*)?$", _M)
+PYPROJECT = re.compile(r"(^|/)pyproject\.toml$")
+_TOOL_TABLE = re.compile(r"^\[tool\.(black|ruff|isort|flake8)\]\s*$", _M)
+_LINE_LENGTH = re.compile(r"^(?:line[-_]length|max[-_]line[-_]length)\s*=\s*(\d+)", _M)
+_ISORT_PROFILE = re.compile(r"^profile\s*=\s*[\"']([\w-]+)[\"']", _M)
 # What a stranger writes, expanded into the script before the shell starts.
 _STRANGER_TEXT = r"github\.(?:event\.(?:issue\.(?:title|body)|pull_request\.(?:title|body|head\.ref|head\.label)|comment\.body|review\.body|review_comment\.body|discussion\.(?:title|body)|head_commit\.(?:message|author\.\w+)|commits\[[^\]]*\]\.(?:message|author\.\w+))|head_ref)"
 _RUN_LINE = re.compile(r"^[ \t]*(?:-[ \t]*)?(?P<key>run):[ \t]*(?P<block>[|>][-+]?[ \t]*$)?(?P<inline>[^\n]*)")
@@ -99,6 +106,8 @@ def _workflow_findings(path: str, text: str) -> Iterator[tuple]:
         return
     for match in _BRANCH_REF.finditer(text):
         yield "ci-unpinned-action", _line(text, match.start()), f"This runs whatever {match.group(1)} holds today, with this workflow's token.", {}
+    for match in _TAG_REF.finditer(text):
+        yield "ci-unpinned-action", _line(text, match.start()), f"{match.group(1)}@{match.group(2)} runs whatever that tag points to when the job starts, and its owner can move it.", {}
     yield from _run_injections(text)
     if _PR_TARGET.search(text):
         for match in _HEAD_CHECKOUT.finditer(text):
@@ -233,9 +242,28 @@ def findings(path: str, text: str) -> Iterable[tuple]:
         yield from _instruction_findings(path, text)
     elif YAML_FILE.search(path):
         yield from _yaml_findings(text)
+    elif PYPROJECT.search(path):
+        yield from _formatter_conflicts(text)
     elif ENV_FILE.search(path):
         for match in CLIENT_VISIBLE_SECRET.finditer(text):
             yield "secret-in-client-bundle", _line(text, match.start()), f"{match.group(0)[:50]} is compiled into what the browser downloads.", {}
+
+
+def _formatter_conflicts(text: str) -> Iterator[tuple]:
+    """Two formatters set to different widths rewrite each other's output, and isort left at its defaults beside black does too. A linter that
+    allows longer lines than the formatter writes conflicts with nothing. Only within this file."""
+    headers = [found.start() for found in re.finditer(r"^\[", text, _M)] + [len(text)]
+    tables = {}  # each table runs to the next header
+    for match in _TOOL_TABLE.finditer(text):
+        tables[match.group(1)] = (match.start(), text[match.end():next(start for start in headers if start > match.start())])
+    formatters = {"black"} | ({"ruff"} if re.search(r"^\[tool\.ruff\.format\]", text, _M) else set())
+    lengths = {tool: int(found.group(1)) for tool, (_, body) in tables.items() if tool in formatters for found in [_LINE_LENGTH.search(body)] if found}
+    if len(set(lengths.values())) > 1:
+        tool = max(lengths, key=lambda name: tables[name][0])
+        yield "formatter-conflict", _line(text, tables[tool][0]), "Both format this code, at different widths: " + ", ".join(f"{name} {size}" for name, size in sorted(lengths.items())) + ". Use one value.", {}
+    isort = tables["isort"][1] if "isort" in tables else ""
+    if "black" in tables and isort and not _ISORT_PROFILE.search(isort) and not re.search(r"^multi_line_output\s*=", isort, _M):
+        yield "formatter-conflict", _line(text, tables["isort"][0]), "black is set up here, and isort at its defaults wraps imports in a way black then rewrites. Set `profile = \"black\"`.", {}
 
 
 def migration_findings(path: str, text: str) -> Iterator[tuple]:

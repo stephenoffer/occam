@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import manifests
+from .source import is_test_path
 
 RUST_ROOTS_SET = manifests.RUST_ROOTS
 JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".json", ".d.ts")
@@ -55,6 +56,9 @@ def _python_import(project, path, item, declared, has_manifest, stdlib, modules,
         elif "." in module and top in {p.split("/")[0] for p in project.files if p.endswith(".py")} and modules.get(top) and not item.get("optional"):
             project.add("phantom-local-import", path, line, f"'{module}' isn't a module in this repository.")
         return
+    private = next((part for part in [*module.split("."), *(item.get("names") or [])] if part.startswith("_") and not part.startswith("__")), None)
+    if private and not is_test_path(path):
+        project.add("private-import", path, line, f"{private} is internal to {top}, so any release can change or remove it. Use its public API, or pin the version and test the workaround.")
     if is_declared or item.get("optional") or (top, path) in reported:
         return
     reported.add((top, path))

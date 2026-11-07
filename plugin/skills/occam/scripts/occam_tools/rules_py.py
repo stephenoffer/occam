@@ -9,7 +9,7 @@ import ast
 import re
 from typing import Iterable
 
-from . import rules_py_agent, rules_py_defs as defs, rules_py_flow as flow
+from . import rules_py_agent, rules_py_resources, rules_py_semantics, rules_py_defs as defs, rules_py_flow as flow
 from .py_helpers import (
     COMPREHENSIONS,
     DYNAMIC_NAMESPACE, FUNCTION_NODES, Found, HTTP_MODULES, HTTP_VERBS, KNOWN_NAMES, LOOP_NODES, Binding,
@@ -503,4 +503,4 @@ def analyze(text: str, path: str, code_view: str, comment_lines: set, is_test: b
         facts = analyzer.run()
     except RecursionError as error:
         return analyzer.findings, {}, f"RecursionError: {error}"
-    return [*analyzer.findings, *rules_py_agent.findings(tree, path, is_test, is_script, comment_lines, text)], facts, None
+    return [*analyzer.findings, *rules_py_agent.findings(tree, path, is_test, is_script, comment_lines, text), *rules_py_semantics.findings(tree, path, is_test, text), *rules_py_resources.findings(tree, path, is_test, text)], facts, None

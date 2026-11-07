@@ -75,10 +75,10 @@ Test package imports and public exports. When packaging is affected, test the bu
 
 | When | Read |
 |---|---|
-| Modules, file size, splitting, circular imports, base classes, large codebases | [structure](references/structure.md) |
+| Modules, imports, packaging, environments, size, splitting, inheritance, large codebases | [structure](references/structure.md) |
 | Names, docstrings, comments, `noqa` and `type: ignore` | [naming and docs](references/naming-and-docs.md) |
 | Writing or judging tests | [testing](references/testing.md) |
 | APIs from memory, untrusted input | [APIs and security](references/apis-and-security.md) |
-| TaskGroup, threads, subprocess, pandas, text, stubs and extensions | [runtime](references/runtime.md) |
+| Async, threads, subprocess, values and time, memory, pandas, stubs | [runtime](references/runtime.md) |
 | Auditing, alongside `occam-audit` if available | [auditing](references/auditing.md) |
 | Notebooks and code cells | [notebooks](references/notebooks.md) |

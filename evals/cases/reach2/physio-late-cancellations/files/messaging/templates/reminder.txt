@@ -1,0 +1,1 @@
+Reminder: $clinician at Kestrel Physio $clinic tomorrow, $when. Please wear loose clothing. Need to cancel? Call $clinic_phone.

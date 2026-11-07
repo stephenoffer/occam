@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Import names that differ from their distribution names.
@@ -158,8 +159,10 @@ def looks_frozen(root: Path | None, name: str) -> bool:
     return len(lines) >= 30 and sum("==" in line for line in lines) >= 0.8 * len(lines)
 
 
-def read_manifests(root: Path, files: list[str]) -> dict:
-    """Everything the repository declares it depends on, by ecosystem."""
+def read_manifests(root: Path, files: list[str], read: Callable[[str], str] | None = None) -> dict:
+    """Everything the repository declares it depends on, by ecosystem. `read` gives a file's text by its name, from disk unless told otherwise,
+    and raises OSError for one that isn't there."""
+    read = read or (lambda name: (root / name).read_text(errors="replace"))
     python: dict[str, str] = {}
     python_locked: set[str] = set()
     node: dict[str, str] = {}
@@ -173,15 +176,15 @@ def read_manifests(root: Path, files: list[str]) -> dict:
         path = root / name
         try:
             if base == "pyproject.toml":
-                python.update(dict.fromkeys(_pyproject(path.read_text(errors="replace")), name))
+                python.update(dict.fromkeys(_pyproject(read(name)), name))
                 python_locked |= _locked(path.parent)
             elif re.fullmatch(r"(?:.*requirements.*|constraints.*)\.(?:txt|in)", base) or name.startswith("requirements/"):
-                for line in path.read_text(errors="replace").split("\n"):
+                for line in read(name).split("\n"):
                     requirement = _requirement(line)
                     if requirement:
                         python[requirement] = name
             elif base in ("setup.py", "setup.cfg"):
-                text = path.read_text(errors="replace")
+                text = read(name)
                 region = re.search(r"install_requires\s*[=:]\s*(\[.*?\]|\n(?:[ \t]+.*\n)+)", text, re.S)
                 if region:
                     for quoted in _QUOTED.findall(region.group(1)) or region.group(1).split("\n"):
@@ -191,22 +194,22 @@ def read_manifests(root: Path, files: list[str]) -> dict:
                 elif base == "setup.py" and re.search(r"install_requires\s*=", text):
                     python.update(_computed_requirements(path, name))
             elif base in ("Pipfile", "environment.yml", "environment.yaml", "conda.yaml"):
-                for line in path.read_text(errors="replace").split("\n"):
+                for line in read(name).split("\n"):
                     match = re.match(r"\s*-?\s*([A-Za-z][\w.-]+)\s*(?:=|$|[<>~!])", line)
                     if match:
                         python[normalize_dist(match.group(1))] = name
             elif base == "package.json":
-                document = json.loads(path.read_text(errors="replace"))
+                document = json.loads(read(name))
                 for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies") if isinstance(document, dict) else ():
                     table = document.get(key)
                     node.update(dict.fromkeys(table if isinstance(table, (dict, list)) else (), name))
             elif base in ("tsconfig.json", "jsconfig.json"):
-                text = re.sub(r"(?m)^\s*//.*$", "", path.read_text(errors="replace"))
+                text = re.sub(r"(?m)^\s*//.*$", "", read(name))
                 aliases.update(key.split("/")[0] for key in re.findall(r'"([@~#$\w/-]+)/\*"\s*:', text))
             elif base == "Cargo.toml":
-                rust.update(dict.fromkeys(_cargo(path.read_text(errors="replace")), name))
+                rust.update(dict.fromkeys(_cargo(read(name)), name))
             elif base == "go.mod":
-                text = path.read_text(errors="replace")
+                text = read(name)
                 module = re.search(r"^module\s+(\S+)", text, re.M)
                 if module:
                     go_own.add(module.group(1))

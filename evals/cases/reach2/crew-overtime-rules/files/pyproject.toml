@@ -1,0 +1,9 @@
+[project]
+name = "crewworks"
+version = "3.4.0"
+description = "Timesheets, weekly pay, site cost forecasts and month-end accruals for Halyard Field Services crews"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

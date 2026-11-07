@@ -480,6 +480,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_argument("text", nargs="*")
     sub.add_argument("--check", help="add: command that proves this requirement")
     sub.add_argument("--forbid", help="constrain: path glob that must not change")
+    sub.add_argument("--no", choices=("new-dependency", "new-file", "api-break"), help="constrain: a limit verify checks itself: no new dependency in a manifest, no new file, or no public name removed or broken")
     sub.add_argument("--timeout", type=int, default=600)
     sub.add_argument("--base", help="verify: revision to compare scope against")
     sub.add_argument("--root")

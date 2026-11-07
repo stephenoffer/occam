@@ -149,17 +149,17 @@ def test_occams_own_agents_carry_their_own_briefs(session, agent_type):
 # ---------------------------------------------------------------- reviewing high-consequence work
 
 
-def test_money_and_data_changes_get_a_self_review_note(session):
+def test_migrations_and_webhooks_get_a_self_review_note(session):
     session.send("user-prompt", prompt="fix the total")
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
-    _, after = session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    _, after = session.do(session.edit("migrations/0042_totals.py", "x = 1", "x = 2"))
     assert "review the whole diff yourself" in said(after) and "code-reviewer" not in said(after)
 
 
 def test_stop_asks_for_a_stated_self_review_and_accepts_one(session):
     session.send("user-prompt", prompt="fix the total")
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
-    session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    session.do(session.edit("migrations/0042_totals.py", "x = 1", "x = 2"))
     session.check()
     assert "Self-review:" in said(session.send("stop", last_assistant_message="Fixed the total. 3 tests pass. I self-reviewed the whole diff."))
     accepted = said(session.send("stop", last_assistant_message="Fixed the total, 3 tests pass.\n\nSelf-review: no issues found; callers and retries are fine."))
@@ -169,7 +169,7 @@ def test_stop_asks_for_a_stated_self_review_and_accepts_one(session):
 def test_saying_it_was_not_reviewed_is_not_a_self_review(session):
     session.send("user-prompt", prompt="fix the total")
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
-    session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    session.do(session.edit("migrations/0042_totals.py", "x = 1", "x = 2"))
     session.check()
     assert "doesn't say the diff was reviewed" in said(session.send("stop", last_assistant_message="Fixed.\nSelf-review: not done."))
 
@@ -210,21 +210,22 @@ def test_a_pasted_mention_of_a_review_is_not_a_request(session):
 def test_the_note_changes_when_a_later_edit_needs_the_reviewer(session):
     session.send("user-prompt", prompt="fix the total and the session timeout")
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
-    _, first = session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    _, first = session.do(session.edit("migrations/0042_totals.py", "x = 1", "x = 2"))
     _, second = session.do(session.edit("users/session.py", "x = 1", "x = 2"))
     assert "review the whole diff yourself" in said(first)
     assert "session.py is security-critical" in said(second) and "`occam:code-reviewer` reviews this" in said(second)
 
 
 def test_the_note_says_why_when_the_request_asks(session):
-    session.send("user-prompt", prompt="fix the total and get it reviewed")
+    session.send("user-prompt", prompt="fix the migration and get it reviewed")
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
-    _, after = session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    _, after = session.do(session.edit("migrations/0042_totals.py", "x = 1", "x = 2"))
     assert "the request asks for a review" in said(after) and "security-critical" not in said(after)
 
 
-@pytest.mark.parametrize("prompt, name", [("fix the login", "app/auth.py"), ("fix the total and get it reviewed", "billing/invoice.py")])
-def test_security_critical_changes_or_a_request_still_get_the_fresh_reviewer(session, prompt, name):
+@pytest.mark.parametrize("prompt, name", [("fix the login", "app/auth.py"), ("fix the total", "billing/invoice.py"), ("fix the refund", "payments/refunds.py"),
+                                          ("fix the migration and get it reviewed", "migrations/0042_totals.py")])
+def test_security_money_or_a_request_still_get_the_fresh_reviewer(session, prompt, name):
     session.send("user-prompt", prompt=prompt)
     session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
     _, after = session.do(session.edit(name, "x = 1", "x = 2"))
@@ -241,6 +242,13 @@ def test_a_write_over_a_file_too_large_to_read_is_held_from_a_subfolder(session)
     event = {"tool_name": "Write", "tool_input": {"file_path": str(package / "table.py"), "content": "row = 2\n"}}
     output = session.send("pre-tool", cwd=str(package), **event)
     assert decision(output) == "deny" and "has not been loaded" in spec(output)["permissionDecisionReason"]
+
+
+def test_the_note_says_a_money_change_is_why(session):
+    session.send("user-prompt", prompt="fix the total")
+    session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"})
+    _, after = session.do(session.edit("billing/invoice.py", "x = 1", "x = 2"))
+    assert "invoice.py handles money" in said(after) and "`occam:code-reviewer` reviews this" in said(after)
 
 
 # ---------------------------------------------------------------- the guard level

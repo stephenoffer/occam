@@ -54,8 +54,9 @@ import rule_card
 import scale_notes
 import scan_notes
 import stop_checks
-from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, ASKS_FOR_REVIEW, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
-                      PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, is_code, reads_as_read_only, visible_prompt)
+from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, ASKS_FOR_REVIEW, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
+                      PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
+                      reads_as_read_only, visible_prompt)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
 from session_state import Session, record, state_file
@@ -213,22 +214,28 @@ def user_prompt(event: dict) -> dict | None:
     if NOT_FROM_THE_USER.match(prompt):
         return None
     words = visible_prompt(prompt)
-    read_only = reads_as_read_only(words)
-    record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))))
+    # The last stop of the previous turn: a "no" to "Shall I implement it?" holds edits like "review only" does.
+    stops = [entry for entry in Session(event).turn if entry.get("kind") == "stopped"]
+    declined = declines(words, bool(stops and stops[-1].get("asked")))
+    read_only = reads_as_read_only(words) or declined
+    record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, declined=declined, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))))
     typed = re.match(r"\s*/(?:occam:)?(occam[\w-]*)\b", prompt)
     if typed:
         record(event, kind="skill", name=typed.group(1))
     notes = []
-    if read_only:
+    if declined:
+        notes.append("The user said no to the work you asked about, so edits to project files are held for this turn. Answer, and don't make the change.")
+    elif read_only:
         notes.append("This request reads as review-only or plan-only, so edits to project files are held for this turn.")
-    if not typed and not Session(event).has("skill", CORE_SKILL) and (read_only or REVIEW_OR_PLAN.search(words)):
+    reviewing = (read_only and not declined) or REVIEW_OR_PLAN.search(words)  # a bare "no" isn't a review
+    if not typed and not Session(event).has("skill", CORE_SKILL) and reviewing:
         notes.append("The `occam:occam` skill covers code review and planning, and has not been loaded yet.")
     if AUDIT_REQUEST.search(words) and not Session(event).has("skill", "occam-audit") and not (typed and typed.group(1) == "occam-audit"):
         notes.append("The `occam:occam-audit` skill covers auditing and repairing existing code at any size, with tools.")
     if docs_notes.REQUEST.search(words) and not read_only:
         notes += filter(None, [docs_pointer(event)])
     # A review makes no edit, so this is the only place it hears about the language skill.
-    if (read_only or REVIEW_OR_PLAN.search(words)) and (PYTHON_PROMPT.search(prompt) or python_project(event)) \
+    if reviewing and (PYTHON_PROMPT.search(prompt) or python_project(event)) \
             and not Session(event).has("skill", "occam-python"):
         notes.append("`occam:occam-python` has Python guidance on auditing, structure, tests and semantics.")
     if PYTHON_PROMPT.search(prompt) or python_project(event):
@@ -260,15 +267,36 @@ def subagent_start(event: dict) -> dict | None:
     return context("SubagentStart", rule_card.SUBAGENT_CARD)
 
 
+DECLINED_REASON = ("occam: you asked whether to go ahead with this work, and the user said no, so edits to project files are held for "
+                   "this turn. Answer them without making the change. If they want it later, they can say so, for example with \"go ahead\".")
+
+
 def read_only_hold(known: list[str], unknown_path: bool, session: Session) -> dict | None:
     """Denied, unless it is a plan or review written where the request asked for it, which isn't a source edit."""
     requested = all(Path(path).suffix.lower() in REPORT_SUFFIXES and os.path.basename(path).lower() in session.prompt.lower() for path in known)
     if known and not unknown_path and requested:
         return None
+    if session.prompt_entry.get("declined"):
+        return respond("PreToolUse", permissionDecision="deny", permissionDecisionReason=DECLINED_REASON)
     return respond("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
         "occam: the current request reads as review-only or plan-only, so edits to project files are held for "
         "this turn. Findings go in the report. If the request did authorize edits, the user can say so, for "
         "example with \"go ahead\"."))
+
+
+def hold_a_work_report(event: dict, session: Session, relative: str) -> dict | None:
+    """A new IMPLEMENTATION_SUMMARY.md or the like that the request didn't ask for, held once per path so it doesn't land in the
+    repository. Developers name these as clutter. The content is already written by the time this runs, so it saves no tokens."""
+    prompt = session.prompt
+    key = f"work-report:{relative}"
+    if (not WORK_REPORT_NAME.search(relative) or NOT_A_WORK_REPORT.search(relative) or ASKS_FOR_A_DOCUMENT.search(prompt)
+            or os.path.basename(relative).lower() in prompt.lower()
+            or session.has("held", key)):
+        return None
+    record(event, kind="held", name=key)
+    return respond("PreToolUse", permissionDecision="deny", permissionDecisionReason=(
+        f"occam: {relative} looks like a report on this work, and the request didn't ask for one. Put that summary in your final "
+        "message instead, so it doesn't end up in the repository. If the user did ask for this file, write it again."))
 
 
 def hold_a_shell_edit(command: str, event: dict, session: Session) -> dict | None:
@@ -404,7 +432,11 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     known = [relative_path(edit_path, event)] if edit_path else []
     if session.read_only:
         return read_only_hold(known, not edit_path, session)
-    if name == "Write" and known and not os.path.exists(os.path.join(event.get("cwd") or "", edit_path)):
+    created = name == "Write" and bool(known) and not os.path.exists(os.path.join(event.get("cwd") or "", edit_path))
+    held = hold_a_work_report(event, session, known[0]) if created and level() != GUARD and not event.get("agent_id") else None
+    if held:  # once written again it goes on through the checks below, the secret hold among them
+        return held
+    if created:
         record(event, kind="created", path=known[0])
     old, new = evidence.old_and_new_text(name, tool_input, event.get("cwd")) if known else ("", "")
     shape = evidence.secret_shape(new, old)
@@ -506,7 +538,7 @@ def scan_note(event: dict, file_path: str, relative: str) -> dict | None:
     if not is_code(relative):
         return None
     session = Session(event)
-    found = scan_notes.introduced(absolute_path(event, file_path), relative, scan_notes.known_findings(event, session, relative))
+    found = scan_notes.introduced(absolute_path(event, file_path), relative, scan_notes.known_findings(event, session, relative), noting=True)
     already = {identity for entry in session.entries if entry.get("kind") == "scan-noted" for identity in entry.get("ids", [])}
     fresh = [finding for finding in found if finding["id"] not in already]
     if not fresh:
@@ -565,7 +597,9 @@ def review_first_note(event: dict) -> dict | None:
             return None
         record(event, kind="mentioned", name="review-first-agent")
         security = [path for path in risky if SECURITY_CRITICAL.search(path)]
-        why = f"{os.path.basename(security[0])} is security-critical" if security else "the request asks for a review"
+        money = [path for path in risky if MONEY.search(path)]
+        why = (f"{os.path.basename(security[0])} is security-critical" if security else f"{os.path.basename(money[0])} handles money" if money
+               else "the request asks for a review")
         return context("PostToolUse", f"occam: {why}, so `occam:{REVIEWER}` reviews this once your checks pass, "
                                       "before you write your report. It needs the requirements and the diff.")
     if "review-first" in said:
@@ -719,6 +753,9 @@ def post_failure(event: dict) -> dict | None:
 
 
 def stop(event: dict) -> dict | None:
+    # Recorded at every level: if this asks permission and the user says no, the next turn's edits are held, which guard keeps.
+    if not event.get("agent_id"):
+        record(event, kind="stopped", asked=asks_to_act(event.get("last_assistant_message") or ""))
     # Delegated work still underway will report back, and this runs again then. A dev server doesn't count.
     if level() == GUARD or event.get("agent_id") or any(task.get("type") in FOREGROUND_BLOCKING_TASKS for task in event.get("background_tasks") or []):
         return None

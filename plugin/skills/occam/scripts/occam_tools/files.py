@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import shutil
 import signal
 import stat as stat_module
 import subprocess
+import sys
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -45,6 +47,32 @@ class BadRevision(GitProblem):
     """The revision to compare against doesn't exist."""
 
 
+# On macOS /usr/bin/git is an xcrun shim, which fails inside a sandbox such as Claude Code's, while the developer tools' own git works.
+_SHIMS = {"/usr/bin/git"} if sys.platform == "darwin" else set()
+_OTHER_GITS = ("/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git")
+
+
+def _answers(git: str) -> bool:
+    try:
+        return subprocess.run([git, "--version"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+@functools.lru_cache(maxsize=8)
+def _usable(found: str) -> str:
+    """Asked once per binary: a shim that answers is used, and one that doesn't gives way to the first of the usual others that does."""
+    if found not in _SHIMS or _answers(found):
+        return found
+    return next((other for other in _OTHER_GITS if os.access(other, os.X_OK) and _answers(other)), found)
+
+
+def _git_binary() -> str | None:
+    """The git on PATH, looked up each time so a changed PATH or directory counts, unless it's the macOS shim and doesn't answer."""
+    found = shutil.which("git")
+    return _usable(found) if found else None
+
+
 def _git_reads_config_environment(git: str, timeout: int) -> bool:
     """GIT_CONFIG_COUNT arrived in git 2.31. An older git ignores it, and whatever a repository names would run."""
     done = subprocess.run([git, "--version"], capture_output=True, text=True, errors="replace", timeout=min(timeout, 10))
@@ -54,7 +82,7 @@ def _git_reads_config_environment(git: str, timeout: int) -> bool:
 
 def can_diff_merges_by_first_parent() -> bool:
     """--diff-merges arrived in the same release."""
-    git = shutil.which("git")
+    git = _git_binary()
     return bool(git) and _git_reads_config_environment(git, 10)
 
 
@@ -86,7 +114,7 @@ def _driver_environment(git: str, root, timeout: int) -> dict[str, str] | None:
 
 def _git_invocation(root, args: tuple, timeout: int) -> tuple[list[str], dict[str, str]] | None:
     """The command line and environment that keep a repository from running anything, or None if git is missing or that can't be done."""
-    git = shutil.which("git")
+    git = _git_binary()
     drivers = _driver_environment(git, root, timeout) if git else None
     if drivers is None:
         return None

@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: handbook-search-accents
+tags: [reach2]
+expected_outcome: |
+  Searching with `python -m findoc search` matches words regardless of accents in both directions and highlights
+  those matches in snippets, both on a checkout with no saved index and on one whose index was built before the change.
+context:
+  scaffold_script: place-files.sh

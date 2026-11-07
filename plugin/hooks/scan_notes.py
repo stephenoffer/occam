@@ -6,6 +6,7 @@ Shared by the Claude Code and Codex hooks. Everything here is best effort: a hoo
 from __future__ import annotations
 
 import os
+import re
 import signal
 import sys
 import time
@@ -20,8 +21,16 @@ STOP_SECONDS = 5
 MAX_LISTED = 5
 MAX_FILES_AT_STOP = 8
 AUDIT_FILES_AT_STOP = 40
-# Worth interrupting for even at medium confidence, because they rarely appear by accident.
-ALWAYS_SERIOUS = {"truncation-marker", "fake-success", "hardcoded-secret", "stub-body"}
+# Worth interrupting for even at medium confidence, because they rarely appear by accident. The last three are the fake integrations
+# developers complain of: each fired 0 times at medium confidence in 641 standard-library files, and 5 times in 4,947 installed-package
+# files (2026-11-06). stub-raise isn't here: base classes raising NotImplementedError gave it 70 in the standard library.
+ALWAYS_SERIOUS = {"truncation-marker", "fake-success", "hardcoded-secret", "stub-body", "failure-reported-as-success", "fallback-fake", "mock-in-production"}
+# Those three are said once, as an edit introduces them, and never send the agent back at Stop, per DESIGN.md's no-new-send-backs.
+# They are about code that ships, and test support often lives outside a test folder: Django's tests.py, testing.py, fixtures,
+# pytest plugins, noxfile.py, and docs, scripts and examples. There they stay leads for `occam scan`, not interruptions.
+FAKES = {"failure-reported-as-success", "fallback-fake", "mock-in-production"}
+NOT_SHIPPED = re.compile(r"(^|/)(tests?|testing|spec|__tests__|fixtures)/|^(docs?|examples?|samples?|demos?|scripts?|benchmarks?|notebooks?)/"
+                         r"|(^|/)(tests?|testing|fixtures|conftest|noxfile|fabfile|[^/]*pytest_plugin[^/]*|test_[^/]+)\.py$|\.(test|spec)\.[a-z]+$", re.I)
 
 
 class _TooSlow(Exception):
@@ -51,6 +60,8 @@ def _scan(relative: str, text: str) -> list[dict]:
 
 
 def _is_serious(finding: dict) -> bool:
+    if finding["rule"] in FAKES and NOT_SHIPPED.search(finding.get("path", "")):
+        return False
     if finding["rule"] in ALWAYS_SERIOUS and finding["confidence"] != "low":
         return True
     return finding["severity"] in ("critical", "high") and finding["confidence"] == "high"
@@ -96,8 +107,9 @@ def committed_identities(root: Path, relative: str) -> list[str] | None:
         return None
 
 
-def introduced(path: Path, relative: str, known: list[str] | None) -> list[dict]:
-    """Serious findings in the file now that weren't there before. Without a baseline nothing can be attributed to this change."""
+def introduced(path: Path, relative: str, known: list[str] | None, noting: bool = False) -> list[dict]:
+    """Serious findings in the file now that weren't there before. Without a baseline nothing can be attributed to this change.
+    `noting` is for the note after an edit, which also says the FAKES. At Stop they don't count."""
     if known is None:
         return []
     try:
@@ -105,7 +117,8 @@ def introduced(path: Path, relative: str, known: list[str] | None) -> list[dict]
         if text is None:
             return []
         known_set = set(known)
-        return [finding for finding in _scan(relative, text) if finding["id"] not in known_set and _is_serious(finding)]
+        return [finding for finding in _scan(relative, text) if finding["id"] not in known_set and _is_serious(finding)
+                and (noting or finding["rule"] not in FAKES)]
     except Exception:  # occam: ignore[swallowed-exception] fails open, like identities
         return []
 
@@ -116,7 +129,7 @@ def still_raised_note(files: list[tuple[Path, str]]) -> str | None:
     for path, relative in within_budget(files, AUDIT_FILES_AT_STOP):
         try:
             text = _read(path)
-            found += [finding for finding in _scan(relative, text) if _is_serious(finding)] if text is not None else []
+            found += [finding for finding in _scan(relative, text) if _is_serious(finding) and finding["rule"] not in FAKES] if text is not None else []
         except Exception:  # occam: ignore[swallowed-exception] fails open, like identities
             continue
     if not found:

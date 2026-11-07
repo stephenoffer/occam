@@ -47,7 +47,7 @@ Show a test can fail by breaking the code in an isolated copy and watching it go
 
 ## Async
 
-Use the plugin the repository has, usually pytest-asyncio or anyio. Test cancellation directly: cancel the task and assert `CancelledError` propagates and no work continues. Put a timeout around anything that can hang, with `asyncio.timeout` or `pytest-timeout`, so that a deadlock fails rather than stalls CI. Plain `-W error` fails a test on "coroutine was never awaited". The narrower `-W error::RuntimeWarning` doesn't, under pytest.
+Use the plugin the repository has, usually pytest-asyncio or anyio. Test cancellation directly: cancel the task and assert `CancelledError` propagates and no work continues. Put a timeout around anything that can hang, with `asyncio.timeout` or `pytest-timeout`, so that a deadlock fails rather than stalls CI. Plain `-W error` fails a test on "coroutine was never awaited". The narrower `-W error::RuntimeWarning` doesn't, under pytest. A test cancels and awaits every task it starts. "Task was destroyed but it is pending" in a passing run means one leaked into the tests after it.
 
 ## Beyond examples
 

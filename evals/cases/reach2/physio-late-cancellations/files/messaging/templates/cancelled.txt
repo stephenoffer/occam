@@ -1,0 +1,1 @@
+Hi $first_name, your appointment with $clinician on $when has been cancelled. Call $clinic_phone if you'd like to rebook.

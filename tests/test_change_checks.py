@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -250,3 +251,25 @@ def test_named_paths_dont_claim_the_change_reached_everything(tmp_path, monkeypa
     monkeypatch.chdir(root)
     text, _ = verify.gate(root, paths=["a.py"])
     assert "Reached everything it must" not in text and "what the change reaches elsewhere" in text
+
+
+# On macOS the git on PATH is an xcrun shim, and inside a sandbox it fails while the developer tools' own git works.
+# Every gate in the eval sandbox answered "Not a git repository" until the tools looked past it.
+def test_a_git_on_path_that_doesnt_answer_falls_back_to_one_that_does(tmp_path, monkeypatch):
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    write(root, {"a.py": "x = 2\n"})
+    broken = tmp_path / "bin" / "git"
+    broken.parent.mkdir()
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    working = shutil.which("git")
+    monkeypatch.setattr(filesystem.shutil, "which", lambda name, *args, **kwargs: str(broken) if name == "git" else None)
+    monkeypatch.setattr(filesystem, "_SHIMS", {str(broken)}, raising=False)
+    monkeypatch.setattr(filesystem, "_OTHER_GITS", (working,), raising=False)
+    clear = getattr(getattr(filesystem, "_usable", None), "cache_clear", lambda: None)
+    clear()
+    try:
+        assert (filesystem.run_git(root, "rev-parse", "--is-inside-work-tree") or "").strip() == "true"
+        assert "Not a git repository" not in verify.gate(root)[0]
+    finally:
+        clear()

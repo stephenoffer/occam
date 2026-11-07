@@ -10,6 +10,7 @@ from typing import Iterable, NamedTuple
 from .py_helpers import PLACEHOLDER_NAME, _has_sql
 from .rules_shell import shell_findings
 from .rules_config import CLIENT_VISIBLE_SECRET
+from . import rules_js
 from .source import C_FAMILY, DOCKERFILE, Source
 
 JS = ("javascript", "typescript")
@@ -108,6 +109,15 @@ TEXT_RULES: list[TextRule] = [
     _r("permissive-cors", ALL,
        r"""Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*|\borigin\s*:\s*["']\*["']|\ballow_origins\s*=\s*\[\s*["']\*"""
        r"""|\bCORS_(?:ORIGIN_ALLOW_ALL|ALLOW_ALL_ORIGINS)\s*=\s*True\b|\bALLOWED_HOSTS\s*=\s*\[\s*["']\*""", view="raw"),
+    # Reflecting any origin while sending cookies lets every site make credentialed requests, which a wildcard alone can't.
+    _r("permissive-cors", JS, r"""\borigin\s*:\s*true\b[^}]{0,300}\bcredentials\s*:\s*true\b|\bcredentials\s*:\s*true\b[^}]{0,300}\borigin\s*:\s*true\b""", view="raw", severity="high"),
+    # Formats that build whatever object their input names. These block gate as Python's pickle.loads does, by the owner's
+    # decision (DESIGN.md catalog-500-owner-calls). The safe forms stay out: a stream with an ObjectInputFilter, Ruby's
+    # YAML.load (safe_load from Psych 4), and PHP's unserialize with allowed_classes or as some class's own method.
+    _r("unsafe-deserialize", ("java", "kotlin", "scala"), r"\bnew\s+ObjectInputStream\s*\((?![\s\S]{0,1500}?ObjectInputFilter)|\bnew\s+XMLDecoder\s*\(", view="raw", confidence="medium"),
+    _r("unsafe-deserialize", ("ruby",), r"\bMarshal\.load\s*\(|\bYAML\.unsafe_load\s*\(", confidence="medium"),
+    _r("unsafe-deserialize", ("php",), r"(?<![\w>:$])unserialize\s*\(\s*\$(?![^;]{0,300}allowed_classes)", view="raw", confidence="medium"),
+    _r("error-details-exposed", JS, r"\bres\.(?:status\([^)\n]*\)\.)?(?:send|json|end)\([^)\n]*\b(?:err|error|e)\.stack\b"),
     _r("debug-exposed", ("python", "javascript", "typescript"), r"^[ \t]*DEBUG\s*=\s*True\b|\.run\([^)\n]*\bdebug\s*=\s*True|\bapp\.debug\s*=\s*True\b|\bintrospection\s*[:=]\s*[Tt]rue\b", flags=_M, scripts=False),
     _r("mock-in-production", PY, r"^[ \t]*(?:from unittest(?:\.mock)? import\b[^\n]*\b(?:mock|Mock|MagicMock|patch)\b|import unittest\.mock\b|from mock import\b|import mock\b)", flags=_M, scripts=False),
     _r("test-detection-in-code", PY, r"""["']pytest["']\s+in\s+sys\.modules|PYTEST_CURRENT_TEST|["']unittest["']\s+in\s+sys\.modules""", view="raw", scripts=False),
@@ -220,6 +230,7 @@ TEXT_RULES: list[TextRule] = [
     _r("float-money", ("java", "kotlin", "csharp", "scala"), r"\b(?:double|float|Double|Float)\s+(?:price|amount|total|balance|cost|fee|tax)\w*", flags=_I),
     _r("float-money", ("sql",), r"\b(?:price|amount|total|balance|cost|fee|tax)\w*\s+(?:FLOAT|REAL|DOUBLE)\b", flags=_I),
     _r("async-foreach", JS, r"\.forEach\(\s*async\b", tests="include"),
+    _r("async-predicate", JS, r"\.(?:filter|some|every|find|findIndex|findLast|findLastIndex)\(\s*async\b", tests="include"),
     # Only when assigned: returning the promise, or passing it down a .then chain, is correct.
     _r("missing-await", JS, r"(?<![=!<>])=\s*(?:response|resp|res|r)\.(?:json|text|blob|arrayBuffer)\(\)(?!\s*\.(?:then|catch))", tests="include"),
     _r("ts-any", ("typescript",), r":\s*any\b|\bas\s+any\b|<any>"),
@@ -319,6 +330,54 @@ def text_findings(source: Source, is_test: bool, is_script: bool) -> Iterable[tu
     if language in ("c", "cpp") and source.path.endswith((".h", ".hpp", ".hh")):
         for match in re.finditer(r"^[ \t]*using\s+namespace\s+\w+", source.code, re.M):
             yield "namespace-in-header", source.line_of(match.start()), None, {}
+    if language == "rust" and not is_test:
+        yield from _unsafe_without_reason(source)
+    if language in ("java", "kotlin"):
+        yield from _equality_contract(source)
+    if language in JS:
+        yield from rules_js.findings(source, is_test)
+
+
+_UNSAFE_BLOCK = re.compile(r"\bunsafe\s*\{")
+_SAFETY_NOTE = re.compile(r"\bsafety\b", re.I)
+_COMMENT_OR_ATTRIBUTE = re.compile(r"^\s*(?://|/\*|\*|#\[)|\*/\s*$")
+# An inline test module ends the code worth checking. `#[cfg(test)] mod tests;` points to another file, so it doesn't.
+_TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)\n]*\))?\s+)?mod\s+\w+\s*\{")
+_EQUALS = {"java": re.compile(r"\bboolean\s+equals\s*\(\s*(?:(?:final|@[\w.]+(?:\([^)\n]{0,100}\))?)\s+){0,4}(?:java\.lang\.)?Object\b"),
+           "kotlin": re.compile(r"\boverride\s+fun\s+equals\s*\(")}
+_HASH_CODE = {"java": re.compile(r"\bint\s+hashCode\s*\(\s*\)"), "kotlin": re.compile(r"\boverride\s+fun\s+hashCode\s*\(\s*\)")}
+
+
+def _unsafe_without_reason(source: Source) -> Iterable[tuple]:
+    """An unsafe block is safe only if its invariants hold, and the convention is a `// SAFETY:` comment saying why they do,
+    on its own line or anywhere in the comment block just above it. Test modules are left alone."""
+    tests_from = next((source.line_of(match.start()) for match in _TEST_MODULE.finditer(source.text)), None)
+    for match in _UNSAFE_BLOCK.finditer(source.code):
+        line = source.line_of(match.start())
+        if tests_from is not None and line > tests_from:
+            break
+        on_it = _SAFETY_NOTE.search(source.line_text(line)) or _SAFETY_NOTE.search(source.line_text(line + 1))  # on the line, or first inside
+        if not on_it and not _says_why_above(source, line):
+            yield "unsafe-undocumented", line, None, {}
+
+
+def _says_why_above(source: Source, line: int) -> bool:
+    """A SAFETY comment in the run of comment and attribute lines just above, line comments or a /* */ block alike."""
+    above = line - 1
+    while above >= 1 and _COMMENT_OR_ATTRIBUTE.search(source.line_text(above)):
+        if _SAFETY_NOTE.search(source.line_text(above)):
+            return True
+        above -= 1
+    return False
+
+
+def _equality_contract(source: Source) -> Iterable[tuple]:
+    """Objects equal by equals() must have equal hash codes, or hash maps and sets lose and duplicate them. A file that
+    overrides one and not the other breaks that, unless the class gets the other from a parent, which this can't see."""
+    equals, hash_code = _EQUALS[source.language].search(source.code), _HASH_CODE[source.language].search(source.code)
+    if bool(equals) != bool(hash_code):
+        found = equals or hash_code
+        yield "equals-without-hashcode", source.line_of(found.start()), None, {}
 
 
 def has_secret_shape(text: str) -> bool:
@@ -355,6 +414,8 @@ def _token_findings(source: Source) -> Iterable[tuple]:
 
 def _secrets(source: Source, is_test: bool) -> Iterable[tuple]:
     if is_test:
+        for _, line, _, _ in _token_findings(source):  # a test is a fake's place, so a live shape may be a working credential copied in
+            yield "live-credential-in-test", line, "A test holds a credential in a live shape (value withheld). Use an obviously fake value, and rotate this one if it was ever real.", {}
         return
     seen = set()
     for finding in _token_findings(source):
@@ -635,10 +696,26 @@ def _narrates(comment: str, code: str) -> bool:
     return overlap >= 0.75 or (overlap >= 0.5 and bool(_NARRATION_START.match(comment)))
 
 
+# `start|run)` and `'a b'|c)` are case arms, where | separates patterns, and `[[ $x =~ ^(a|b)$ ]]` is a regex.
+_PATTERN_WORD = r"""(?:'[^'\n]*'|"[^"\n]*"|[\w*.$?\[\]/-]+)"""
+_CASE_ARM = re.compile(rf"^\s*\(?\s*{_PATTERN_WORD}(?:\s*\|\s*{_PATTERN_WORD})+\s*\)")
+_TEST_EXPRESSION = re.compile(r"\[\[.*?\]\]")
+_PIPE = re.compile(r"[^|\s][ \t]*\|(?!\|)[ \t]*[^|\s]")
+# dash and other POSIX shells reject `set -o pipefail`, which a script under `set -e` then dies on.
+_HAS_PIPEFAIL = re.compile(r"^#!.*\b(?:bash|zsh|ksh)\b")
+
+
 def _shell_file_rules(source: Source) -> Iterable[tuple]:
     yield from shell_findings(source)
-    if len(source.line_starts) >= 10 and not re.search(r"^[ \t]*set\s+-[a-zA-Z]*e|^[ \t]*set\s+-o\s+errexit", source.code, re.M):
+    errexit = re.search(r"^[ \t]*set\s+-[a-zA-Z]*e|^[ \t]*set\s+-o\s+errexit", source.code, re.M)
+    if len(source.line_starts) >= 10 and not errexit:
         yield "shell-no-strict", 1, None, {}
+    elif errexit and not re.search(r"\bpipefail\b", source.code):
+        lines = (source.line_text(source.line_of(match.start())) for match in _PIPE.finditer(source.code))
+        pipe = next((line for line in lines if not _CASE_ARM.match(line) and _PIPE.search(_TEST_EXPRESSION.sub("", line))), None) if _HAS_PIPEFAIL.match(source.text) else None
+        if pipe:
+            # set -e looks only at the last command of a pipeline, so a failure before the pipe goes unnoticed
+            yield "shell-no-strict", 1 + source.text.split("\n").index(pipe), "set -e here ignores a failure before the last `|` of a pipeline. Add set -o pipefail.", {}
 
 
 # ---------------------------------------------------------------- structure for languages without a parser here

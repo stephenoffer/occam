@@ -1,0 +1,9 @@
+#!/bin/sh
+# Refresh the handbook search index after every pull or merge.
+# Installed into .git/hooks by hooks/install.sh.
+top=$(git rev-parse --show-toplevel) || exit 0
+cd "$top" || exit 0
+if ! python3 -m findoc reindex handbook --quiet; then
+    echo "findoc: reindex failed; search will read the pages directly until it works" >&2
+fi
+exit 0

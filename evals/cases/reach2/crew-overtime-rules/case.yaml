@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: crew-overtime-rules
+tags: [reach2]
+expected_outcome: |
+  Every part of the system that works out overtime applies the new daily rule alongside the weekly one, with no hour
+  counted twice: weekly pay, the site cost forecasts for planned rosters and the month-end wage accruals all agree.
+context:
+  scaffold_script: place-files.sh

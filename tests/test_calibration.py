@@ -20,7 +20,7 @@ import pytest
 import grade_workspaces as grade
 
 EVALS = Path(__file__).resolve().parents[1] / "evals"
-CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard", "reach") for p in (EVALS / "cases" / suite).glob("*")
+CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard", "reach", "reach2") for p in (EVALS / "cases" / suite).glob("*")
                if (p / "hidden").is_dir())
 SPECIAL = {"__post__.sh", "__final_message__.txt", "__trace__.jsonl", "EXPECT_FAIL"}
 
@@ -29,6 +29,8 @@ def case_id(path: Path) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
+# Cases with no stated Python floor whose hidden checks still need one. Stated here, since the cases themselves are frozen.
+HIDDEN_CHECKS_NEED = {"python/bikeshare-dock-usage": (3, 10)}  # sys.stdlib_module_names
 IMPORT_NAMES = {"pyyaml": "yaml", "scikit-learn": "sklearn", "pillow": "PIL", "python-dateutil": "dateutil", "beautifulsoup4": "bs4"}
 
 
@@ -37,10 +39,11 @@ def skip_without_its_packages(case_dir: Path) -> None:
     the wrong reason. CI installs them with `--group cases` where the Python version allows, and says so when it skips."""
     floor = re.search(r'requires-python\s*=\s*">=\s*(\d+)\.(\d+)', (case_dir / "files" / "pyproject.toml").read_text()) \
         if (case_dir / "files" / "pyproject.toml").exists() else None
-    if floor:
-        probe = f"import sys; sys.exit(0 if sys.version_info >= ({floor.group(1)}, {floor.group(2)}) else 1)"
+    version = (int(floor.group(1)), int(floor.group(2))) if floor else HIDDEN_CHECKS_NEED.get(case_id(case_dir))
+    if version:
+        probe = f"import sys; sys.exit(0 if sys.version_info >= {version} else 1)"
         if subprocess.run([grade.PYTHON, "-c", probe], capture_output=True, timeout=60).returncode:
-            pytest.skip(f"{case_id(case_dir)} is written for Python {floor.group(1)}.{floor.group(2)} or later, and {grade.PYTHON} is older")
+            pytest.skip(f"{case_id(case_dir)} needs Python {version[0]}.{version[1]} or later, and {grade.PYTHON} is older")
     lock = case_dir / "files" / "requirements.lock"
     if not lock.exists():
         return

@@ -1,0 +1,8 @@
+schema_version: "1.1"
+name: hardware-till-discounts
+tags: [reach2]
+expected_outcome: |
+  A sale line can carry a discount with a reason, the customer pays and the receipt shows the net amount, the
+  till's cash-up reports net sales and discounts by reason, and every reader of the day's sales stays correct.
+context:
+  scaffold_script: place-files.sh
