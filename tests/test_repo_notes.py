@@ -37,6 +37,9 @@ def write(agent, name, text):
     "kubectl delete namespace help", "kubectl delete pod x -n help", "helm uninstall help", "kubectl delete pod x --dry-run=False", "kubectl -n prod delete pod a",
     "redis-cli -h prod-cache flushall", "dropdb -h db.prod app", "RAILS_ENV=test rails db:prepare && rails db:drop", "mysql -e \"UPDATE t SET a='x'\"",
     "psql -c \"-- tidy up\nDELETE FROM sessions\"", "psql -c \"BEGIN; UPDATE accounts SET balance = 0; COMMIT\"",
+    # From the second review: flags whose value isn't known, a wrapper, mixed environments, and a WHERE that is only a comment.
+    "kubectl --as admin delete ns prod", "kubectl -v 6 delete ns prod", "kubectl --request-timeout 30s delete ns prod", "npx kubectl delete ns prod",
+    "NODE_ENV=test RAILS_ENV=production rails db:reset", "export RAILS_ENV=test; export RAILS_ENV=production; rails db:drop", "psql -c 'DELETE FROM x -- WHERE id = 1'",
 ])
 def test_a_person_confirms(agent, command):
     assert decision(agent.try_bash(command)) == "ask", command
@@ -51,6 +54,10 @@ def test_a_person_confirms(agent, command):
     "rg 'Remove-Item -Recurse' docs/", "git commit -m 'Run rd /s on Windows'", "Remove-Item -Recurse -Force build", "rmdir /s /q build",
     "psql -c \"UPDATE users SET name = 'bob' WHERE id = 1\"", "mysql -e \"UPDATE t SET a='x' WHERE id=1\"", "psql -c 'DELETE FROM \"users\" WHERE id = 1'",
     "aws s3 rm s3://b/logs --recursive --dryrun", "kubectl auth can-i delete pods", "kubectl delete pod a --dry-run=client",
+    # From the second review: a test reset chained, piped or exported, help, and a quoted `;`.
+    "cd api && RAILS_ENV=test bin/rails db:reset", "RAILS_ENV=test bundle exec rake db:reset 2>&1 | tail -20", "export RAILS_ENV=test && rails db:reset",
+    "NODE_ENV=test npx prisma migrate reset --force && npm test", "bundle exec rake db:reset RAILS_ENV=test", "kubectl delete -h", "kubectl -n delete get pods",
+    "psql -c \"UPDATE t SET a = 'x;y' WHERE id = 1\"",
 ])
 def test_ordinary_commands_go_ahead(agent, command):
     assert decision(agent.try_bash(command)) is None, command
@@ -271,18 +278,6 @@ def test_opening_a_pull_request_gets_a_note_once(agent):
 def test_acting_on_another_repository_gets_a_note(agent):
     assert "outside the project" in added(agent.try_bash("git -C ../other status"))
     assert agent.try_bash("git -C sub status") is None
-
-
-def test_reading_a_lot_with_no_edit_gets_a_note_once(agent):
-    said = [added(agent.send("post-tool", tool_name="Read", tool_input={"file_path": f"/x/{n}.py"}, tool_response={"content": "x"})) for n in range(42)]
-    assert [index for index, text in enumerate(said) if "files read and nothing changed" in text] == [39]
-    assert "files read" not in added(agent.send("post-tool", tool_name="WebFetch", tool_input={"url": "https://x.example/a"}, tool_response={"content": "x"}))
-
-
-def test_reading_after_an_edit_says_nothing(agent):
-    agent.edit()
-    said = [added(agent.send("post-tool", tool_name="Read", tool_input={"file_path": f"/x/{n}.py"}, tool_response={"content": "x"})) for n in range(42)]
-    assert not any("files read" in text for text in said)
 
 
 def test_editing_a_bug_before_running_anything_gets_a_note_once(tmp_path):

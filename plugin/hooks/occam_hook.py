@@ -584,8 +584,6 @@ def after_read(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     match = re.search(r"/skills/occam/references/(\w+)\.md$", tool_input.get("file_path") or "")
     if match:
         record(event, kind="reference", name=match.group(1))
-    if not event.get("agent_id"):
-        record(event, kind="read")
     return read_notes(event, tool_input.get("file_path") or "")
 
 
@@ -599,8 +597,6 @@ def read_notes(event: dict, path: str) -> dict | None:
     agent = event.get("agent_id")
     has, mark = said_before(event, session, f"{agent}:" if agent else "")
     notes = [repo_notes.secret_file_read(path, has, mark), repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
-    if not agent and not session.read_only:
-        notes.append(repo_notes.reading_without_editing(session.entries, scale_notes.asked_for(session.prompt), has, mark))
     said = [note for note in notes if note]
     return context("PostToolUse", " ".join(said)) if said else None
 

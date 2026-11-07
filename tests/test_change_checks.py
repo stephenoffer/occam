@@ -223,3 +223,30 @@ def test_a_skill_file_isnt_too_long_to_read_on_every_session():
 
     assert "instructions-bloated" not in {f["rule"] for f in scan.scan_text("skills/x/SKILL.md", "x\n" * 500)}
     assert "instructions-bloated" in {f["rule"] for f in scan.scan_text("AGENTS.md", "x\n" * 500)}
+
+
+# Unchanged files a limited read didn't reach don't fail --strict (tests/test_scale_tools.py), so a check that didn't run is said, not failed on.
+def test_a_check_of_what_the_change_reaches_that_didnt_run_is_never_called_clean(tmp_path, monkeypatch):
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    write(root, {"a.py": "x = 2\n"})
+    monkeypatch.setattr(change_checks, "notes", lambda *args, **kwargs: ([], ["callers"]))
+    text, _ = verify.gate(root)
+    assert "NOT CHECKED" in text and "callers" in text and "Reached everything it must" not in text
+
+
+def test_with_no_time_limit_the_change_checks_have_no_budget_either(tmp_path, monkeypatch):
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    write(root, {"a.py": "x = 2\n"})
+    budgets = []
+    monkeypatch.setattr(change_checks, "notes", lambda *args, budget, **kwargs: budgets.append(budget) or ([], []))
+    verify.gate(root, seconds=None)
+    verify.gate(root, seconds=75)
+    assert budgets[0] == float("inf") and budgets[1] <= change_checks.RUNTIME_LIMIT
+
+
+def test_named_paths_dont_claim_the_change_reached_everything(tmp_path, monkeypatch):
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    write(root, {"a.py": "x = 2\n"})
+    monkeypatch.chdir(root)
+    text, _ = verify.gate(root, paths=["a.py"])
+    assert "Reached everything it must" not in text and "what the change reaches elsewhere" in text

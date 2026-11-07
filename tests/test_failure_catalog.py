@@ -65,7 +65,7 @@ def test_the_rows_with_nothing_are_counted_and_say_so():
     no_prevent = sum(1 for row in ROWS if row[3] == "none")
     no_fix = sum(1 for row in ROWS if row[4] == "none")
     neither = sum(1 for row in ROWS if not tokens_of(row))
-    assert f"{no_prevent} rows have nothing listed to prevent them, {no_fix} have nothing listed to find or fix them, and {neither} have neither." in DOCUMENT
+    assert f"{no_prevent} rows have nothing listed to prevent them, {no_fix} have nothing listed to find or fix them, and {neither} {'has' if neither == 1 else 'have'} neither." in DOCUMENT
 
 
 def test_every_scan_rule_named_is_a_real_rule():

@@ -327,7 +327,8 @@ def destructive_git(command: str) -> str | None:
 def needs_a_person(command: str, event: dict | None = None) -> str | None:
     text = expand_variables(without_heredoc_bodies(command))
     inside = (lambda path: inside_project(path, event)) if event else (lambda _: False)
-    return evidence.reason_for_a_person(text, [head(words) for words in parse_shell(text)[0]], inside)
+    commands = parse_shell(text)[0]
+    return evidence.reason_for_a_person(text, [head(words) for words in commands], inside, evidence.in_a_test_environment(commands))
 
 
 def side_effects(command: str, event: dict) -> list[dict]:

@@ -15,19 +15,19 @@ Each row counts once, under the firmest thing occam has for it.
 | Stops it or sends it back | 64 | A hook denies it, asks a person, holds it once, or sends the agent back because its message disagrees with the record. |
 | Forces a step that can catch it | 52 | The agent is sent back until a check, a scan or a review has run. That step may or may not catch this failure. |
 | Finds it | 245 | `occam scan` or `occam gate` can report an instance from the code. These are leads, not proof, and a rule often catches only the common shape of a failure. |
-| Says it at the moment | 73 | A hook adds one note when it applies, or `gate` asks the question. Nothing is stopped. |
-| A tool answers it, if run | 137 | An `occam` command shows what's needed, and an agent or a person has to run it and judge. |
+| Says it at the moment | 70 | A hook adds one note when it applies, or `gate` asks the question. Nothing is stopped. |
+| A tool answers it, if run | 140 | An `occam` command shows what's needed, and an agent or a person has to run it and judge. |
 | Guidance and tracking only | 144 | Text the agent may ignore, plus at most a record such as `goal` or `coord`. Nothing here notices the failure, so these are the weakest rows. |
 | **Total** | **715** | |
 
 656 rows cite a source, some of those read only as an abstract or a snippet, as [Sources](#sources) says. The other 59 are marked `own`: known from practice and from the research agents' own knowledge, where a search found no study or report to cite. **Treat the counts as an upper bound.** A row counts under the firmest token it has. A fresh reviewer sampling 45 rows found 10 where a token barely applied, so three more readers went through every row, read what each rule really matches, and removed what didn't apply. That changed about four rows in ten. These were agents on the same model checking text and sometimes running a rule, so some of what's left will be wrong too. A row at any level can still get past, and even the first level means only the forms a hook can read: see [What this can't do](#what-this-cant-do).
 
-2 rows have nothing listed to prevent them, 5 have nothing listed to find or fix them, and 1 have neither. `none` in a row means that plainly.
+3 rows have nothing listed to prevent them, 5 have nothing listed to find or fix them, and 1 has neither. `none` in a row means that plainly.
 
 | Area | Rows | Stops | Forces a step | Finds | Says | Tool | Guidance |
 |---|---|---|---|---|---|---|---|
 | [Finding the right place](#loc-finding-the-right-place) | 25 | 0 | 1 | 6 | 2 | 14 | 2 |
-| [Context and memory inside a session](#ctx-context-and-memory-inside-a-session) | 30 | 2 | 1 | 4 | 10 | 8 | 5 |
+| [Context and memory inside a session](#ctx-context-and-memory-inside-a-session) | 30 | 2 | 1 | 4 | 7 | 11 | 5 |
 | [Changes that stop short of everywhere they must reach](#xf-changes-that-stop-short-of-everywhere-they-must-reach) | 53 | 3 | 1 | 26 | 3 | 16 | 4 |
 | [Architecture and conventions](#arch-architecture-and-conventions) | 28 | 0 | 1 | 16 | 2 | 5 | 4 |
 | [Duplicating instead of reusing](#reuse-duplicating-instead-of-reusing) | 20 | 0 | 0 | 15 | 0 | 5 | 0 |
@@ -127,8 +127,8 @@ A long session forgets. These are what gets lost, and what agents do about runni
 
 | ID | What goes wrong | Evidence | Prevent | Find and fix |
 |---|---|---|---|---|
-| CTX-01 | Runs out of context reading and listing files, and never submits anything | [4] [2] [22] Claude Sonnet 4: 57.4% (171) of 298 not-submitted trajectories in the long-context column; the... | note:reading-no-edit guide:finding-your-way | query:outline query:size |
-| CTX-02 | Keeps exploring without ever moving on to an edit | [4] [2] Prose gives Sonnet 4 endless file reading at 17.0%, with no denominator defined and no... | note:reading-no-edit guide:stop-researching | query:outline |
+| CTX-01 | Runs out of context reading and listing files, and never submits anything | [4] [2] [22] Claude Sonnet 4: 57.4% (171) of 298 not-submitted trajectories in the long-context column; the... | guide:finding-your-way | query:outline query:size |
+| CTX-02 | Keeps exploring without ever moving on to an edit | [4] [2] Prose gives Sonnet 4 endless file reading at 17.0%, with no denominator defined and no... | guide:stop-researching | query:outline |
 | CTX-03 | Reads the right file, understands the problem, and never attempts the edit | [5] 16 of 914 (1.8%) | guide:know-done | tool:goal |
 | CTX-04 | Reads whole large files after finding the right one, diluting its context | [2] | guide:finding-your-way | query:outline |
 | CTX-05 | Re-reads the same files repeatedly, or re-runs searches it already tried | [7] [23] Redundancy: Claude Sonnet 4.5 0.708, Devstral 2 0.672, Gemini 2.5 Pro 0.558, GPT-5 0.487... | guide:batch-reads | query:outline |
@@ -140,7 +140,7 @@ A long session forgets. These are what gets lost, and what agents do about runni
 | CTX-11 | Forgets file paths and what it created after compaction | [32] artifact tracking weakest dimension for all methods: Factory 2.45, Anthropic 2.33, OpenAI 2.19... | guide:resume-check | tool:coord tool:gate |
 | CTX-12 | Loses the exact error, endpoint and cause in a summary, keeping only that something failed | [32] one 401 debugging probe: scores 4.8, 3.9 and 3.2 by method | guide:handoff | tool:goal |
 | CTX-13 | Keeps editing after compaction without rereading definitions, inventing names that don't exist | [33] One session: six nonexistent identifiers and an initialization constraint replaced with a... | note:scan-on-edit | scan:undefined-name scan:phantom-local-import |
-| CTX-14 | Forgets it read the files after compaction, reads them again, refills context, and compacts without editing | [34] | note:reading-no-edit | query:outline |
+| CTX-14 | Forgets it read the files after compaction, reads them again, refills context, and compacts without editing | [34] | none | query:outline |
 | CTX-15 | Forgets a schema it checked earlier and writes SQL with the wrong columns | [31] By message 40+: INSERT with 32 values for a 35-column table; npcflag regressed to npcflags... | guide:real-apis hook:check-after-edit | query:find |
 | CTX-16 | Believes it's near its context limit, then rushes or stops with room left | [35] | hook:stop-short guide:compaction-not-a-reason | tool:goal |
 | CTX-17 | Reads the first part of a file, then adds a helper that already exists further down | own | scan:redefined-def | scan:redefined-def scan:clone-function |
@@ -1015,7 +1015,6 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | note:addressed-to-agent | One note when what was read addresses an agent or hides characters | plugin/hooks/repo_notes.py | `def addressed_to_an_agent` |
 | note:before-a-pr | One note before `gh pr create`: search for the same work, check the base | plugin/hooks/repo_notes.py | `before-a-pull-request` |
 | note:other-repo | One note when `git -C` points outside the working folder | plugin/hooks/repo_notes.py | `other-repository` |
-| note:reading-no-edit | One note at 40 files read with no edit, outside a review | plugin/hooks/repo_notes.py | `def reading_without_editing` |
 | note:skips-checks | One note on skipping a commit's own checks. Bash holds are for destructive actions, by the user's decision | plugin/hooks/repo_notes.py | `skips-repo-checks` |
 | note:production-target | One note on a command naming production that changes data | plugin/hooks/repo_notes.py | `production-target` |
 | note:edit-before-reproducing | One note on a first edit for a bug with nothing run yet | plugin/hooks/repo_notes.py | `def edits_before_reproducing` |

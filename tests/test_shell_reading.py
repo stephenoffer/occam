@@ -250,7 +250,8 @@ def test_multi_line_shapes_still_read_as_one_command():
     "python3 <<E\nx\n" * 20_000,
     "'" * 100_001,
     " #" * 100_000,
-], ids=["base64 blob", "newlines in -c", "python words", "dash words", "unterminated heredoc", "repeated heredocs", "quotes", "comments"])
+    "psql -c '" + "/* " * 70_000 + "DELETE FROM users'",
+], ids=["base64 blob", "newlines in -c", "python words", "dash words", "unterminated heredoc", "repeated heredocs", "quotes", "comments", "unclosed SQL comments"])
 @pytest.mark.parametrize("handler", ["pre-tool", "post-tool"])
 def test_a_huge_command_stays_well_inside_the_limit(agent, command, handler):
     started = time.monotonic()

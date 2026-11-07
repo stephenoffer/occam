@@ -811,8 +811,8 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
     result = scanner.run_scan(root, paths or None, seconds=seconds, focus=sorted(changed))
     findings = _gate_findings(root, base, changed, deleted, renamed, paths, result)
     whole = not result.stats.get("partial")
-    limit = 75 if seconds is None else seconds  # the command line stops everything at its limit plus 35 seconds, so leave room for the rest
-    budget = change_checks.RUNTIME_LIMIT if not limit else max(0.0, min(change_checks.RUNTIME_LIMIT, limit + 10 - (time.monotonic() - started)))
+    # With a limit, the command line stops everything at it plus 35 seconds, so leave room for the rest. Without one, something else decides on the answer, so it's whole.
+    budget = float("inf") if seconds is None else max(0.0, min(change_checks.RUNTIME_LIMIT, seconds + 10 - (time.monotonic() - started)))
     change_notes, change_not_run = ([], []) if paths else change_checks.notes(root, base, changed, deleted, renamed, whole, budget=budget)
     blockers, warnings = _sort_gate_findings(findings)
     extras = _gate_extras(root, base, changed, result.project, gone, for_design, whole=whole)
@@ -823,11 +823,13 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
         orphaned = {(note["path"], note["line"]) for note in scope["notes"] if note["rule"] == "orphaned-by-change"}
         warnings = [w for w in warnings if not (w["rule"] in ("unreferenced-def", "orphan-module") and (w["path"], w["line"]) in orphaned)] + scope["notes"]
     lines = [f"occam gate: {len(changed)} changed files, {len(deleted)} deleted, {len(blockers)} blockers, {len(warnings)} warnings.", *report.partial_note(result.stats), *([scope["size"]] if scope and scope["size"] else []), "",
-             *_concern_lines(blockers, warnings, (() if scope else ("scope",)) + (("change",) if change_not_run else ()))]
+             *_concern_lines(blockers, warnings, (() if scope else ("scope",)) + (("change",) if change_not_run or paths else ()))]
     unread = _unread(changed, result)
     lines += _not_checked(root, paths, unread, result)
     if change_not_run:
         lines += ["", "NOT CHECKED, because the change is too large, time ran out or something couldn't be read: " + ", ".join(change_not_run) + "."]
+    elif paths:
+        lines += ["", "NOT CHECKED: what the change reaches elsewhere in the repository, which needs the diff. Run `gate` without paths for that."]
     lines += ["", "Checks only you can make:", *[f"  ? {question}" for question in _JUDGMENT]]
     goal_line = _goal_line(root)
     if goal_line:

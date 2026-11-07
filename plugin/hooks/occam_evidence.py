@@ -57,15 +57,23 @@ _RUNS_ANOTHER_PROGRAM = {"bundle", "pnpm", "yarn", "npx", "bunx", "uv", "poetry"
 # `help` counts only as the subcommand, and `-h` never: for redis-cli, dropdb and psql it names a host. A dry run says so with a value that means it.
 _ONLY_LOOKS = re.compile(r"--help|--dry-?run(?:=(?:client|server|true|all))?|--preview-only", re.I)
 _SUBCOMMAND_MUST_BE = {"kubectl": ("delete",), "helm": ("uninstall", "delete")}
-_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context"}
+# The subcommand is the first of these, so a flag's value is skipped whether or not the flag is known to take one.
+_SUBCOMMANDS = {"kubectl": {"annotate", "api-resources", "api-versions", "apply", "attach", "auth", "autoscale", "certificate", "cluster-info", "completion", "config", "cordon", "cp",
+                            "create", "debug", "delete", "describe", "diff", "drain", "edit", "events", "exec", "explain", "expose", "get", "help", "kustomize", "label", "logs", "patch",
+                            "plugin", "port-forward", "proxy", "replace", "rollout", "run", "scale", "set", "taint", "top", "uncordon", "version", "wait"},
+                "helm": {"completion", "create", "delete", "dependency", "env", "get", "help", "history", "install", "lint", "list", "ls", "package", "plugin", "pull", "push",
+                         "registry", "repo", "rollback", "search", "show", "status", "template", "test", "uninstall", "upgrade", "verify", "version"}}
+_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context", "--as", "--as-group", "--token", "-v"}
 _AWS_DESTRUCTIVE = re.compile(r"(?:delete|terminate|deregister|purge)-[\w-]+")
-_TEST_ENVIRONMENT = re.compile(r"\b(?:RAILS_ENV|RACK_ENV|APP_ENV|NODE_ENV)=test\b")
+_ENVIRONMENT = re.compile(r"(?:RAILS_ENV|RACK_ENV|APP_ENV|NODE_ENV)=(.*)")
 _WINDOWS_RECURSIVE_DELETE = re.compile(r"(?:^|[\s;&|(])(?:rmdir|rd|del|erase)\s+(?:/\w\s+)*/s\b(?:\s+/\w)*\s+(\S+)|\bRemove-Item\b(?=[^;&|\n]*\s-Recurse\b)((?:\s+-\w+)*)\s+(?!-)(\S+)", re.I)
 _TOO_MUCH_ON_WINDOWS = re.compile(r"^(?:[A-Za-z]:[\\/]?|[\\/]|~.*|%USERPROFILE%.*|\$env:USERPROFILE.*|\$HOME.*|\.\.?[\\/]?|\*)$", re.I)
 _QUOTED_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
 SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "mongosh", "mongo"}
 DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate\s+(?:table\s+)?\w+|dropDatabase)\b", re.I)
 _CHANGES_ROWS = re.compile(r"\b(?:delete\s+from|update\s+[\w.\"`]+\s+set)\b", re.I)  # anywhere in the statement, so a leading comment can't hide it
+# One left open runs to the end, as the database reads it, which also keeps this linear on a command full of openers.
+_SQL_TEXT_AND_COMMENTS = re.compile(r"'(?:[^']|'')*(?:'|\Z)|\"(?:[^\"]|\"\")*(?:\"|\Z)|--[^\n]*|/\*.*?(?:\*/|\Z)", re.S)
 NETWORK_CLIENTS = {"curl", "wget", "http", "https", "nc", "ncat"}
 GENERATED_NAMES = {"build", "dist", "target", "out", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
                    ".venv", "venv", ".next", ".cache", ".turbo", ".gradle", "coverage", ".coverage", "htmlcov", "test-results"}
@@ -204,41 +212,70 @@ def deletes_too_much(word: str, inside_project=lambda _: False) -> bool:
 
 
 def drops_data(sql: str) -> bool:
-    """A drop or truncate anywhere, or a DELETE or UPDATE statement with no WHERE. Judged a statement at a time, so a quoted value can't hide the WHERE."""
-    return bool(DROPS_DATA.search(sql)) or any(_CHANGES_ROWS.search(statement) and not re.search(r"\bwhere\b", statement, re.I) for statement in sql.split(";"))
+    """A drop or truncate, or a DELETE or UPDATE statement with no WHERE, judged a statement at a time.
+    Quoted text and comments are blanked first, so a `;` or `WHERE` inside them neither splits a statement nor stands in for its condition."""
+    plain = _SQL_TEXT_AND_COMMENTS.sub(lambda match: match.group(0)[0] * 2 if match.group(0)[0] in "'\"" else " ", sql)
+    return bool(DROPS_DATA.search(plain)) or any(_CHANGES_ROWS.search(statement) and not re.search(r"\bwhere\b", statement, re.I) for statement in plain.split(";"))
 
 
-def _subcommand(args: list[str]) -> str | None:
+def _subcommand(program: str, args: list[str]) -> str | None:
     words = iter(args)
     for word in words:
         if word in _TAKES_A_VALUE:
             next(words, None)
-        elif not word.startswith("-"):
+        elif word in _SUBCOMMANDS[program]:
             return word
     return None
 
 
-def _hard_to_undo(name: str, args: list[str], text: str, alone: bool = True) -> str | None:
-    lowered = [arg.lower() for arg in args]
-    if any(_ONLY_LOOKS.fullmatch(arg) for arg in args) or lowered[:1] == ["help"]:
-        return None
+def in_a_test_environment(commands: list[list[str]]) -> list[bool]:
+    """For each simple command, whether it runs with RAILS_ENV, NODE_ENV or the like set to `test`, by its own assignments and arguments or an earlier `export`.
+    Each command answers for itself, so a test reset chained to a real drop doesn't excuse the drop."""
+    exported: dict[str, str] = {}
+    answers = []
+    for words in commands:
+        own = dict(exported)
+        for word in words:
+            match = _ENVIRONMENT.fullmatch(word.replace('"', "").replace("'", ""))
+            if match:
+                own[match.group(0).split("=", 1)[0]] = match.group(1)
+        if words[:1] == ["export"]:
+            exported = own
+        answers.append(bool(own) and all(value == "test" for value in own.values()))  # NODE_ENV=test beside RAILS_ENV=production still asks
+    return answers
+
+
+def _empties_a_store(name: str, lowered: list[str]) -> str | None:
+    """The commands whose danger is in their arguments' shape rather than in a fixed subcommand."""
     if name == "aws" and (any(_AWS_DESTRUCTIVE.fullmatch(arg) for arg in lowered) or (("s3" in lowered and "rb" in lowered) or ("s3" in lowered and "rm" in lowered and "--recursive" in lowered))):
         return "this `aws` command is hard to undo."
     if name == "redis-cli" and lowered[-1:] in (["flushall"], ["flushdb"]) and lowered[-2:-1] not in (["get"], ["set"], ["del"], ["exists"], ["type"]):
         return f"`redis-cli {lowered[-1]}` empties the database."
     if any(os.path.basename(arg) == "manage.py" and lowered[index + 1:index + 2] == ["flush"] for index, arg in enumerate(lowered)):
         return "`manage.py flush` empties the database."
+    return None
+
+
+def _hard_to_undo(name: str, args: list[str], testing: bool = False) -> str | None:
+    lowered = [arg.lower() for arg in args]
+    if any(_ONLY_LOOKS.fullmatch(arg) for arg in args) or lowered[:1] == ["help"]:
+        return None
+    emptied = _empties_a_store(name, lowered)
+    if emptied:
+        return emptied
     program = name if name in HARD_TO_UNDO else next((arg for arg in lowered if arg in HARD_TO_UNDO), None) if name in _RUNS_ANOTHER_PROGRAM else None
-    if program is None or (program == "gcloud" and lowered[:1] == ["config"]) or (program in ("rails", "rake", "prisma") and alone and _TEST_ENVIRONMENT.search(text)):
+    if program is None or (program == "gcloud" and lowered[:1] == ["config"]) or (program in ("rails", "rake", "prisma") and testing):
         return None
-    if program in _SUBCOMMAND_MUST_BE and (_subcommand(lowered) or "") not in _SUBCOMMAND_MUST_BE[program]:
-        return None
+    if program in _SUBCOMMAND_MUST_BE:
+        after = lowered[lowered.index(program) + 1:] if name != program else lowered  # `npx kubectl delete` is kubectl's own words after its name
+        if "-h" in after or (_subcommand(program, after) or "") not in _SUBCOMMAND_MUST_BE[program]:
+            return None
     words = next((words for words in HARD_TO_UNDO[program] if all(word in lowered for word in words)), None)
     return f"`{' '.join((program, *words))}` is hard to undo." if words is not None else None
 
 
-def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside_project=lambda _: False) -> str | None:
-    """Why someone should see this command first. `programs` is each simple command's program and arguments."""
+def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside_project=lambda _: False, testing: list[bool] | None = None) -> str | None:
+    """Why someone should see this command first. `programs` is each simple command's program and arguments, and `testing` whether each runs in a test environment."""
     if disables_checks(text) and SETTINGS_FILE.search(text):
         return "this turns off the checks on this session's work."
     if PIPE_TO_SHELL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", text)) or SHELL_RUNS_DOWNLOAD.search(text):
@@ -246,13 +283,13 @@ def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside
     windows = _WINDOWS_RECURSIVE_DELETE.search(_QUOTED_TEXT.sub("''", text))
     if windows and _TOO_MUCH_ON_WINDOWS.match(windows.group(1) or windows.group(3) or ""):
         return f"this recursively deletes {windows.group(1) or windows.group(3)}, and on Windows that skips the Recycle Bin."
-    for name, args in programs:
+    for index, (name, args) in enumerate(programs):
         if name == "rm" and any(re.fullmatch(r"-[a-zA-Z]*[rR][a-zA-Z]*|--recursive", arg) for arg in args):
             targets = [arg for arg in args if not arg.startswith("-") and deletes_too_much(arg, inside_project)]
             if targets:
                 return f"this recursively deletes {targets[0]}."
-        elif _hard_to_undo(name, args, text, len(programs) == 1):
-            return _hard_to_undo(name, args, text, len(programs) == 1)
+        elif _hard_to_undo(name, args, bool(testing and testing[index])):
+            return _hard_to_undo(name, args, bool(testing and testing[index]))
         elif name in SQL_CLIENTS and any(drops_data(arg) for arg in args):
             return "this drops or truncates data."
         elif name in NETWORK_CLIENTS:
