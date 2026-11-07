@@ -6,6 +6,8 @@ Derive tests from requirements, known failures, invariants and component contrac
 
 Take expected values from the requirement, a hand calculation or a reference, not from running the code and pasting what it printed. Code and test written by one author share one understanding of the problem, so aim the test at what that understanding could have got wrong.
 
+**Reproduce it before changing anything.** Run the failing case, and read recent history for that code. Agents have patched bugs the last commit had already fixed, and bugs that were never there.
+
 Test public behavior and meaningful boundaries, not private implementation shape, unless that shape is the requirement. Use deterministic fixtures where possible.
 
 Avoid a universal coverage target, a fixed test count, and redundant tests for trivial code. Don't force test-first work on mechanical or documentation-only changes.
@@ -31,6 +33,8 @@ Consider empty, null, malformed, boundary, oversized, duplicate, concurrent and 
 **Mocks** isolate a boundary and can't prove the integration across it. A mocked database or HTTP response may encode the same wrong assumption as the code, so both agree and both are wrong. Validate important adapters against the actual protocol, a vendor sandbox or a representative environment. If none is available, name exactly what is unverified and still run what is feasible.
 
 **Passing suites:** check discovery, exit status, skips, warnings and which environment ran. Zero collected tests isn't a success. Distinguish a test failure from an unavailable dependency, an environmental outage and a pre-existing defect.
+
+Run the project's own tests, as far as the change reaches. Yours share your assumptions, and `occam query impact --changed` lists what else reaches this. A high coverage or mutation score doesn't clear a suite written from the implementation: tests that encode a bug score well too.
 
 **Passing tests aren't the requirement.** Tests can pass while the combined behavior a user needs is broken. Exercise the real thing:
 

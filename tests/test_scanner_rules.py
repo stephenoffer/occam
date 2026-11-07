@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
 from occam_tools import scan  # noqa: E402
 from occam_tools.catalog import BY_ID, CATEGORIES, LAYERS, RULES, SEVERITIES  # noqa: E402
+from rule_cases_large import LARGE_CODEBASE_CASES  # noqa: E402
 
 # One file: (rule, path, code that should fire, near miss that shouldn't, or None if none is meaningful)
 ONE_FILE = [
@@ -379,6 +380,7 @@ PROJECT = [
     ("pull-up-method", {"a.py": "class P:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        return c\nclass Q:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        return c\n"},
      {"a.py": "class P:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        return c\nclass Q:\n    def go(self):\n        return 1\n"}),
 ]
+ONE_FILE = [*ONE_FILE, *LARGE_CODEBASE_CASES]
 GIT_ONLY = {"test-weakened", "committed-artifact"}  # exercised against a real git repository in test_tools.py
 NOTEBOOK_RULES = {"nb-out-of-order", "nb-hidden-state", "nb-unpinned-install", "nb-large-output", "nb-sensitive-output"}
 

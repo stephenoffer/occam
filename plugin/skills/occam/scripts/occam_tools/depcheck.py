@@ -21,6 +21,7 @@ _REGISTRIES = {
 }
 _NAME = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._/@-]{0,200}$")
 _YOUNG_DAYS = 90
+_WITH_VERSION = re.compile(r"^(?P<name>.+?)(?:==|@(?=\d))(?P<version>[\w.+-]+)$")
 
 
 def _fetch(url: str) -> tuple[int, dict]:
@@ -43,8 +44,30 @@ def _parse_time(text: str | None) -> dt.datetime | None:
         return None
 
 
-def check_package(registry: str, name: str) -> dict:
-    """Is this name real, and does it look established? Sends only the name. Never installs anything."""
+def _known_versions(registry: str, document: dict) -> set | None:
+    if registry == "pypi":
+        return set(document.get("releases", {}))
+    if registry == "npm":
+        return set(document.get("versions", {}))
+    if registry == "crates":
+        return {item.get("num") for item in document.get("versions", [])}
+    return None  # the Go proxy's latest answer doesn't list them
+
+
+def check_package(registry: str, spec: str) -> dict:
+    """Is this name real, is that version if one is given (`name==1.2`, `name@1.2`), and does it look established? Sends only the name. Never installs anything."""
+    pinned = _WITH_VERSION.match(spec)
+    name, version = (pinned.group("name"), pinned.group("version")) if pinned else (spec, None)
+    result = _check_name(registry, name)
+    if version and result.get("status") == "exists":
+        code, document = _fetch(_REGISTRIES[registry].format(name=urllib.parse.quote(name, safe="@/")))
+        known = _known_versions(registry, document) if code == 200 else None
+        if known is not None and version not in known:
+            result.update(status="not found", warning=f"{name} exists, and it has no release {version}. Agents often invent version numbers.")
+    return result
+
+
+def _check_name(registry: str, name: str) -> dict:
     if registry not in _REGISTRIES or not _NAME.match(name):
         return {"registry": registry, "name": name, "status": "invalid request"}
     code, document = _fetch(_REGISTRIES[registry].format(name=urllib.parse.quote(name, safe="@/")))

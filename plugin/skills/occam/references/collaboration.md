@@ -8,6 +8,8 @@ If your fix lands in a file someone else is editing, keep your edit minimal and 
 
 Worktrees isolate files, not databases, ports, caches, credentials, test resources or external services. Isolate those too where needed. Check what a new worktree is based on, because it may not include uncommitted work.
 
+**Before opening a pull request,** search open pull requests and recent commits for the same work, since duplicates are a common reason agent pull requests get closed. Confirm the repository and base branch, and follow the contribution guide and template.
+
 ## Delegation
 
 Choose from the task graph, how independent the work is, the value of review, and the resource budget. `occam partition` turns a repository into disjoint shards and says how many agents that justifies. These are heuristics, not quotas:

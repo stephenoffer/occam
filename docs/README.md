@@ -1,22 +1,24 @@
 # Occam docs
 
-None of this is loaded during coding sessions.
+These pages are for people. Agents get the skills instead, so nothing here costs tokens during a coding session.
 
-## Using occam
+New here? Start with [the examples](examples.md).
+
+## Getting started
 
 | Read | When you want to know |
 |---|---|
-| [Examples](examples.md) | What occam does in practice, and what good output looks like |
+| [Examples](examples.md) | What occam does in practice, with real runs, and what good output looks like |
 | [The `occam` CLI](tools.md) | What each command does, and how to read findings |
-| [Claude Code integration](claude-code.md) | What each hook does, how firmly, and what it can't do |
-| [Codex adapter](../adapters/codex/README.md) | How to install on Codex. Nothing there has been run |
+| [Claude Code integration](claude-code.md) | What each hook does, when it fires and how firmly |
+| [Codex adapter](../adapters/codex/README.md) | How to install on Codex, where it hasn't been run yet |
 
-## Deciding whether to trust it
+## Results and research
 
 | Read | When you want to know |
 |---|---|
-| [What was tested](evidence.md) | The results, and the status of each combination |
-| [Evaluating audit and repair](evaluation.md) | How the audit skill and scanner performed, and what independent reviews found |
+| [What was tested](evidence.md) | What the head-to-head runs showed, and the status of each combination |
+| [Evaluating audit and repair](evaluation.md) | How the audit skill and scanner performed, and what independent reviews found and fixed |
 | [How agents get code wrong](failure-modes.md) | Ten failure modes, what occam does about each, and what still gets past it |
 | [Full results](../evals/RESULTS.md) | Every table and caveat, and what the evaluation cost |
 
@@ -34,7 +36,7 @@ The Karpathy-inspired guidelines credited in the research record are maintained 
 
 ## Running the tests
 
-These are free and deterministic. The full run took about 13 minutes when last timed.
+The tests are free and deterministic, and a full run took about 13 minutes when last timed.
 
 ```bash
 pip install --group dev

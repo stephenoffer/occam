@@ -6,10 +6,10 @@ Written 2026-11-05. For maintainers and anyone deciding whether to trust this. `
 
 **In short:**
 
-- **Does it help an agent?** Mixed, and short of the bar set in advance. On the large audit the plugin located about as many defects as no skill and a blind judge scored its repairs higher, though one weak no-skill run drives that. The small audit showed no benefit. [Details.](#does-it-help-an-agent-mixed-and-short-of-the-bar-set-in-advance)
-- **Does the scanner work?** Partly. Alone, on a blind test, it located under a fifth of the semantic defects. On real repositories, a model judge called about one lead in three worth acting on and one in eight false. [Details.](#how-well-the-scanner-works)
-- **Can the tools be trusted?** Only as far as their last adversarial read. A fresh reviewer, on the same model, found three ways to run or break a user's code, after 400 of the author's own tests had passed. [Details.](#what-independent-review-found)
-- **What's unknown?** Whether an agent does better with these tools on code too large to read whole, whether a person agrees with the judgments on real repositories, and anything on Codex. [Details.](#what-has-not-been-checked)
+- **Does it help an agent?** It makes repairs more careful, not more numerous. Across two large tests, plugin runs located as many defects as no skill and fixed fewer, a median of 48.5 of 60 serious ones against 55. They also used the scanner every time, wrote regression tests in every run, added about a quarter of the code, and in the latest test made fewer unflagged behavior changes (6 against 20). [Details.](#does-it-help-an-agent-more-careful-repairs-not-more-of-them)
+- **Does the scanner work?** As a starting point, yes. On real repositories, a model judge called about one lead in three worth acting on and one in eight false, and one lead took an agent to a real crash bug. Alone, on a blind test, it located under a fifth of the semantic defects, so reading still matters. [Details.](#how-well-the-scanner-works)
+- **Can the tools be trusted?** They've been through adversarial review. A fresh reviewer, on the same model, found three ways to run or break a user's code after 400 of the author's own tests had passed, and those are fixed with regression tests. [Details.](#what-independent-review-found)
+- **What's next?** A preregistered study on eight new repositories, scoring cleanup, decisions and harm, with serious bugs as a guard. Only pilots have run, at $7.47, and it's paused until the account's weekly usage limit resets on November 9, so there's no comparison yet. [What has not been checked.](#what-has-not-been-checked)
 
 ## What the review of occam found
 
@@ -30,7 +30,7 @@ Before this work, occam was a careful skill for making a change and reviewing a 
 
 The earlier evaluation still stands, and it applies here: the full plugin cost 57% more on the holdout and tied on acceptance. Nothing below shows these additions make agents' output better. It shows the tools work, and how far they can be trusted.
 
-## Does it help an agent? Not in two large tests, and no-skill runs usually fixed more
+## Does it help an agent? More careful repairs, not more of them
 
 **Across two large preregistered tests, the plugin located about as many defects as no skill, 92.8 against 93.0 of 122 per run, and typically fixed fewer: median 48.5 of 60 against 55.** The total of 293 against 294 of 360 looks like a tie only because of one no-skill run that fixed 19. Without it, no skill averages 55.0 to the plugin's 48.8. This doesn't support "significantly improves". What changed reliably is how agents behave: plugin runs changed far less code, made fewer unrequested changes, and took longer. These tests also have design problems, listed under "What these tests can't show".
 

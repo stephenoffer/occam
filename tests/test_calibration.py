@@ -28,6 +28,22 @@ def case_id(path: Path) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
+IMPORT_NAMES = {"pyyaml": "yaml", "scikit-learn": "sklearn", "pillow": "PIL", "python-dateutil": "dateutil", "beautifulsoup4": "bs4"}
+
+
+def skip_without_its_packages(case_dir: Path) -> None:
+    """A case that pins third-party packages can't be calibrated without them, and an import error would make every check fail for
+    the wrong reason. CI installs them with `--group cases` where the Python version allows, and says so when it skips."""
+    lock = case_dir / "files" / "requirements.lock"
+    if not lock.exists():
+        return
+    names = [line.split("==")[0].strip().lower() for line in lock.read_text().splitlines() if "==" in line and not line.lstrip().startswith("#")]
+    modules = [IMPORT_NAMES.get(name, name.replace("-", "_")) for name in names]
+    probe = "import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(m) for m in sys.argv[1:]) else 1)"
+    if subprocess.run([grade.PYTHON, "-c", probe, *modules], capture_output=True, timeout=60).returncode:
+        pytest.skip(f"{case_id(case_dir)} needs {', '.join(names)}, which {grade.PYTHON} doesn't have: `pip install --group cases`, on Python 3.11 or later")
+
+
 def apply_solution(solution: Path, workspace: Path) -> tuple[str, Path | None]:
     for source in solution.rglob("*"):
         relative = source.relative_to(solution)
@@ -46,6 +62,7 @@ def apply_solution(solution: Path, workspace: Path) -> tuple[str, Path | None]:
 
 @pytest.fixture(params=CASES, ids=case_id)
 def case(request) -> Path:
+    skip_without_its_packages(request.param)
     return request.param
 
 
@@ -69,6 +86,7 @@ def test_reference_passes(case, tmp_path):
                          ids=case_id)
 def test_visible_suite_is_in_the_state_the_case_assumes(case_dir, tmp_path):
     """Catches a false premise, such as a "pre-existing failure" that does not actually fail."""
+    skip_without_its_packages(case_dir)
     workspace = tmp_path / "ws"
     grade.build_starter(case_dir, workspace)
     report = tmp_path / "visible.xml"
@@ -88,6 +106,7 @@ def traps() -> list[Path]:
 @pytest.mark.parametrize("trap", traps(), ids=lambda t: f"{t.parents[2].name}/{t.parents[1].name}/{t.name}")
 def test_trap_fails_for_the_intended_reason(trap, tmp_path):
     case_dir = trap.parents[1]
+    skip_without_its_packages(case_dir)
     workspace = tmp_path / "ws"
     grade.build_starter(case_dir, workspace)
     message, trace = apply_solution(trap, workspace)

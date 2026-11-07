@@ -9,6 +9,7 @@ from typing import Iterable, NamedTuple
 
 from .py_helpers import PLACEHOLDER_NAME, _has_sql
 from .rules_shell import shell_findings
+from .rules_config import CLIENT_VISIBLE_SECRET
 from .source import C_FAMILY, DOCKERFILE, Source
 
 JS = ("javascript", "typescript")
@@ -107,7 +108,29 @@ TEXT_RULES: list[TextRule] = [
     _r("permissive-cors", ALL,
        r"""Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*|\borigin\s*:\s*["']\*["']|\ballow_origins\s*=\s*\[\s*["']\*"""
        r"""|\bCORS_(?:ORIGIN_ALLOW_ALL|ALLOW_ALL_ORIGINS)\s*=\s*True\b|\bALLOWED_HOSTS\s*=\s*\[\s*["']\*""", view="raw"),
-    _r("debug-exposed", ("python", "javascript", "typescript"), r"^[ \t]*DEBUG\s*=\s*True\b|\.run\([^)\n]*\bdebug\s*=\s*True|\bapp\.debug\s*=\s*True\b", flags=_M, scripts=False),
+    _r("debug-exposed", ("python", "javascript", "typescript"), r"^[ \t]*DEBUG\s*=\s*True\b|\.run\([^)\n]*\bdebug\s*=\s*True|\bapp\.debug\s*=\s*True\b|\bintrospection\s*[:=]\s*[Tt]rue\b", flags=_M, scripts=False),
+    _r("mock-in-production", PY, r"^[ \t]*(?:from unittest(?:\.mock)? import\b[^\n]*\b(?:mock|Mock|MagicMock|patch)\b|import unittest\.mock\b|from mock import\b|import mock\b)", flags=_M, scripts=False),
+    _r("test-detection-in-code", PY, r"""["']pytest["']\s+in\s+sys\.modules|PYTEST_CURRENT_TEST|["']unittest["']\s+in\s+sys\.modules""", view="raw", scripts=False),
+    _r("test-detection-in-code", JS, r"""process\.env\.NODE_ENV\s*[!=]==?\s*["']test["']|JEST_WORKER_ID|process\.env\.VITEST\b|typeof\s+(?:jest|describe)\s*[!=]==?""", view="raw", scripts=False),
+    _r("test-detection-in-code", ("go",), r"""\btesting\.Testing\(\)|flag\.Lookup\("test\.v"\)""", view="raw", scripts=False),
+    _r("log-injection", JS, r"\bconsole\.(?:log|info|warn|error)\([^)\n]*\breq\.(?:body|query|params|headers)\b|\blogger\.\w+\([^)\n]*\breq\.(?:body|query|params|headers)\b"),
+    _r("open-redirect", JS, r"\bres\.redirect\(\s*(?:\d+\s*,\s*)?req\.(?:query|body|params)\b"),
+    _r("mass-assignment", JS, r"\.(?:create|update|updateOne|findByIdAndUpdate|findOneAndUpdate|insertOne)\(\s*(?:[^,()\n]*,\s*)?req\.body\s*[,)]|\bnew\s+[A-Z]\w*\(\s*req\.body\s*\)|\bObject\.assign\(\s*\w+\s*,\s*req\.body\s*\)"),
+    _r("mass-assignment", PY, r"""^[ \t]*fields\s*=\s*["']__all__["']""" , view="raw", flags=_M, confidence="low"),
+    _r("mass-assignment", ("ruby",), r"\bparams\.permit!"),
+    _r("weak-path-check", ("python", "javascript", "typescript"), r"""\.replace\(\s*["']\.\./?["']\s*,\s*["']["']\s*\)""", view="raw"),
+    _r("insecure-cookie", JS, r"""\bres\.cookie\((?![^)]*\bsecure\b)"""),
+    _r("token-in-browser-storage", JS, r"""\b(?:localStorage|sessionStorage)\.setItem\(\s*["'`][^"'`\n]*(?i:token|jwt|secret|password|auth)""", view="raw"),
+    _r("secret-in-client-bundle", ("javascript", "typescript", "html"), CLIENT_VISIBLE_SECRET.pattern, view="raw"),
+    _r("llm-prompt-from-request", PY, r"""\b(?:prompt|content)\s*[=:]\s*f["'][^"'\n]*\{\s*(?:request|req)\.""", view="raw"),
+    _r("llm-prompt-from-request", JS, r"""\b(?:prompt|content)\s*:\s*`[^`\n]*\$\{\s*req\.""", view="raw"),
+    _r("format-string", ("c", "cpp"), r"\b(?:printf|syslog)\(\s*[a-z_]\w*\s*\)|\bfprintf\(\s*\w+\s*,\s*[a-z_]\w*\s*\)|\bsn?printf\(\s*\w+\s*,\s*(?:\w+\s*,\s*)?[a-z_]\w*\s*\)"),
+    _r("hidden-cycle", PY, r"""^[ \t]+#[^\n]*\b(?i:circular|cycl\w*)\b[^\n]*\n[ \t]+(?:from\s+\S+\s+)?import\b|^[ \t]+(?:from\s+\S+\s+)?import\b[^\n]*#[^\n]*\b(?i:circular|cycl\w*)\b""", view="raw", flags=_M),
+    _r("react-index-key", JS, r"\bkey=\{\s*(?:index|idx|i)\s*\}"),
+    _r("effect-no-cleanup", JS, r"\buseEffect\(\s*(?:async\s*)?\(\s*\)\s*=>\s*\{(?:(?!\breturn\b)[^{}]|\{[^{}]*\}){0,400}?\b(?:setInterval|addEventListener|subscribe)\((?:(?!\breturn\b)[^{}]|\{[^{}]*\}){0,400}?\}\s*,"),
+    _r("generic-link-text", ("javascript", "typescript", "html"), r""">\s*(?i:click here|read more|here|link|learn more)\s*</(?:a|button|Link)>""", view="raw"),
+    _r("failure-reported-as-success", JS, r"""\bcatch\s*(?:\([^)]*\))?\s*\{[^{}]{0,200}\breturn\s*\{[^{}]{0,80}\b(?:success|ok)\s*:\s*true\b"""),
+    _r("fallback-fake", JS, r"""\bcatch\s*(?:\([^)]*\))?\s*\{[^{}]{0,200}\breturn\s+\w*(?i:mock|fake|dummy|stub|sample|placeholder)\w*"""),
     _r("disabled-control", ALL,
        r"@csrf_exempt\b|\bWTF_CSRF_ENABLED\s*=\s*False\b"
        r"|\b(?:auth|authn|authz|security|csrf|ssl|tls|signature|validation)_?(?:enabled|required|check)\s*[:=]\s*(?:False|false|0)\b"

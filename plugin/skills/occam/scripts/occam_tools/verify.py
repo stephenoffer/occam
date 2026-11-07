@@ -19,7 +19,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import design, docs, files as filesystem, report, reuse, scan as scanner, surgical
+from . import change_checks, design, docs, files as filesystem, report, reuse, scan as scanner, surgical
 from .source import is_test_path, language_of
 from .workflow import NEEDS_A_SHELL, active_claims, claim_holder, database, needs_a_shell
 from .zero_tests import ran_no_tests
@@ -29,7 +29,7 @@ _BLOCKING = {"truncation-marker", "fake-success", "stub-body", "stub-raise", "ph
              "debug-leftover", "committed-secret-file", "unsafe-deserialize", "dynamic-eval"}
 _CONCERNS = [
     ("incomplete", "Implementation is complete"), ("hallucination", "APIs and packages are real"), ("security", "Security"), ("error-masking", "Failures stay visible"),
-    ("testing", "Tests can fail"), ("scope", "Stayed in scope"), ("complexity", "Complexity"), ("duplication", "No new duplication"), ("overengineering", "No needless structure"),
+    ("testing", "Tests can fail"), ("change", "Reached everything it must"), ("pipeline", "Pipelines and infrastructure"), ("scope", "Stayed in scope"), ("complexity", "Complexity"), ("duplication", "No new duplication"), ("overengineering", "No needless structure"),
     ("dead-code", "No dead code left"), ("bloat", "No bloat"), ("comments", "Comments"), ("naming", "Naming"), ("performance", "Performance"),
     ("scalability", "Scalability"), ("architecture", "Architecture"), ("usability", "Usability"), ("reinvention", "Didn't reinvent"), ("language-practice", "Language practice"), ("notebook", "Notebooks"), ("docs", "Documents match the code"),
 ]
@@ -38,6 +38,7 @@ _JUDGMENT = [
     "Did you honor every constraint the user stated, including ones from earlier in the conversation?",
     "Did you check the layers this touches, and name the ones you didn't? (`occam map` lists them.)",
     "Is the behavior right for empty, huge, malformed and concurrent input, where those can occur?",
+    "Does your report or pull request describe only what the diff contains, and name everything it changed? If you blame a failure on existing code, did you run it on the old code?",
     "Would a maintainer understand this and accept the diff, or call it overcomplicated? Does every changed line trace to the request, to what this change orphaned, or to a fix it had to make?",
 ]
 
@@ -791,8 +792,11 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
                 (f" NOT CHECKED: git has been told not to watch {', '.join(unwatched[:5])}, so edits there don't show." if unwatched else ""), 0)
     result = scanner.run_scan(root, paths or None, seconds=seconds, focus=sorted(changed))
     findings = _gate_findings(root, base, changed, deleted, renamed, paths, result)
+    whole = not result.stats.get("partial")
+    change_notes, change_not_run = ([], []) if paths else change_checks.notes(root, base, changed, deleted, renamed, whole, change_checks.CHECKS if whole else change_checks.WITHIN_THE_DIFF)
     blockers, warnings = _sort_gate_findings(findings)
-    extras = _gate_extras(root, base, changed, result.project, gone, for_design, whole=not result.stats.get("partial"))
+    extras = _gate_extras(root, base, changed, result.project, gone, for_design, whole=whole)
+    warnings += change_notes
     warnings += extras["warnings"]
     scope = None if paths else surgical.review(root, base, changed, result)
     if scope:
@@ -802,6 +806,8 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
              *_concern_lines(blockers, warnings, () if scope else ("scope",))]
     unread = _unread(changed, result)
     lines += _not_checked(root, paths, unread, result)
+    if change_not_run:
+        lines += ["", "NOT CHECKED, because the change is too large, time ran out or something couldn't be read: " + ", ".join(change_not_run) + "."]
     lines += ["", "Checks only you can make:", *[f"  ? {question}" for question in _JUDGMENT]]
     goal_line = _goal_line(root)
     if goal_line:

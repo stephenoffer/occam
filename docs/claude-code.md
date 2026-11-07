@@ -1,6 +1,6 @@
 # Claude Code integration
 
-A skill on its own is guidance: the model reads it and decides. The Claude Code docs say so directly, and recommend hooks for anything that must happen every time. The `occam` plugin adds that deterministic layer.
+A skill on its own is guidance: the model reads it and decides. The Claude Code docs say so directly, and recommend hooks for anything that must happen every time. The `occam` plugin adds that deterministic layer, so the important habits happen whether or not the model remembers them: a check after editing, a pause before destructive commands, a review of high-consequence changes and a final report that matches what happened.
 
 Checked against the official docs on 2026-11-05 and Claude Code 2.1.318. `evals/RESULTS.md` records what was actually run.
 
@@ -41,7 +41,7 @@ From the shell, only the destructive actions named on this page stop a command. 
 
 | Part | Fires when | Lifts when |
 |---|---|---|
-| `occam:occam` core skill | Before the first code edit in a session made with an edit tool, unless it's small: under 20 lines and 1,500 characters, in an ordinary source file, within 3 code edits and 2 files, with nothing consequential in the request, the path or the text. A small edit gets small mode's rules stated instead. This is best effort, and the rule is stated beside the edit. It hasn't been shown to help: the only runs where it fired, on one case with an earlier wording, passed 0 of 2 on Sonnet against 2 of 2 with no skill. With the current wording that case passed 5 of 5, but every agent loaded the skill on its own, so the exception didn't fire | The skill is loaded |
+| `occam:occam` core skill | Before the first code edit in a session made with an edit tool, unless it's small: under 20 lines and 1,500 characters, in an ordinary source file, within 3 code edits and 2 files, with nothing consequential in the request, the path or the text. A small edit gets small mode's rules stated instead. This is best effort, and the rule is stated beside the edit. Whether the exception helps isn't measured yet: see [the small fix example](examples.md#the-same-small-fix-with-and-without-occam) | The skill is loaded |
 | Read-only requests | The prompt says review-only, plan-only, "don't change anything" and similar. Edits to project files are denied for that turn, including by subagents. From the shell, that means any write except one plain command naming a path that isn't there yet. Only writes the hook can see count, so `find -delete` or `xargs rm` gets through | Plain words like "go ahead", or a person approving a plan or answering a question |
 | Weakened checks | A test edit removes assertions or adds a skip, or a test file is deleted from the shell. Right after a failed check, with no code changed since: check configuration changes or a new suppression in an existing file | Held once, and the report must then name it |
 
@@ -96,20 +96,27 @@ Each complaint is sent back once per state of the code, at most 5 times without 
 | Audit skill | The prompt reads as an audit. An audit that doesn't ask for a fix is read-only, like "review only" |
 | Design doc | Once per file for each agent, when an edit touches a file that an accepted decision in `DESIGN.md` applies to. A repository with no design doc pays nothing |
 
-## What this can't do
+## Limits
 
-Being clear about this matters more than the table above.
+Occam is a safety net with known holes. Knowing where they are helps you lean on it the right way.
 
-- **It can't make the work good.** Hooks can force a check to run. They can't make it the right check, or make the fix correct.
-- **Loading isn't following.** The hook can make sure the skill was loaded. Whether each rule is applied is still the model's judgment.
-- **Shell edits are detected best-effort.** The hook parses the command line and catches redirects, `sed -i`, `tee`, `cp`, `mv`, `rm`, formatters with write flags, installers that change a manifest, and Python heredocs that write files. Formatters are recognized through `python -m`, `uv run`, `uvx`, `poetry run`, `conda run`, `nbqa` and similar. A dry run such as `black --check` is neither an edit nor a check, because formatting says nothing about behavior. A tool that writes because of its configuration, such as Ruff with `fix = true`, can't be seen from the command line. Behind a pipe, a failure is recognized only from what the output says. When Claude Code reports `bashEditDiff`, it uses that too. A file written by a project script or an unusual command can be missed, and so can git commands hidden behind an alias, a script or complex substitution.
-- **A check is recognized by its command,** so anything that looks like running tests or code counts. The hook doesn't judge whether it was relevant.
-- **Read-only detection is a pattern on the prompt's wording.** It can miss an unusual phrasing, or occasionally hold when it shouldn't. It doesn't give way on its own, since the agent reports and stops rather than looping. The reason it gives says how to lift it.
-- **It fails open.** If `python3` is missing or the script errors, nothing is enforced. A broken hook shouldn't wedge your session, and that is the tradeoff.
-- **It gives way.** A hold lifts after two retries of the same edit, and each complaint at Stop is sent back once per state of the code, at most 5 times without a check passing, so a false positive can't trap the agent. The agent is told to mention any unmet hold in its report.
-- **Subagents skip the load hold,** because the coordinating agent answers for their work. The read-only and destructive git guards still apply, and their edits still count at Stop.
-- **The final-message checks only run in a turn that edited code, and they read wording.** They compare patterns in the message with what was recorded, so a claim worded differently isn't seen and a name mentioned in passing counts as reported. [`failure-modes.md`](failure-modes.md) lists the ways around each one.
-- **It is not a security boundary.** A determined or misdirected agent can get around it. Use deny rules, the sandbox and branch protection for rules that can't bend.
+### What it can't judge
+
+Hooks can force a check to run. They can't make it the right check, or make the fix correct. Loading isn't following either: the hook can make sure the skill was loaded, but whether each rule gets applied is still the model's judgment. And a check is recognized by its command, so anything that looks like running tests or code counts. The hook doesn't judge whether it was relevant.
+
+### Where it can miss
+
+- Shell edits are detected best-effort. The hook parses the command line and catches redirects, `sed -i`, `tee`, `cp`, `mv`, `rm`, formatters with write flags, installers that change a manifest, and Python heredocs that write files. Formatters are recognized through `python -m`, `uv run`, `uvx`, `poetry run`, `conda run`, `nbqa` and similar. A dry run such as `black --check` is neither an edit nor a check, because formatting says nothing about behavior. A tool that writes because of its configuration, such as Ruff with `fix = true`, can't be seen from the command line. Behind a pipe, a failure is recognized only from what the output says. When Claude Code reports `bashEditDiff`, it uses that too. A file written by a project script or an unusual command can be missed, and so can git commands hidden behind an alias, a script or complex substitution.
+- Read-only detection is a pattern on the prompt's wording. It can miss an unusual phrasing, or occasionally hold when it shouldn't. It doesn't give way on its own, since the agent reports and stops rather than looping, and the reason it gives says how to lift it.
+- The final-message checks only run in a turn that edited code, and they read wording. They compare patterns in the message with what was recorded, so a claim worded differently isn't seen and a name mentioned in passing counts as reported. [`failure-modes.md`](failure-modes.md) lists the ways around each one.
+
+### Where it gives way on purpose
+
+It fails open. If `python3` is missing or the script errors, nothing is enforced, because a broken hook shouldn't wedge your session. It also gives way under pressure: a hold lifts after two retries of the same edit, and each complaint at Stop is sent back once per state of the code, at most 5 times without a check passing, so a false positive can't trap the agent. The agent is told to mention any unmet hold in its report.
+
+Subagents skip the load hold, because the coordinating agent answers for their work. The read-only and destructive git guards still apply to them, and their edits still count at Stop.
+
+None of this makes it a security boundary. A determined or misdirected agent can get around it, so use deny rules, the sandbox and branch protection for rules that can't bend.
 
 ## Cost
 
@@ -119,10 +126,10 @@ Billed by the token, `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` repriced saved runs 14 to
 
 ## Sharp edges worth knowing
 
-- **Worktree isolation may hide your diff.** A subagent with `isolation: worktree` branches from your default branch, not your HEAD, so a reviewer there won't see uncommitted work. That's why `code-reviewer` doesn't set it.
-- **The reviewer isn't strictly read-only.** It has no edit tools, and its brief forbids changes, but `Bash` can still write and subagents inherit a permissive session mode.
-- **A fresh reviewer helps because it hasn't seen your reasoning.** Handing it your conclusions removes that. Same-model reviewers aren't statistically independent, and approval is a claim to inspect, not proof.
-- **Plugin agents ignore `hooks`, `mcpServers` and `permissionMode` in their frontmatter.**
+- Worktree isolation may hide your diff. A subagent with `isolation: worktree` branches from your default branch, not your HEAD, so a reviewer there won't see uncommitted work. That's why `code-reviewer` doesn't set it.
+- The reviewer isn't strictly read-only. It has no edit tools, and its brief forbids changes, but `Bash` can still write and subagents inherit a permissive session mode.
+- A fresh reviewer helps because it hasn't seen your reasoning. Handing it your conclusions removes that. Same-model reviewers aren't statistically independent, and approval is a claim to inspect, not proof.
+- Plugin agents ignore `hooks`, `mcpServers` and `permissionMode` in their frontmatter.
 
 ## Adding a project-specific check
 

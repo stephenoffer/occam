@@ -1,28 +1,10 @@
 # Examples
 
-Part one is real output, labeled with where it came from. Part two shows how to invoke occam and the output it aims for.
+Real output first, then how to ask occam for things and what a good answer looks like.
 
-## Before and after
+Every example in part one says where it came from: a real agent run, scripted events through the real hook, or code written for this page. They were chosen to show what occam does, so they aren't a random sample, and the measured results live in [what was tested](evidence.md). The last two are runs where occam didn't help. You should see those too.
 
-These show what occam does. They were picked to show that, so they aren't a sample, and they don't show that the software ends up better. [What was tested](evidence.md) covers that, and the answer is mostly no. The last two examples are where occam did no better or did worse.
-
-### The same small fix, with and without occam
-
-*"The stock report prints `1 items` when a count is one, e.g. `python -m stockreport data/sample.csv` shows `WIDGET: 1 items`. It should say `1 item`. Can you fix that?"*
-
-Both arms fixed it, including the same bug on the total line, and passed the hidden tests in all 5 runs.
-
-| No skill: $0.045 | With occam: $0.067 |
-|---|---|
-| I fixed it in `stockreport/report.py`. [...] The existing test passes.<br><br>I also applied the same singular rule to the `Total:` line [...]<br><br>I didn't add a test for the singular case. | **Test:** I added `test_render_singular_item` in `tests/test_report.py`, covering a SKU with count 1 and a total of 1.<br><br>**Checks:** pytest passes (2 tests), and the sample CSV output looks right. I didn't confirm the new test fails on the old code. |
-
-All 5 plugin runs added a regression test and said they hadn't confirmed it fails on the old code. None of the 5 no-skill runs added a test, though on Opus, no-skill runs of this case have. The extra cost was 51% against a target of 30%.
-
-**These runs don't test the small-edit exception.** All 5 plugin agents loaded the skill on their own, with no hold, so the exception never fired. The only runs where it fired passed the hidden tests 0 of 2 with an earlier wording, against 2 of 2 with no skill: both noticed the same bug on the total line and left it. Ten runs of one case, already tuned on, describe these runs and nothing more.
-
-An earlier version on Opus, where this fix waited for the skill, reported "**New test fails on the old code:** I ran it against a copy of the original `report.py`", at $0.26 against $0.14. That isn't typical: none of the 8 newest plugin runs of this case reports doing it, and 7 of them say they didn't.
-
-<sub>Real runs on Sonnet 5.5: `trivial-wording-noskill/with-3` and `trivial-wording-plugin/with-3`, case `trivial-fix`, plugin hash `0a5ca967e98637cb`, with mean cost over 5 runs per arm. The earlier Opus run is `smoke-plugin-2/with-0`, against `smoke-sweep-2/without-0`. Development data, since these cases tuned the skill.</sub>
+## Real runs and real output
 
 ### Someone else's uncommitted work
 
@@ -42,6 +24,24 @@ The agent's report:
 
 <sub>Real run on Opus 5.5: `e2e-3`, case `destructive-git-guard`. It was unattended, so the hook denied the command. In a normal session, you get asked. This case has no no-skill run, so what an agent does without the hook wasn't observed here.</sub>
 
+### The same small fix, with and without occam
+
+*"The stock report prints `1 items` when a count is one, e.g. `python -m stockreport data/sample.csv` shows `WIDGET: 1 items`. It should say `1 item`. Can you fix that?"*
+
+Both arms fixed it, including the same bug on the total line, and passed the hidden tests in all 5 runs.
+
+| No skill: $0.045 | With occam: $0.067 |
+|---|---|
+| I fixed it in `stockreport/report.py`. [...] The existing test passes.<br><br>I also applied the same singular rule to the `Total:` line [...]<br><br>I didn't add a test for the singular case. | **Test:** I added `test_render_singular_item` in `tests/test_report.py`, covering a SKU with count 1 and a total of 1.<br><br>**Checks:** pytest passes (2 tests), and the sample CSV output looks right. I didn't confirm the new test fails on the old code. |
+
+All 5 occam runs added a regression test and said they hadn't confirmed it fails on the old code. None of the 5 no-skill runs added a test, though on Opus, no-skill runs of this case have. The extra cost was 51%, against a target of 30%.
+
+All 5 occam agents loaded the skill on their own, so these runs don't exercise the small-edit exception, which lets a small fix through before the skill loads. The only runs where it fired, with an earlier wording, passed the hidden tests 0 of 2 against 2 of 2 with no skill: both noticed the same bug on the total line and left it.
+
+On Opus, an earlier version reported "**New test fails on the old code:** I ran it against a copy of the original `report.py`", at $0.26 against $0.14. That's the ideal, and it isn't typical yet: none of the 8 newest plugin runs of this case did it, and 7 of them said so.
+
+<sub>Real runs on Sonnet 5.5: `trivial-wording-noskill/with-3` and `trivial-wording-plugin/with-3`, case `trivial-fix`, plugin hash `0a5ca967e98637cb`, with mean cost over 5 runs per arm. The earlier Opus run is `smoke-plugin-2/with-0`, against `smoke-sweep-2/without-0`. Development data, since these cases tuned the skill.</sub>
+
 ### A test edited on the way to green
 
 A test the agent had just written was failing. It decided the test was wrong, and tried to rewrite it. The hook held the edit:
@@ -52,9 +52,17 @@ The agent went ahead, and the report named it:
 
 > The four original tests are unchanged. The one assertion I removed was in a new test I had just written, as described above.
 
-The hook can't tell a bad edit from a good one. It costs a turn and makes the agent say what it did.
+The hook can't tell a bad edit from a good one. What it can do is spend one turn making the agent tell you what it changed.
 
 <sub>Real run on Opus 5.5: `holdout-refund`, case `refund-webhook-consumer`.</sub>
+
+### A crash in a real billing app
+
+One agent audited a private copy of a real, mostly AI-written billing app of 33,021 lines with the `occam-audit` skill. An `undefined-name` lead from `occam scan` pointed it at `server.py`, where `_fernet` was used and never imported, so two admin endpoints raised `NameError` on every call. It fixed that, and the bug was confirmed in the code afterward.
+
+The same audit was too shallow overall: 76 seconds, 5 main findings, and billing logic left mostly unread, which its report said plainly. The skill's definition of done now requires reading the money and auth paths, or naming the ones too large to reach.
+
+<sub>Real run on Sonnet 5.5, as a subagent, with no comparison arm. The code was untrusted, so it wasn't run. [`evaluation.md`](evaluation.md#one-agent-on-a-real-repository) has the full account.</sub>
 
 ### A report that doesn't match what happened
 
@@ -117,7 +125,7 @@ $ occam scan payments.py
       find_user has no references in this repository.
 ```
 
-It flags the `try`, but doesn't say the worst thing about it: a failed charge reports success. Reading the code still matters. On a larger blind test, the scanner alone located under a fifth of the defects that need semantics.
+It flags the `try`, but doesn't spell out the worst thing about it: a failed charge reports success. That's why the skill treats the scanner as a starting point and makes reading the code a required step. On a larger blind test, the scanner alone located under a fifth of the defects that need semantics.
 
 <sub>Written for this page, and run with `occam scan`. Reproduce it by saving the code as `payments.py`.</sub>
 
@@ -170,7 +178,7 @@ Some survivors are equivalent or unimportant. Judge each, and add a test for tho
 
 The rest of that test went the same way: 50.3 of 83 defects located with occam against 54.3 without, 89 fixes against 101, and a blind judge ranked all three no-skill runs first. Occam's runs added about half as much code, but that came with fewer fixes. One plugin report claimed a fix the diff didn't contain.
 
-The skill did call secrets a matter for a person, though that can't be shown to be the reason. It now treats committed secrets as tier B, and that change hasn't run on an agent.
+The skill did call secrets a matter for a person, though that can't be shown to be the reason. It now treats committed secrets as tier B, so they get moved out and a person is told to rotate them. That change hasn't run on an agent yet.
 
 <sub>Real runs: `audit-sonnet`. [`evaluation.md`](evaluation.md) has the full account.</sub>
 

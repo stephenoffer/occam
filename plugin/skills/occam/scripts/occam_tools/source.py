@@ -29,10 +29,10 @@ GENERATED_MARK = re.compile(r"code generated .{0,80}do not edit|@generated|(?:au
 _COMMENT_START = re.compile(r"\s*(?:#|//|/\*|\*|--|<!--|;|%)")
 TEST_PATH = re.compile(r"(^|/)(tests?|spec|specs|__tests__|testdata|test_support|e2e)/|(^|/)(test_[^/]+|[^/]+_(test|tests)\.\w+|[^/]+_spec\.(rb|js|jsx|mjs|cjs|ts|tsx|lua|coffee)|tests\.py|conftest\.py)$|\.(test|spec)\.\w+$|Tests?\.(java|kt|cs|swift)$")
 # For what reaches what, the names above are enough. For a test's lighter checks they aren't: `lab_tests.py` and `run_tests.py` may be production code, and their secrets are real.
-LIGHTER_CHECKS_PATH = re.compile(r"(^|/)(tests?|spec|specs|__tests__|testdata|test_support|e2e)/|(^|/)(test_[^/]+|[^/]+_test\.\w+|conftest\.py)$|\.(test|spec)\.\w+$|Tests?\.(java|kt|cs|swift)$")
+LIGHTER_CHECKS_PATH = re.compile(r"(^|/)(tests?|spec|specs|__tests__|testdata|test_support|e2e)/|(^|/)(test_[^/]+|[^/]+_test\.\w+|conftest\.py|(?:jest|vitest)\.setup\.\w+|setupTests\.\w+)$|\.(test|spec)\.\w+$|Tests?\.(java|kt|cs|swift)$")
 SCRIPT_PATH = re.compile(r"(^|/)(scripts?|bin|tools?|examples?|docs?|benchmarks?|demos?|samples?|notebooks?|migrations?|fixtures?)/")
 # Not code, so the rules don't read these, but a credential pasted into one is just as real. Only credential shapes run on them.
-SECRETS_ONLY_FILE = re.compile(r"(^|/)(\.env(\.[^/]+)?|Dockerfile(\.[^/]+)?|[^/]+\.dockerfile|[^/]+\.(ya?ml|json|toml))$", re.I)
+SECRETS_ONLY_FILE = re.compile(r"(^|/)(\.env(\.[^/]+)?|Dockerfile(\.[^/]+)?|[^/]+\.dockerfile|[^/]+\.(ya?ml|json|toml|tfvars|code-workspace)|requirements[^/]*\.(txt|in)|pip\.conf|CLAUDE\.md|AGENTS\.md|GEMINI\.md|SKILL\.md|\.cursorrules|\.windsurfrules|\.clinerules|copilot-instructions\.md|\.cursor/rules/[^/]+)$", re.I)
 DOCKERFILE = re.compile(r"(^|/)(Dockerfile(\.[^/]+)?|[^/]+\.dockerfile)$", re.I)
 _FIXTURE_PATH = re.compile(r"(^|/)(fixtures?|examples?|samples?|mocks?|__mocks__|__snapshots__|snapshots?|stubs?|testdata|test_data|docs?)/|\.(example|sample|template|tmpl|dist)(\.[^/]*)?$", re.I)
 
@@ -65,10 +65,14 @@ def is_fixture_path(path: str) -> bool:
     return is_test_path(path) or bool(_FIXTURE_PATH.search(path))
 
 
-def looks_generated(text: str) -> bool:
+def says_it_is_generated(text: str) -> bool:
     """A code generator says so in a comment near the top. A string that says "do not edit" means nothing."""
     head = text[:2000].split("\n")[:12]
-    if any(_COMMENT_START.match(line) and GENERATED_MARK.search(line) for line in head):
+    return any(_COMMENT_START.match(line) and GENERATED_MARK.search(line) for line in head)
+
+
+def looks_generated(text: str) -> bool:
+    if says_it_is_generated(text):
         return True
     lines = text[:4000].split("\n")
     return bool(lines) and max(map(len, lines)) > 1500  # minified

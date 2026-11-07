@@ -73,6 +73,7 @@ The scanner has a rule family for each of these, in `occam rules`. Its blind spo
 - **Structure with no reason:** abstractions with one implementation, factories with one product, layers that only forward, options nobody passes, impossible checks.
 - **Not built for the stated load:** in-process state that breaks with a second worker, N+1 calls, unbounded results and concurrency, blocking calls on an event loop.
 - **Security by imitation:** interpolated SQL, a route missing the guard its neighbors have, disabled verification, secrets in source, fail-open checks.
+- **Changes that stopped short, or around the code:** call sites left behind, one of two copies fixed, CI that can't fail. `occam gate --base` lists what it can see.
 - **Residue:** comments addressed to the reader, `_v2` and `_final` names, stale reports, stray debug output.
 
 ## Size changes the method

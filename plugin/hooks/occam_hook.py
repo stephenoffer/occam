@@ -47,6 +47,7 @@ import design_notes
 import docs_notes
 import in_place
 import occam_evidence as evidence
+import repo_notes
 import scale_notes
 import scan_notes
 import stop_checks
@@ -55,7 +56,8 @@ from classify import (REVIEWER, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_P
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
 from session_state import Session, record, state_file
-from shell_writes import (absolute_path, check_identity, checks_elsewhere, could_lose_work, deleted_paths, destructive_git, in_project, is_diff, needs_a_person,
+from shell_reading import expand_variables, parse_shell, without_heredoc_bodies
+from shell_writes import (absolute_path, project_root, check_identity, checks_elsewhere, could_lose_work, deleted_paths, destructive_git, in_project, is_diff, needs_a_person,
                           relative_path, shell_edits, shell_steps, side_effects, step_edits)
 
 REPORT_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}  # where a review or plan gets written, as data named in the request is not
@@ -347,6 +349,11 @@ def notes_before_edit(event: dict, session: Session, tool_input: dict, code: lis
         notes.append(note)
     if file_path:
         notes += python_edit_notes(event, session, tool_input.get("file_path") or tool_input.get("notebook_path") or file_path, file_path, tool_input)
+        notes += repo_edit_notes(event, session, file_path)
+        if not TEST_PATH.search(file_path):
+            first_look = repo_notes.edits_before_reproducing(scale_notes.asked_for(session.prompt), session.turn)
+            if first_look and once(event, session, "edits-before-reproducing"):
+                notes.append(first_look)
     if language and not session.has("mentioned", "rewrite") and scale_notes.replaces_working_code(event.get("cwd") or os.getcwd(), event.get("tool_name", ""), tool_input, file_path):
         record(event, kind="mentioned", name="rewrite")
         notes.append(f"This replaces a large part of the existing code in {os.path.basename(file_path)}. The existing tests "
@@ -380,7 +387,8 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     code = [path for path in known if is_code(path)]
     if known and not code:
         note = instructions_note(event, session, known[0])
-        return context("PreToolUse", note) if note else None
+        notes = [*([note] if note else []), *([] if event.get("agent_id") else repo_edit_notes(event, session, known[0]))]
+        return context("PreToolUse", " ".join(notes)) if notes else None
     weakened = weakens_a_check(name, tool_input, event, session, code)
     if weakened:
         return hold_a_weakened_check(event, session, *weakened)
@@ -429,9 +437,23 @@ def size_note(event: dict, file_path: str, relative: str) -> dict | None:
     return context("PostToolUse", note) if note else None
 
 
+def said_before(event: dict, session: Session, prefix: str = "") -> tuple:
+    return (lambda key: session.has("mentioned", prefix + key)), (lambda key: record(event, kind="mentioned", name=prefix + key))
+
+
+def repo_edit_notes(event: dict, session: Session, relative: str) -> list[str]:
+    root = project_root(event)
+    return repo_notes.edit_notes(relative, root / relative, str(root), *said_before(event, session))
+
+
 def python_shell_context(event: dict, session: Session, command: str) -> dict | None:
-    notes = [] if event.get("agent_id") else shell_notes(command, event.get("cwd") or os.getcwd(), TEST_PATH, reference_path, session,
-                                                        lambda key: record(event, kind="mentioned", name=key))
+    if event.get("agent_id"):
+        return None
+    has, mark = said_before(event, session)
+    cwd = event.get("cwd") or os.getcwd()
+    notes = shell_notes(command, cwd, TEST_PATH, reference_path, session, mark)
+    text = expand_variables(without_heredoc_bodies(command))
+    notes += repo_notes.shell_notes([head(words) for words in parse_shell(text)[0]], text, str(project_root(event)), cwd, has, mark)
     return context("PreToolUse", " ".join(notes)) if notes else None
 
 
@@ -519,10 +541,49 @@ def after_skill(event: dict, tool_input: dict, succeeded: bool) -> None:
         record(event, kind="skill", name=skill_name(tool_input.get("skill", "")))
 
 
-def after_read(event: dict, tool_input: dict, succeeded: bool) -> None:
+def after_read(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     match = re.search(r"/skills/occam/references/(\w+)\.md$", tool_input.get("file_path") or "")
     if match:
         record(event, kind="reference", name=match.group(1))
+    if not event.get("agent_id"):
+        record(event, kind="read")
+    return read_notes(event, tool_input.get("file_path") or "")
+
+
+def after_web(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
+    return read_notes(event, "")
+
+
+def read_notes(event: dict, path: str) -> dict | None:
+    """A subagent's notes are its own, so one hearing something doesn't silence it for the agent that called it."""
+    session = Session(event)
+    agent = event.get("agent_id")
+    has, mark = said_before(event, session, f"{agent}:" if agent else "")
+    notes = [repo_notes.secret_file_read(path, has, mark), repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
+    if not agent and not session.read_only:
+        notes.append(repo_notes.reading_without_editing(session.entries, has, mark))
+    said = [note for note in notes if note]
+    return context("PostToolUse", " ".join(said)) if said else None
+
+
+def shell_outcome_notes(event: dict, command: str, succeeded: bool, ran_check: bool) -> dict | None:
+    """After a shell command: what its output says to an agent, a check that passed earlier and fails now, and a command that isn't a check failing over and over, since a run of failed checks has its own note."""
+    session = Session(event)
+    agent = event.get("agent_id")
+    has, mark = said_before(event, session, f"{agent}:" if agent else "")
+    notes = [repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
+    if not agent:
+        name = evidence.redact(command)[:300]
+        if not succeeded and not ran_check:
+            record(event, kind="failed_command", name=name)
+            notes.append(repo_notes.repeated_failure(Session(event).turn, name))
+        elif succeeded and any(entry.get("kind") == "failed_command" and entry.get("name") == name for entry in session.turn):
+            record(event, kind="ok_command", name=name)
+        regressed = repo_notes.regressed(session.turn) if ran_check else None
+        if regressed and once(event, session, "regressed"):
+            notes.append(regressed)
+    said = [note for note in notes if note]
+    return context("PostToolUse" if succeeded else "PostToolUseFailure", " ".join(said)) if said else None
 
 
 def after_edit(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
@@ -606,10 +667,10 @@ def after_shell(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     if any(is_diff(words) for words in commands):
         record(event, kind="diff")
     mixed = copy_mixed_in_note(event, checks, command, passed) if checks else None
-    return joined_context("PostToolUse" if succeeded else "PostToolUseFailure", failing_streak_note(event, succeeded) if checks else None, long_run_note(event) if succeeded else None, review_first_note(event), mixed)
+    return joined_context("PostToolUse" if succeeded else "PostToolUseFailure", shell_outcome_notes(event, command, succeeded, bool(checks)), failing_streak_note(event, succeeded) if checks else None, long_run_note(event) if succeeded else None, review_first_note(event), mixed)
 
 
-AFTER_TOOL = {"Skill": after_skill, "Read": after_read, **dict.fromkeys(EDIT_TOOLS, after_edit), **dict.fromkeys(AGENT_TOOLS, after_agent),
+AFTER_TOOL = {"Skill": after_skill, "Read": after_read, **dict.fromkeys(evidence.WEB_TOOLS, after_web), **dict.fromkeys(EDIT_TOOLS, after_edit), **dict.fromkeys(AGENT_TOOLS, after_agent),
               **dict.fromkeys(APPROVAL_TOOLS, after_approval), **dict.fromkeys(SHELL_TOOLS, after_shell)}
 
 

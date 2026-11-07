@@ -37,9 +37,23 @@ SETTINGS_FILE = re.compile(r"\.claude/settings(\.local)?\.json\b")
 DISABLES_CHECKS = re.compile(r"OCCAM_HOOKS[\"']?\s*[:=]\s*[\"']?(off|0|false)\b|disableAllHooks[\"']?\s*:\s*true\b|occam@occam[\"']?\s*:\s*false\b")
 PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^;&|]{0,2000}\|\s*(sudo\s+(-\S+\s+)*)?(\S*/)?(ba|z|da|k)?sh\b")
 SHELL_RUNS_DOWNLOAD = re.compile(r"\b(ba|z|da|k)?sh\b[^;&|\n]{0,200}(<\(|\$\()\s*(curl|wget)\b")
-HARD_TO_UNDO = {"terraform": "destroy", "pulumi": "destroy", "kubectl": "delete", "helm": "uninstall"}
-SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd"}
-DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate\s+table)\b", re.I)
+# Each incident on record began with one of these run on a guess. A program's entry lists words that must all appear in its arguments.
+_TERRAFORM = (("destroy",), ("apply", "-auto-approve"), ("apply", "--auto-approve"), ("state", "rm"), ("state", "push"))
+_RAILS = (("db:drop",), ("db:reset",), ("db:schema:load",))
+_PRISMA = (("migrate", "reset"), ("--force-reset",), ("--accept-data-loss",))
+HARD_TO_UNDO = {"terraform": _TERRAFORM, "tofu": _TERRAFORM, "terragrunt": _TERRAFORM, "pulumi": (("destroy",),), "kubectl": (("delete",),), "helm": (("uninstall",), ("delete",)),
+                "gcloud": (("delete",),), "az": (("delete",),), "doctl": (("delete",),), "fly": (("destroy",),), "flyctl": (("destroy",),), "heroku": (("apps:destroy",), ("pg:reset",)), "vercel": (("remove",), ("rm",)),
+                "railway": (("down",), ("delete",)), "supabase": (("db", "reset"),), "prisma": _PRISMA, "rails": _RAILS, "rake": _RAILS, "dropdb": ((),),
+                "docker": (("system", "prune"), ("volume", "rm"), ("volume", "prune"), ("compose", "down", "-v"), ("compose", "down", "--volumes")), "docker-compose": (("down", "-v"), ("down", "--volumes"))}
+_RUNS_ANOTHER_PROGRAM = {"bundle", "pnpm", "yarn", "npx", "bunx", "uv", "poetry"}
+_ONLY_LOOKS = re.compile(r"--help|-h|help|--dry-run(?:=(?!none\b|false\b)\S+)?|--preview-only")
+_AWS_DESTRUCTIVE = re.compile(r"(?:delete|terminate|deregister|purge)-[\w-]+")
+_TEST_ENVIRONMENT = re.compile(r"\b(?:RAILS_ENV|RACK_ENV|APP_ENV|NODE_ENV)=test\b")
+_WINDOWS_RECURSIVE_DELETE = re.compile(r"(?:^|[\s;&|(])(?:rmdir|rd|del|erase)\s+(?:/\w\s+)*/s\b(?:\s+/\w)*\s+(\S+)|\bRemove-Item\b(?=[^;&|\n]*\s-Recurse\b)((?:\s+-\w+)*)\s+(?!-)(\S+)", re.I)
+_TOO_MUCH_ON_WINDOWS = re.compile(r"^(?:[A-Za-z]:[\\/]?|[\\/]|~.*|%USERPROFILE%.*|\$env:USERPROFILE.*|\$HOME.*|\.\.?[\\/]?|\*)$", re.I)
+_QUOTED_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
+SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "mongosh", "mongo"}
+DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate\s+table|dropDatabase)\b|\bdelete\s+from\s+[\w.\"]+\s*(?:;|\"|'|$)|\bupdate\s+[\w.\"]+\s+set\b(?![^;\"']*\bwhere\b)", re.I)
 NETWORK_CLIENTS = {"curl", "wget", "http", "https", "nc", "ncat"}
 GENERATED_NAMES = {"build", "dist", "target", "out", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
                    ".venv", "venv", ".next", ".cache", ".turbo", ".gradle", "coverage", ".coverage", "htmlcov", "test-results"}
@@ -177,19 +191,39 @@ def deletes_too_much(word: str, inside_project=lambda _: False) -> bool:
     return not is_generated(path)
 
 
+def _hard_to_undo(name: str, args: list[str], text: str) -> str | None:
+    lowered = [arg.lower() for arg in args]
+    if any(_ONLY_LOOKS.fullmatch(arg) for arg in args):
+        return None
+    if name == "aws" and (any(_AWS_DESTRUCTIVE.fullmatch(arg) for arg in lowered) or (("s3" in lowered and "rb" in lowered) or ("s3" in lowered and "rm" in lowered and "--recursive" in lowered))):
+        return "this `aws` command is hard to undo."
+    if name == "redis-cli" and lowered[-1:] in (["flushall"], ["flushdb"]) and lowered[-2:-1] not in (["get"], ["set"], ["del"], ["exists"], ["type"]):
+        return f"`redis-cli {lowered[-1]}` empties the database."
+    if any(os.path.basename(arg) == "manage.py" and lowered[index + 1:index + 2] == ["flush"] for index, arg in enumerate(lowered)):
+        return "`manage.py flush` empties the database."
+    program = name if name in HARD_TO_UNDO else next((arg for arg in lowered if arg in HARD_TO_UNDO), None) if name in _RUNS_ANOTHER_PROGRAM else None
+    if program is None or (program == "gcloud" and lowered[:1] == ["config"]) or (program in ("rails", "rake", "prisma") and _TEST_ENVIRONMENT.search(text)):
+        return None
+    words = next((words for words in HARD_TO_UNDO[program] if all(word in lowered for word in words)), None)
+    return f"`{' '.join((program, *words))}` is hard to undo." if words is not None else None
+
+
 def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside_project=lambda _: False) -> str | None:
     """Why someone should see this command first. `programs` is each simple command's program and arguments."""
     if DISABLES_CHECKS.search(text) and SETTINGS_FILE.search(text):
         return "this turns off the checks on this session's work."
     if PIPE_TO_SHELL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", text)) or SHELL_RUNS_DOWNLOAD.search(text):
         return "this runs a download straight in a shell."
+    windows = _WINDOWS_RECURSIVE_DELETE.search(_QUOTED_TEXT.sub("''", text))
+    if windows and _TOO_MUCH_ON_WINDOWS.match(windows.group(1) or windows.group(3) or ""):
+        return f"this recursively deletes {windows.group(1) or windows.group(3)}, and on Windows that skips the Recycle Bin."
     for name, args in programs:
         if name == "rm" and any(re.fullmatch(r"-[a-zA-Z]*[rR][a-zA-Z]*|--recursive", arg) for arg in args):
             targets = [arg for arg in args if not arg.startswith("-") and deletes_too_much(arg, inside_project)]
             if targets:
                 return f"this recursively deletes {targets[0]}."
-        elif name in HARD_TO_UNDO and HARD_TO_UNDO[name] in args:
-            return f"`{name} {HARD_TO_UNDO[name]}` is hard to undo."
+        elif _hard_to_undo(name, args, text):
+            return _hard_to_undo(name, args, text)
         elif name in SQL_CLIENTS and DROPS_DATA.search(" ".join(args)):
             return "this drops or truncates data."
         elif name in NETWORK_CLIENTS:

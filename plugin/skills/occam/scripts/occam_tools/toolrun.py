@@ -60,6 +60,10 @@ CATALOG = [
     Tool("shfmt", ("shell",), "shell formatting and parse errors, diff only", ("shfmt", "-d", "."), False, "brew install shfmt"),
     Tool("hadolint", ("*",), "Dockerfile mistakes", ("hadolint",), False, "brew install hadolint"),
     Tool("actionlint", ("*",), "GitHub Actions workflow mistakes", ("actionlint",), False, "brew install actionlint"),
+    Tool("zizmor", ("*",), "security problems in GitHub Actions workflows", ("zizmor", "--format=plain", "."), False, "uv tool install zizmor"),
+    Tool("terraform", ("terraform",), "invented or missing arguments, against the provider's schema (needs `terraform init` first)", ("terraform", "validate", "-no-color"), True, "brew install terraform"),
+    Tool("tflint", ("terraform",), "provider-specific Terraform mistakes (loads plugins its config names)", ("tflint", "--no-color"), True, "brew install tflint"),
+    Tool("checkov", ("terraform",), "infrastructure policy: public storage, wildcard grants, missing encryption (its config can load checks from the repository)", ("checkov", "-d", ".", "--quiet", "--compact"), True, "uv tool install checkov"),
     Tool("tokei", ("*",), "lines of code, faster than `occam query size` if installed", ("tokei", "--output", "json", "."), False, "brew install tokei"),
     Tool("clang-tidy", ("c", "cpp"), "lint and bug patterns (needs a compile database)", ("clang-tidy", "--version"), False, "ships with LLVM"),
 ]

@@ -49,7 +49,7 @@ jobs:
       # `--group` needs pip 25.1. Ruff and pylint are here so the tests comparing the stated
       # limits against those tools' defaults run instead of skipping; ruff stays pinned with lint.
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install --group dev ruff==0.15.12 pylint
+      - run: python -m pip install --group dev --group cases ruff==0.15.12 pylint
       - run: python -m pytest tests/ -q -rs
 
   test-macos:
@@ -68,5 +68,5 @@ jobs:
       - run: /usr/bin/python3 -m venv "$RUNNER_TEMP/venv"
       - run: echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install --group dev ruff==0.15.12 pylint
+      - run: python -m pip install --group dev --group cases ruff==0.15.12 pylint
       - run: python -m pytest tests/ -q -rs

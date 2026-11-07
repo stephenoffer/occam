@@ -1,8 +1,8 @@
 # The `occam` command line
 
-Tools for auditing code and checking your own changes. Agents use them through the skills, and you can run them yourself.
+Sixteen commands for auditing code and checking your own changes. Agents reach for them through the skills, and they work just as well from your own terminal.
 
-There's nothing to install. They use only the standard library, need Python 3.9 or later, and work the same under Claude Code, Codex or a plain terminal.
+There's nothing to install. They use only the standard library, need Python 3.9 or later, and behave the same under Claude Code, Codex or a plain terminal.
 
 They don't import or execute the code they scan. `golden`, `mutate`, `bench` and `goal verify` run commands you give them, and anything in `tools` that could run repository code needs `--allow-exec`.
 
@@ -61,7 +61,7 @@ Each query answers or exits 2, and a query stops after `--timeout` seconds, 900 
 
 `entry`, `boundaries` and `functions` name any language in the repository that their patterns weren't written for, because few or none there doesn't mean few or none exist. Ruby's `require` is matched by the shortest path ending in that name, since only the running program knows its load path.
 
-**Limits.** These read text and syntax. Dynamic imports, plugin registration and wiring done in configuration stay invisible, so a name with no references isn't proof it's unused, and `impact` can miss tests. `boundaries` matches common names and libraries, so a custom layer won't show and a word like `balance` can mean something else. `api` goes by convention and can't see who really calls a name. No agent has used these yet, so nothing here shows that they change what an audit finds.
+**Limits.** These read text and syntax. Dynamic imports, plugin registration and wiring done in configuration stay invisible, so a name with no references isn't proof it's unused, and `impact` can miss tests. `boundaries` matches common names and libraries, so a custom layer won't show and a word like `balance` can mean something else. `api` goes by convention and can't see who really calls a name. Two agents have tried them, as described below, and no comparison has tested whether they change what an audit finds.
 
 ## Very large repositories
 
@@ -95,7 +95,7 @@ Two public repositories with real history, on that same loaded laptop, stayed un
 
 `leaks` goes by shape and name, so expect noise. It flagged 390 commit and file pairs on Homebrew. Separately, six plain `git log -G` searches for token shapes found none across that history, so names account for most of these. Confirm each one.
 
-Two agents have used these queries, one on that repository and one on a clone of Django (530,000 lines of Python, 35,000 commits), and what they reported wrong led to the Ruby support above and to fixes in `markers`, `history`, `entry`, `api` and `boundaries`. Afterwards the Django agent's blunt advice stood: use `size`, `outline`, `functions`, `find` and `graph`, which were fast and mostly accurate, and check test selection and who owns what by hand. `impact` on a central file reaches nearly every test, because Django's are that connected. Those are two repositories with nothing to compare against, so they don't show that these tools improve an audit.
+Two agents have used these queries, one on that repository and one on a clone of Django (530,000 lines of Python, 35,000 commits), and what they reported wrong led to the Ruby support above and to fixes in `markers`, `history`, `entry`, `api` and `boundaries`. Afterward the Django agent's blunt advice stood: use `size`, `outline`, `functions`, `find` and `graph`, which were fast and mostly accurate, and check test selection and who owns what by hand. `impact` on a central file reaches nearly every test, because Django's are that connected. Those are two repositories with nothing to compare against, so they don't show that these tools improve an audit.
 
 ## Reading findings
 
@@ -178,13 +178,21 @@ It reports:
 
 **Limits.** It knows a name appears somewhere in the code, including in a comment, and not whether a document describes it correctly. It doesn't check signatures, defaults or heading anchors, and it parses Markdown only. It runs no example, so run them yourself. Names from other projects and examples about imaginary code come back as leads. All 35 leads on occam's own documents were one of those, and so was the 1 across human-voice's 9. On six audit reports agents wrote, it raised 23 leads in 19,358 words, and none was the agent's mistake: they were library names and names the agents had added in their fixes. It caught the defects planted in a small sample project. On the READMEs of 14 other repositories on one machine, 10 had no leads, and one had 3 links that really were dead, to files since renamed. No agent has used it yet.
 
-## How far to trust it
+## How well it works
 
-- **The scanner alone misses most of what matters.** On a blind test, cold, it located about half of the defects a pattern could catch (20 of 41) and under a fifth of those that need semantics (8 of 42), such as a tenant leak. That's why the skill makes reading a required step and treats the scanner as a starting point.
-- **Most leads are true but minor.** On seven real repositories it hadn't been tuned on, a blind model judge called 31% of 103 sampled leads worth acting on, 57% true but minor, and 12% false. That's one model's judgment, on a small sample.
-- **Agents with the plugin did no better.** No plugin run in the one head-to-head ran `scan`, so that test says nothing about the scanner, and no comparison has tested these tools on code too large to read whole.
-- **Shell rules were read against real scripts, not scored.** They were tuned on 296 scripts on one Mac, reading a sample of each rule's hits, and no blind score exists. shellcheck outranks them.
-- **Python is parsed, other languages aren't.** Other languages get text and brace-level rules, so treat them as weak.
-- **It has been wrong before.** A fresh reviewer, on the same model, found three ways the tools could run or break a user's code, after 400 tests written by their author had passed. Those are fixed, with regression tests.
+It points agents at real bugs. On a real, mostly AI-written 33,000-line billing app, an `undefined-name` lead took an agent straight to a crash: two admin endpoints that raised `NameError` on every call. `occam docs` found 3 dead links in the READMEs of 14 other repositories.
+
+Agents use it, too. In both large audit tests every plugin run ran `scan`, and on the first test plugin runs located the defects the scanner flags more often than no-skill runs did, 63 of a possible 81 against 49.
+
+Most leads are real, and most of the real ones are minor. On seven real repositories it hadn't been tuned on, a blind model judge called 31% of 103 sampled leads worth acting on, 57% true but minor, and 12% false. Getting there took rule fixes that cut critical and high leads on eight other repositories by 67%. That's one model's judgment, on a small sample.
+
+It keeps up with big repositories. Most queries answered within 38 seconds on Django's 543,000 lines, and `scan --isolated` reads one folder of a 4-million-line repository in under a second.
+
+The limits matter as much:
+
+- The scanner alone misses most of what matters. On a blind test, cold, it located about half of the defects a pattern could catch (20 of 41) and under a fifth of those that need semantics (8 of 42), such as a tenant leak. That's why the skill makes reading a required step and treats the scanner as a starting point. With the plugin, agents located as many defects overall as agents without it, not more.
+- Python is parsed, and other languages aren't. They get text and brace-level rules, so treat those as weaker.
+- The shell rules were read against real scripts, not scored. They were tuned on 296 scripts on one Mac, reading a sample of each rule's hits, and no blind score exists. shellcheck outranks them.
+- It has been through adversarial review. A fresh reviewer, on the same model, found three ways the tools could run or break a user's code, after 400 tests written by their author had passed. Those are fixed, with regression tests.
 
 [`evaluation.md`](evaluation.md) has all of this in full, including what has not been checked.

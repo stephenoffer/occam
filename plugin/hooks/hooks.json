@@ -65,7 +65,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Skill|Read|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Agent|Task|ExitPlanMode|AskUserQuestion",
+        "matcher": "Skill|Read|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Agent|Task|ExitPlanMode|AskUserQuestion|WebFetch|WebSearch",
         "hooks": [
           {
             "type": "command",

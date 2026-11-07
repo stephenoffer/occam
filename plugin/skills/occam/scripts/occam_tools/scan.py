@@ -17,7 +17,7 @@ from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from . import VERSION, clones, files as filesystem, imports, rules_py, rules_shell, rules_text, source as src
+from . import VERSION, clones, files as filesystem, imports, rules_config, rules_py, rules_shell, rules_text, source as src
 from .catalog import BY_ID, CONFIDENCES
 from .project import Project
 
@@ -36,7 +36,7 @@ LARGE_REPOSITORY_FILES = 50_000
 _BATCH_FILES = 1024
 _BATCH_BYTES = 6_000_000  # the limit is checked between batches, and analysis runs at very roughly 400 KB per CPU second
 _MAX_CACHE_BYTES = 2_000_000_000  # about 22 million lines. It can always be rebuilt, and nothing else ever shrinks it
-_CACHE_SCHEMA = f"{VERSION}-6-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
+_CACHE_SCHEMA = f"{VERSION}-7-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
 _PARSER_LANGUAGES = {"python", "notebook"}
 
 
@@ -93,6 +93,7 @@ def analyze_text(path: str, text: str, language: str | None = None) -> dict:
         return record
     source = src.load(path, text, language)
     raw: list[tuple] = list(rules_text.text_findings(source, is_test, is_script))
+    raw += _rules_for_what_runs(path, text, language, is_test)
     if language == "shell":
         raw = rules_shell.outside_heredocs(text, raw)
     if language == "python":
@@ -112,6 +113,13 @@ def analyze_text(path: str, text: str, language: str | None = None) -> dict:
     return record
 
 
+def _rules_for_what_runs(path: str, text: str, language: str, is_test: bool) -> list[tuple]:
+    found = list(rules_config.terraform_findings(text)) if language == "terraform" else []
+    found += rules_config.migration_findings(path, text)
+    found += [] if is_test else rules_config.login_without_a_limit(text, language)
+    return found + ([] if is_test else list(rules_config.hidden_characters(text)))
+
+
 def _analyze_for_secrets(source_path: str, text: str, record: dict) -> None:
     """A config file or Dockerfile. It stays language-less, so nothing else treats it as code, and stats say it was read for this and nothing more."""
     record["secrets_only"] = True
@@ -119,7 +127,7 @@ def _analyze_for_secrets(source_path: str, text: str, record: dict) -> None:
     if src.is_fixture_path(source_path):
         return
     source = src.load(source_path, text, "shell" if src.DOCKERFILE.search(source_path) else None)
-    for rule, line, message, overrides in rules_text.secrets_only_findings(source):
+    for rule, line, message, overrides in [*rules_text.secrets_only_findings(source), *rules_config.findings(source_path, text)]:
         if _suppressed(source, rule, line):
             record["suppressed"] = record.get("suppressed", 0) + 1
         else:

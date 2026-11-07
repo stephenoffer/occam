@@ -181,8 +181,9 @@ def read_manifests(root: Path, files: list[str]) -> dict:
                         python[normalize_dist(match.group(1))] = name
             elif base == "package.json":
                 document = json.loads(path.read_text(errors="replace"))
-                for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
-                    node.update(dict.fromkeys(document.get(key) or {}, name))
+                for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies") if isinstance(document, dict) else ():
+                    table = document.get(key)
+                    node.update(dict.fromkeys(table if isinstance(table, (dict, list)) else (), name))
             elif base in ("tsconfig.json", "jsconfig.json"):
                 text = re.sub(r"(?m)^\s*//.*$", "", path.read_text(errors="replace"))
                 aliases.update(key.split("/")[0] for key in re.findall(r'"([@~#$\w/-]+)/\*"\s*:', text))
