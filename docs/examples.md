@@ -166,6 +166,240 @@ Some survivors are equivalent or unimportant. Judge each, and add a test for tho
 
 <sub>Written for this page, and run with `occam mutate`. It breaks a temporary copy, and runs your test command against it.</sub>
 
+### Over the top, on purpose: leap years, enterprise edition
+
+*"Add a function that says whether a year is a leap year."* This is exaggerated, but every piece of it is something agents do: an abstraction with one implementation, a factory with one product, a cache nobody asked for, options nothing reads, and comments narrating the code.
+
+```python
+# ==========================================================
+# ====            LEAP YEAR DETERMINATION MODULE         ====
+# ==========================================================
+# Here is the updated, production-ready leap year implementation:
+from abc import ABC, abstractmethod
+
+
+class AbstractLeapYearStrategy(ABC):
+    """Abstract leap year strategy."""
+
+    @abstractmethod
+    def is_leap(self, year: int) -> bool:
+        ...
+
+
+class GregorianLeapYearStrategy(AbstractLeapYearStrategy):
+    """Gregorian leap year strategy."""
+
+    def is_leap(self, year: int) -> bool:
+        # Check if the year is divisible by 4
+        if year % 4 == 0:
+            # Check if the year is divisible by 100
+            if year % 100 == 0:
+                # Check if the year is divisible by 400
+                if year % 400 == 0:
+                    return True
+                else:
+                    return False
+            else:
+                return True
+        else:
+            return False
+
+
+class LeapYearStrategyFactory:
+    """Leap year strategy factory."""
+
+    @staticmethod
+    def create(kind: str = "gregorian") -> AbstractLeapYearStrategy:
+        if kind == "gregorian":
+            return GregorianLeapYearStrategy()
+        else:
+            return GregorianLeapYearStrategy()
+
+
+class LeapYearCalculator:
+    """Leap year calculator."""
+
+    def __init__(self, strategy=None, enable_cache=True, verbose=False):
+        self.strategy = strategy or LeapYearStrategyFactory.create()
+        self._cache = {}
+
+    def calculate(self, year):
+        try:
+            if year in self._cache:
+                return self._cache[year]
+            result = self.strategy.is_leap(year)
+            self._cache[year] = result
+            return result
+        except Exception as error:
+            raise error
+
+
+def is_leap_year(year):
+    return LeapYearCalculator().calculate(year)
+```
+
+```console
+$ occam scan calendar_app --min-confidence low
+14 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
+  [HIGH/hig/C] no-tests  calendar_app/leap.py:1
+      3 source files and 71 lines, and no test files.
+  [MEDI/hig/B] identical-branches  calendar_app/leap.py:40
+      Both branches of this if do the same thing, so the condition decides nothing.
+  [MEDI/med/B] single-impl-abstraction  calendar_app/leap.py:8
+      AbstractLeapYearStrategy has one implementation in this repository.
+  [MEDI/med/B] pattern-one-product  calendar_app/leap.py:16
+      GregorianLeapYearStrategy has 1 public method.
+  [MEDI/med/B] pattern-one-product  calendar_app/leap.py:35
+      LeapYearStrategyFactory has 1 public method.
+  [LOW/hig/A] ai-residue  calendar_app/leap.py:4
+      Comment talks to the reader or narrates the edit, not the code
+  [LOW/hig/B] useless-except  calendar_app/leap.py:60
+      This handler only re-raises what it caught.
+  [LOW/med/B] unused-option  calendar_app/leap.py:49
+      No call read here passes strategy, enable_cache, verbose to LeapYearCalculator().
+  [LOW/med/B] pass-through  calendar_app/leap.py:64
+      is_leap_year only forwards to ().
+  [LOW/low/B] banner-comment  calendar_app/leap.py:1
+      3 banner comments in this file.
+  [LOW/low/B] narration-comment  calendar_app/leap.py:20
+      Comment restates the next line
+  [LOW/low/B] narration-comment  calendar_app/leap.py:22
+      Comment restates the next line
+  [LOW/low/B] narration-comment  calendar_app/leap.py:24
+      Comment restates the next line
+  [LOW/low/B] one-method-class  calendar_app/leap.py:46
+      LeapYearCalculator is one method plus a constructor.
+```
+
+What the requirement needed:
+
+```python
+import calendar
+
+calendar.isleap(2024)
+```
+
+The scanner doesn't know `calendar.isleap` exists. It flags the shape, and reading the code, and what's already installed, finds the one line.
+
+<sub>Written for this page, and run with `occam scan`. It works: `is_leap_year` gives the right answer for 1900, 2000, 2023 and 2024.</sub>
+
+### Over the top, on purpose: three copies of everything
+
+*"Read users.csv and email the admins, managers and owners."*
+
+```python
+import sys
+import time
+
+import requests
+
+
+def load_users(path):
+    users = []
+    for line in open(path).read().splitlines()[1:]:
+        name, email, role = line.split(",")
+        users.append({"name": name, "email": email, "role": role})
+    return users
+
+
+def send_admin_email(user, subject):
+    body = '{"to": "' + user["email"] + '", "subject": "' + subject + '"}'
+    for attempt in range(5):
+        try:
+            return requests.post("https://mail.example.com/send", data=body, timeout=10)
+        except Exception:
+            time.sleep(2 ** attempt)
+
+
+def send_manager_email(person, title):
+    body = '{"to": "' + person["email"] + '", "subject": "' + title + '"}'
+    for tries in range(5):
+        try:
+            return requests.post("https://mail.example.com/send", data=body, timeout=10)
+        except Exception:
+            time.sleep(2 ** tries)
+
+
+def send_owner_email(member, heading):
+    body = '{"to": "' + member["email"] + '", "subject": "' + heading + '"}'
+    for n in range(5):
+        try:
+            return requests.post("https://mail.example.com/send", data=body, timeout=10)
+        except Exception:
+            time.sleep(2 ** n)
+
+
+if __name__ == "__main__":
+    path = sys.argv[1] if len(sys.argv) > 1 else "users.csv"
+    subject = sys.argv[sys.argv.index("--subject") + 1] if "--subject" in sys.argv else "Hello"
+    for user in load_users(path):
+        if user["role"] == "admin":
+            send_admin_email(user, subject)
+        elif user["role"] == "manager":
+            send_manager_email(user, subject)
+        elif user["role"] == "owner":
+            send_owner_email(user, subject)
+```
+
+```console
+$ occam scan notify
+10 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
+  [HIGH/hig/C] no-tests  notify/__init__.py:1
+      3 source files and 79 lines, and no test files.
+  [HIGH/med/B] query-in-loop  notify/admins.py:47
+      send_admin_email() queries or calls out (notify/admins.py:15), and this runs it once per item.
+  [HIGH/med/B] query-in-loop  notify/admins.py:49
+      send_manager_email() queries or calls out (notify/admins.py:24), and this runs it once per item.
+  [HIGH/med/B] query-in-loop  notify/admins.py:51
+      send_owner_email() queries or calls out (notify/admins.py:33), and this runs it once per item.
+  [MEDI/hig/B] clone-function  notify/admins.py:15
+      send_admin_email has the same structure as notify/admins.py:24 (send_manager_email), notify/admins.py:33 (send_owner_email).
+  [MEDI/med/B] handrolled-csv  notify/admins.py:10
+      Splitting on commas breaks on quoted fields.
+  [MEDI/med/B] handrolled-retry  notify/admins.py:17
+      A loop that catches and sleeps is a hand-written retry.
+  [MEDI/med/B] handrolled-retry  notify/admins.py:26
+      A loop that catches and sleeps is a hand-written retry.
+  [MEDI/med/B] handrolled-retry  notify/admins.py:35
+      A loop that catches and sleeps is a hand-written retry.
+  [MEDI/med/B] handrolled-argv  notify/admins.py:44
+      Command-line options parsed by hand.
+```
+
+The same job in 25 lines, using what already exists:
+
+```python
+import argparse
+import csv
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+ROLES = {"admin", "manager", "owner"}
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", nargs="?", default="users.csv")
+    parser.add_argument("--subject", default="Hello")
+    args = parser.parse_args()
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=Retry(total=5, backoff_factor=1, allowed_methods=None)))
+    with open(args.path, newline="") as file:
+        for user in csv.DictReader(file):
+            if user["role"] in ROLES:
+                session.post("https://mail.example.com/send", json={"to": user["email"], "subject": args.subject}, timeout=10).raise_for_status()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+It also stops hiding the last failure: the original returned nothing after five failed tries, and this raises. `occam scan` on it leaves one finding, a send per recipient inside the loop, which is what the job is.
+
+<sub>Written for this page, and run with `occam scan`.</sub>
+
 ### Where occam did worse: an audit
 
 *An audit-and-fix prompt on a 3,064-line service with 83 planted defects, 3 runs per arm on Sonnet 5.5.*
