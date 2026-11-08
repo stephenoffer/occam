@@ -54,7 +54,7 @@ import rule_card
 import scale_notes
 import scan_notes
 import stop_checks
-from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, ASKS_FOR_REVIEW, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
+from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
                       PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
                       reads_as_read_only, visible_prompt)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass

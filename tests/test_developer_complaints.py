@@ -11,10 +11,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from test_hook_scan import Codex, additional, codex, write  # noqa: F401  (codex is a fixture)
+import test_hook_scan
+from test_hook_scan import additional, write
 from test_lean_core import Session, decision, said, spec
 from test_occam_hook import Agent
 
+codex = test_hook_scan.codex  # pytest finds a fixture by its name here; an assignment, unlike an import, isn't read as shadowed by the tests' parameter
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin" / "hooks"))
 
