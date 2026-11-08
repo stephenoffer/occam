@@ -58,6 +58,7 @@ What it needed: `calendar.isleap(year)`.
 | deletes `assert refund(100) == 100` to go green | *this change [...] removes 1 assertion. That needs a reason from the intended behavior [...]* |
 | says "All tests pass! 🎉" after 3 failed | *A check failed after the last code edit and hasn't passed since.* |
 | says "All 47 tests pass." when 12 ran | *no check's output this turn contains that number.* |
+| edits anyway after you answered "no" to "Shall I implement it?" | *you asked whether to go ahead with this work, and the user said no, so edits to project files are held for this turn.* |
 
 <sub>Scenarios written for this page; the replies are the real hook's, trimmed.</sub>
 
@@ -73,6 +74,7 @@ AI code is getting longer ([duplicated blocks up 81% since 2023](https://www.git
 | **The razor** | Asks if code needs to exist, and scans for the bloat agents leave | 0.72× the lines on the Opus holdout, measured afterward; about ¼ the code in two large audits |
 | **Asks you, not itself** | Destructive git, dropped tables, `curl \| sh` and switching occam off wait for a person | Seen live, on a `git stash` over a teammate's work |
 | **Checks the report** | Sends the agent back when its report contradicts what ran | Scripted tests only; hasn't fired live |
+| **"No" means no** | Answer "no" to "Shall I implement it?" and edits stop for that turn. Fake integrations are flagged as they're written, and an unrequested summary file is held once | Not measured yet |
 | **Light** | About 300 tokens of rules; the full playbook only for risky work; `OCCAM_HOOKS=guard` for the safety net alone | Not measured yet |
 
 ## The honest part
