@@ -56,7 +56,7 @@ import scan_notes
 import stop_checks
 from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
                       PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
-                      reads_as_read_only, visible_prompt)
+                      command_read_only, reads_as_read_only, visible_prompt)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
 from session_state import Session, record, state_file
@@ -217,9 +217,11 @@ def user_prompt(event: dict) -> dict | None:
     # The last stop of the previous turn: a "no" to "Shall I implement it?" holds edits like "review only" does.
     stops = [entry for entry in Session(event).turn if entry.get("kind") == "stopped"]
     declined = declines(words, bool(stops and stops[-1].get("asked")))
-    read_only = reads_as_read_only(words) or declined
+    by_command = command_read_only(prompt)
+    read_only = (reads_as_read_only(words) if by_command is None else by_command) or declined
     record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, declined=declined, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))))
-    typed = re.match(r"\s*/(?:occam:)?(occam[\w-]*)\b", prompt)
+    # A skill typed by name. `/occam:razor` and the other commands aren't the core skill, so the name must end there.
+    typed = re.match(r"\s*/(?:occam:)?(occam[\w-]*)(?![\w:-])", prompt)
     if typed:
         record(event, kind="skill", name=typed.group(1))
     notes = []

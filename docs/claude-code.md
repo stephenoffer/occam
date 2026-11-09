@@ -13,7 +13,9 @@ claude plugin install occam@occam
 
 Inside a session, `/plugin marketplace add stephenoffer/occam` and `/plugin install occam@occam` do the same.
 
-This adds 11 skills, 2 agents and 9 hook events. `claude plugin details occam@occam` shows the inventory and estimated token cost. It takes effect in your next session.
+This adds 11 skills, 3 commands, 2 agents and 9 hook events. `claude plugin details occam@occam` shows the inventory and estimated token cost. It takes effect in your next session. The commands, `/occam:razor`, `/occam:review` and `/occam:audit`, run only when you type them: each is set with `disable-model-invocation` so the model can't start it on its own.
+
+For other agents, `npx skills add stephenoffer/occam --skill '*'` installs the 11 skills without the hooks, agents or commands. Install them all: `occam-audit` and `occam-docs` reach the command line through the `occam` skill's folder.
 
 To try it for one session without installing anything:
 

@@ -110,10 +110,35 @@ def is_code(file_path: str) -> bool:
     return Path(file_path).suffix.lower() not in DOC_SUFFIXES
 
 
+# occam's typed commands name the request, so they read as its words: `/occam:review x` as review-only, and `/occam:audit x` as an audit,
+# which stays read-only unless it asks for a fix. The colon keeps "review-only user.py" from reading as a kind of user.
+_TYPED_COMMAND = re.compile(r"^\s*/occam:(review|audit)(?![\w:-])", re.I)
+_COMMAND_WORDS = {"review": "review-only:", "audit": "audit"}
+
+
+# Whether a typed command holds edits goes by its name, not by the free-text rules, because its arguments are mostly paths and those
+# collide with them: `/occam:audit logging/` reads as an audit log, and `src/add.py` as asking to add. A review never edits. An audit
+# edits only when its arguments, paths set aside, ask for a fix, as audit.md says.
+_COMMAND_FIX = re.compile(r"\b(?:fix(?:es|ing)?|repair\w*|clean(?:ing)? ?up|harden\w*|remov\w*|delet\w*|deslop\w*|remediat\w*)\b", re.I)
+_PATH_LIKE = re.compile(r"\S*[/.]\S*")
+
+
+def _unquoted(prompt: str) -> str:
+    return re.sub(r"`[^`\n]*`", " ", re.sub(r"```.*?```", " ", scale_notes.without_pasted(prompt), flags=re.S))
+
+
 def visible_prompt(prompt: str) -> str:
-    """The user's own words, without pasted material or quoted code."""
-    text = re.sub(r"```.*?```", " ", scale_notes.without_pasted(prompt), flags=re.S)
-    return re.sub(r"`[^`\n]*`", " ", text)
+    """The user's own words, without pasted material or quoted code, with a typed occam command read as the request it names."""
+    return _TYPED_COMMAND.sub(lambda typed: _COMMAND_WORDS[typed.group(1).lower()], _unquoted(prompt), count=1)
+
+
+def command_read_only(prompt: str) -> bool | None:
+    """Whether a typed `/occam:review` or `/occam:audit` holds edits this turn, or None when the prompt isn't one."""
+    text = _unquoted(prompt)
+    typed = _TYPED_COMMAND.match(text)
+    if not typed:
+        return None
+    return typed.group(1).lower() == "review" or not _COMMAND_FIX.search(_PATH_LIKE.sub(" ", text[typed.end():]))
 
 
 def reads_as_read_only(words: str) -> bool:

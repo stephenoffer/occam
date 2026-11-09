@@ -369,3 +369,51 @@ Not taken:
 - **A model review of the diff at every Stop** (Anthropic security-guidance). Its cost doesn't show in Claude Code's figures, and occam's measured overhead is already its weakest point.
 - **Tables of excuses and rebuttals** (agent-skills, Superpowers). Long, and a [Signal or Noise](https://arxiv.org/abs/2608.23067) result found length-matched irrelevant text reproduced most of a skill's losses on some models.
 - **Candidates for later:** trigger evals with code pasted in the prompt (agent-skills #620), and offering the guard level as its own small install (mattpocock's git guardrails alone has 541.3K installs).
+
+## What makes a skill popular, and the top 100: added 2026-11-08
+
+The user asked what makes a Claude skill popular (how developers want to use skills, how complex they are, how they're worded), for the top 100, and then to make occam ready to be one. Four read-only subagents gathered it on 2026-11-08, and the quotes below were rechecked on their primary pages. The full lists are in [popular-skills.md](popular-skills.md). [P] and [S] mean what they mean above.
+
+### What the lists show
+
+- **Small, typed, single-job skills lead the install board.** mattpocock/skills has 21 of the skills.sh top 100. Its `grill-me` is #2 at 1,516,484 installs: a slash command with `disable-model-invocation: true` and a one-line body that hands to a skill the model can load itself [P].
+- **Code quality sells in Claude's own directory.** Three of the top ten are about it: Code Review (438,525), Code Simplifier (346,763, a single agent file of about 3 KB) and Security Guidance (241,800) [P]. Superpowers (1,009,371) is the only top-ten listing whose source isn't Anthropic's directory repository [P].
+- **Few starred repositories do what occam does.** Of the 100 most-starred repositories that ship skills, 4 are about code quality or review, karpathy-skills (230,837) and Ponytail (186,767) among them [P; the category is a judgment].
+
+### How developers use them
+
+- **Skills often don't fire on their own.** "In 56% of eval cases, the skill was never invoked" ([Vercel, 2026-01-27](https://vercel.com/blog/agents-md-outperforms-skills-in-our-agent-evals)) [P]. What's popular and always on gets in through a hook or an instruction file, as occam's rule card does.
+- **The listing is a budget users watch.** It "scales at 1% of the model's context window", overflow drops descriptions "starting with the skills you invoke least", and `/skill-doctor` shows "what each of your skills costs and how often it gets used, so you can decide which ones to turn off" ([Claude Code skills docs](https://code.claude.com/docs/en/skills)) [P]. The same page says "Plugin skills are not affected by `skillOverrides`", so for occam the only user-side remedy is removing the plugin.
+- **Typed commands cost nothing until used.** `disable-model-invocation: true` means "Description not in context, full skill loads when invoked" (same page) [P].
+- **What makes people uninstall** is in the 2026-11-06 section: tokens and plan limits, slowness, too many questions, skills that don't fire, and claims that don't survive outside testing.
+
+### Complexity
+
+- After compaction Claude Code keeps "the first 5,000 tokens" of each invoked skill (same page) [P]. Most hits are short: grill-me's body is one line [P].
+- A minimalism tool has to look minimal. Ponytail's issue tracker asked whether "this repo has started to violate its own principles" ([#808](https://github.com/DietrichGebert/ponytail/issues/808)) [P].
+
+### Wording
+
+- Hero lines pair a character or a joke with one promise: "He says nothing." (Ponytail), "Caveman make your AI agent say less and read less." (caveman), "Your coding agent forgets everything between sessions." (claude-mem) [P].
+- Less-code claims get cut down by a one-line baseline. Adding "Provide just one example for any given task, and no commentary or usage examples." to the baseline took its average from 108 lines to 16, against Ponytail's 8.25, on Haiku ([#126](https://github.com/DietrichGebert/ponytail/issues/126)) [P]. Occam's own head-to-head found it wrote as much new code as no skill (`evals/RESULTS.md`). So occam's pitch now leads with what it checks, and the code-size claims stay with repair, where they were measured.
+
+### Distribution
+
+- `npx skills` reads `.claude-plugin/marketplace.json` and finds all 11 occam skills, from GitHub and from a local copy. It installs skills only, never hooks, agents or commands, and skills.sh lists a skill only through install telemetry from `npx skills add owner/repo` [P, run in a scratch home].
+- Claude's directory takes submissions at claude.ai/directory/manage. A README and license are required, a missing icon is a warning, the icon is fixed at the first save, and hooks that run anything but a shell script go to human review [P]. `claude plugin validate --strict` now passes on both manifests with nothing to report.
+- Community lists want age or stars: awesome-claude-code takes repositories 14 days old or with 100 stars, travisvn's list closes pull requests under 10 stars, and VoltAgent's doesn't take brand-new skills [P].
+- Claude Code didn't update an installed plugin whose version hadn't changed ("already at the latest version"), seen in a throwaway config. New commands reach existing users only with a version bump.
+
+### Taken
+
+- **Three typed commands**, `/occam:razor`, `/occam:review` and `/occam:audit`, each with `disable-model-invocation: true` and each handing to an existing skill. The hooks decide a typed review or audit by its name, so a review never edits and an audit edits only when asked to fix, and a typed command doesn't count as loading the core skill. One smoke run each on Sonnet on 2026-11-09, on a scratch repository with an overbuilt leap-year change written for it, $0.29 in all: `/occam:review` and `/occam:audit` made no edits and ranked their findings, and `/occam:razor` cut 37 lines to 2 with the tests passing before and after. That's a smoke test, not a measurement.
+- **Listing metadata.** A square icon drawn from the chosen slice mark; homepage, repository, license and keywords in `plugin.json`; a marketplace description and category; a README in the plugin folder that says what runs and what goes over the network; the `npx skills` route in the docs; and version 2.1.0.
+- **The pitch.** The README leads with what occam catches, and its razor row and "The honest part" carry the head-to-head loss to Ponytail on new code.
+
+### Not taken, for the owner
+
+- **A shorter listing.** The eight language skills were 1,819 of the 3,282 characters in occam's skill and agent descriptions, and `/skill-doctor` would show unused ones as candidates to turn off. The owner chose to leave them in this work. occam-5e's separate routing change, landed 2026-11-09, has since taken them off the listing as typed-only helpers that the hooks and core name by path (see `docs/claude-code.md`).
+- **Quieter hooks by default,** as security-guidance does: it warns once per pattern per file per session and never blocks. Occam's holds are its evaluated design.
+- **An intensity command** like Ponytail's lite, full and ultra. `OCCAM_HOOKS` is read when the session starts, and changing it in settings needs a person, on purpose.
+- **A published trigger rate and a benchmark against a one-line baseline.** Both need billed runs.
+- **Listing on skills.sh, in the directory and on the lists, GitHub topics and a release.** These are outward-facing, so they're the owner's to do.

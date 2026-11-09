@@ -2,6 +2,8 @@
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -72,6 +74,37 @@ def test_plugin_manifest_and_marketplace_agree():
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
     assert manifest["name"] == "occam" and market["plugins"][0]["name"] == "occam"
     assert (ROOT / market["plugins"][0]["source"] / ".claude-plugin" / "plugin.json").exists()
+
+
+COMMANDS = sorted((PLUGIN / "commands").glob("*.md"))
+
+
+def test_the_three_commands_ship():
+    assert {path.stem for path in COMMANDS} == {"razor", "review", "audit"}
+
+
+@pytest.mark.parametrize("path", COMMANDS, ids=lambda p: p.stem)
+def test_commands_run_only_when_typed_and_send_to_real_skills(path):
+    """Typed commands are a front door, so the model mustn't start them itself, and the skills they hand to must exist."""
+    front, body = parts(path)
+    assert front["disable-model-invocation"] is True
+    assert 1 <= len(front["description"]) <= 200
+    named = re.findall(r"`(occam[\w-]*)` skill", body)
+    assert named and all((SKILLS / name / "SKILL.md").exists() for name in named), named
+
+
+def test_commands_name_only_real_tool_flags():
+    """A wrong flag in a command reaches everyone who types it, so each `tool --flag` a command names must be in that tool's help."""
+    tools = set(re.findall(r'add_parser\(allow_abbrev=False, name="(\w+)"', (SCRIPTS / "occam_tools" / "cli.py").read_text()))
+    checked = set()
+    for path in COMMANDS:
+        for tool, rest in re.findall(r"`([a-z]+)((?: --[\w-]+(?: [^`\s-][^`\s]*)?)*)`", path.read_text()):
+            if tool in tools:
+                usage = subprocess.run([sys.executable, str(SCRIPTS / "occam.py"), tool, "--help"], capture_output=True, text=True, timeout=60, check=True).stdout
+                flags = re.findall(r"--[\w-]+", rest)
+                assert all(re.search(re.escape(flag) + r"(?![\w-])", usage) for flag in flags), (path.name, tool, flags)
+                checked.add(tool)
+    assert {"scan", "gate", "golden"} <= checked, checked
 
 
 def test_reviewer_agent_has_no_edit_tools():

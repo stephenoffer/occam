@@ -26,6 +26,7 @@ A comparison with criteria fixed in advance shows better work than no skill at a
 - Hooks in `plugin/hooks/` keep the important parts from being skipped. `plugin/hooks/codex_hook.py` is a smaller set for Codex, and hasn't been run under Codex.
 - Tools in `plugin/skills/occam/scripts/occam_tools/` are standard library only, need Python 3.9, and keep their state outside the repository.
 - Agents in `plugin/agents/` review and audit. They have no edit tools, though Bash can write, so staying read-only is an instruction.
+- Commands in `plugin/commands/`, `/occam:razor`, `/occam:review` and `/occam:audit`, run only when typed (`disable-model-invocation`) and hand to a skill. They're Claude Code only. The hooks decide a typed review or audit by its name, through `classify.command_read_only`: a review never edits, and an audit edits only when its arguments ask for a fix.
 - Evals in `evals/` compare arms by hash, with hidden checks and frozen fixtures.
 
 ## Planned

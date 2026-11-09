@@ -1,7 +1,7 @@
 # Occam ships as a plugin, not a Python package. This only declares how to develop and test it.
 [project]
 name = "occam"
-version = "2.0.0"
+version = "2.1.0"
 requires-python = ">=3.9"  # the stock macOS python3, which runs the hooks
 
 [dependency-groups]

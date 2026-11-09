@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 import scan_notes  # beside this script, on sys.path because Python put it there
-from classify import AUDIT_REQUEST, asks_to_act, declines, is_code, reads_as_read_only, visible_prompt
+from classify import AUDIT_REQUEST, asks_to_act, command_read_only, declines, is_code, reads_as_read_only, visible_prompt
 from shell_writes import could_lose_work, shell_edits
 
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
@@ -66,10 +66,12 @@ def _introduced(event: dict, state: dict, relative: str, noting: bool = False) -
 
 def user_prompt(event: dict) -> dict | None:
     state = _load(event.get("session_id"))
-    words = visible_prompt(event.get("prompt") or "")
+    prompt = event.get("prompt") or ""
+    words = visible_prompt(prompt)
     state["declined"] = declines(words, bool(state.get("asked")))
     state["asked"] = False  # answered, so a turn that never reaches Stop can't carry it into the next prompt
-    state["read_only"] = reads_as_read_only(words) or state["declined"]
+    by_command = command_read_only(prompt)
+    state["read_only"] = (reads_as_read_only(words) if by_command is None else by_command) or state["declined"]
     state["audit"] = bool(AUDIT_REQUEST.search(words))
     _save(event.get("session_id"), state)
     return None

@@ -32,6 +32,7 @@ New here? Start with [the examples](examples.md).
 | [Coverage map](coverage-map.md) | Which mechanism and test covers each concern |
 | [Design](../DESIGN.md) | What's decided about occam itself and why. Read the slice you need with `occam design for <path>` |
 | [Research record](research.md) | The approaches this draws on, and the decision on each |
+| [Popular skills](popular-skills.md) | The top 100 skills by installs and by stars, and the top 50 plugins, as read on 2026-11-08 |
 
 The Karpathy-inspired guidelines credited in the research record are maintained by their repository's authors. Karpathy did not write or endorse this project.
 

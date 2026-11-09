@@ -3,11 +3,13 @@
   "owner": {
     "name": "Stephen Offer"
   },
+  "description": "Occam, the engineering razor for coding agents. Nothing beyond what the requirement needs, and nothing less.",
   "plugins": [
     {
       "name": "occam",
       "source": "./plugin",
-      "description": "Engineering judgment for writing, auditing and repairing code, with deterministic audit tools and hooks that keep the important parts from being skipped."
+      "description": "Catches the corners your coding agent cuts: edits it never checked, weakened tests and destructive commands. Plus a razor for the code it overbuilt.",
+      "category": "development"
     }
   ]
 }

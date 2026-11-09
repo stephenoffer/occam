@@ -1,15 +1,25 @@
 {
   "name": "occam",
-  "description": "Engineering judgment for writing, auditing and repairing code, with deterministic audit tools and hooks that keep the important parts from being skipped.",
-  "version": "2.0.0",
+  "description": "Catches the corners your coding agent cuts: edits it never checked, weakened tests and destructive commands. Plus a razor for the code it overbuilt.",
+  "version": "2.1.0",
   "author": {
     "name": "Stephen Offer"
   },
+  "homepage": "https://github.com/stephenoffer/occam",
+  "repository": "https://github.com/stephenoffer/occam",
+  "license": "MIT",
   "keywords": [
     "code-quality",
-    "audit",
+    "code-review",
     "verification",
-    "review",
+    "testing",
+    "guardrails",
+    "hooks",
+    "safety",
+    "simplify",
+    "overengineering",
+    "audit",
+    "ai-generated-code",
     "python"
   ]
 }
