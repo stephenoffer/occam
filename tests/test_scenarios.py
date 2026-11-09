@@ -56,7 +56,7 @@ def leak_terms(suite: str) -> dict:
 
 
 def test_blind_prompts_do_not_leak_their_diagnosis():
-    for suite in ("holdout", "regression", "python", "hard", "reach2"):
+    for suite in ("holdout", "regression", "python", "hard", "reach2", "large"):
         terms = leak_terms(suite)
         # A prompt has to be able to name its own entry point, so a term that is part of the case's name is fine.
         leaks = {case: [t for t in case_terms if t.lower() in prompt_body(EVALS / "cases" / suite / case) and t.lower() not in case]
@@ -130,7 +130,7 @@ def test_skill_contains_no_case_specific_terms():
     blind = {**yaml.safe_load((EVALS / "cases" / "holdout" / "LEAK_TERMS.yaml").read_text()),
              **yaml.safe_load((EVALS / "cases" / "regression" / "LEAK_TERMS.yaml").read_text()),
              **yaml.safe_load((EVALS / "cases" / "python" / "LEAK_TERMS.yaml").read_text()),
-             **leak_terms("hard"), **leak_terms("reach2")}
+             **leak_terms("hard"), **leak_terms("reach2"), **leak_terms("large")}
     blind = {case: terms for case, terms in blind.items() if case not in ABOUT_THE_GUIDANCE_TOPIC}
     exempt = GENERIC_OVERLAP_SHA256 | STATED_AS_GENERAL_GUIDANCE_SHA256
     terms = SMOKE_TERMS + [t.lower() for case_terms in blind.values() for t in case_terms

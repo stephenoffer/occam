@@ -11,7 +11,7 @@ from pathlib import Path
 
 EVALS = Path(__file__).resolve().parent
 RECORD = EVALS / "FROZEN.sha256"
-MAY_BE_WITHHELD = {"hard"}
+MAY_BE_WITHHELD = {"hard", "large"}  # large holds a copy of a third-party repository, kept out of the published one
 
 
 def current() -> dict[str, str]:

@@ -20,7 +20,7 @@ import pytest
 import grade_workspaces as grade
 
 EVALS = Path(__file__).resolve().parents[1] / "evals"
-CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard", "reach", "reach2") for p in (EVALS / "cases" / suite).glob("*")
+CASES = sorted(p for suite in ("smoke", "holdout", "regression", "python", "hard", "reach", "reach2", "large") for p in (EVALS / "cases" / suite).glob("*")
                if (p / "hidden").is_dir())
 SPECIAL = {"__post__.sh", "__final_message__.txt", "__trace__.jsonl", "EXPECT_FAIL"}
 

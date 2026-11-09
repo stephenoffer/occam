@@ -329,7 +329,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result", type=Path, help="aggregate-result.json, or with --regrade or --refresh the graded directory")
     parser.add_argument("--refresh", action="store_true", help="recompute transcript metrics from saved traces")
-    parser.add_argument("--suite", required=True, choices=["smoke", "holdout", "triggers", "e2e", "regression", "python", "hard", "reach", "reach2"])
+    parser.add_argument("--suite", required=True, choices=["smoke", "holdout", "triggers", "e2e", "regression", "python", "hard", "reach", "reach2", "large"])
     parser.add_argument("--out", type=Path)
     parser.add_argument("--keep", action="store_true", help="do not delete the kept run directories")
     parser.add_argument("--regrade", metavar="CASE", help="re-run one case's hidden suite on saved runs")
