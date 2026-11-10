@@ -151,7 +151,7 @@ def test_an_ordinary_file_gets_none_of_these(agent):
 
 @pytest.mark.parametrize("command, words", [
     ("git add -A", "stages everything"), ("git add .", "stages everything"), ("git push origin main", "default branch"), ("jest -u", "Updating snapshots"), ("pytest --snapshot-update", "Updating snapshots"),
-    ("cat .env", "real credentials"), ("printenv", "real credentials"), ("env", "real credentials"),
+    ("printenv", "real credentials"), ("env", "real credentials"),  # printing a credential file is asked about now: test_quality_hooks
 ])
 def test_a_command_gets_its_note(agent, command, words):
     assert words in added(agent.try_bash(command))

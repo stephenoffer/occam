@@ -368,6 +368,7 @@ Not taken:
 - **A 0 to 100 quality score** (aislop, desloppify). desloppify makes the score the target, which invites gaming it, and occam treats findings as leads, not a grade.
 - **A model review of the diff at every Stop** (Anthropic security-guidance). Its cost doesn't show in Claude Code's figures, and occam's measured overhead is already its weakest point.
 - **Tables of excuses and rebuttals** (agent-skills, Superpowers). Long, and a [Signal or Noise](https://arxiv.org/abs/2608.23067) result found length-matched irrelevant text reproduced most of a skill's losses on some models.
+- **Taken after the head-to-head (2026-11-08), as ideas with our own wording:** Ponytail's stance that new code should be as little as does the job, after its code needed 25% fewer lines changed than occam's (`evals/RESULTS.md`), now a rule in `references/new-code.md`; and tests kept to where they pay, since occam's builds wrote about twice the files, mostly tests, with no gain in hidden-test passes.
 - **Candidates for later:** trigger evals with code pasted in the prompt (agent-skills #620), and offering the guard level as its own small install (mattpocock's git guardrails alone has 541.3K installs).
 
 ## What makes a skill popular, and the top 100: added 2026-11-08

@@ -140,10 +140,8 @@ def test_a_small_edit_still_needs_a_check_before_stopping(session):
     ("fix it", "auth.py", "a = 1", "a = 2"),  # one line of access control is still high consequence
     ("fix it", "billing/invoice.py", "a = 1", "a = 2"),
     ("fix it", "migrations/0007.py", "a = 1", "a = 2"),
-    ("add it", "requirements.txt", "a==1", "a==2"),
     ("fix the authorization check", "app.py", "a = 1", "a = 2"),
-    ("speed up the report, it is too slow", "app.py", "a = 1", "a = 2"),
-    ("fix it", "app.py", "a = 1", "async def f(): pass"),
+    ("fix it", "app.py", "a = 1", "if not user.is_admin: raise Forbidden"),
 ])
 def test_what_is_consequential_is_still_held(session, prompt, name, old, new):
     session.prompt(prompt)
@@ -458,8 +456,7 @@ def test_a_broken_goal_store_only_costs_the_reminder(monkeypatch, tmp_path):
     assert "grown to" in scale_notes.long_run_text([{"kind": "edit", "code": True, "path": "a.py"}], str(tmp_path), "guide.md")
 
 
-@pytest.mark.parametrize("prompt", ["Fix this security bug in app.py", "make this more secure", "fix the password check", "fix the XSS here", "fix the CSRF token check", "encrypt the stored value", "fix the login bug",
-                                    "optimize this loop", "make it more efficient", "reduce memory use here", "add requests as a dependency", "upgrade lodash to 4.17.21", "bump numpy", "install redis and use it", "refactor this"])
+@pytest.mark.parametrize("prompt", ["Fix this security bug in app.py", "make this more secure", "fix the password check", "fix the XSS here", "fix the CSRF token check", "encrypt the stored value", "fix the login bug"])
 def test_a_consequential_request_is_not_small_whatever_the_edit(session, prompt):
     session.prompt(prompt)
     assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", "a = 1", "a = 2"))) or "")
@@ -482,15 +479,13 @@ def test_a_consequential_word_only_in_a_paste_does_not_count(session):
 
 
 @pytest.mark.parametrize("name", ["authentication.py", "authorization.py", "security.py", "encryption.py", "admin.py", "src/AuthService.java", "src/LoginController.ts", "src/PaymentService.kt", "src/userAuth.js", "src/passwordReset.ts",
-                                  ".github/workflows/deploy.yml", "terraform/prod.tf", "Dockerfile", "k8s/deployment.yaml", "composer.json", "uv.lock", "package-lock.json", "schema.sql", "config.toml"])
+                                  "schema.sql"])
 def test_what_a_path_says_or_a_file_type_decides_is_not_small(session, name):
     session.prompt("fix it")
     assert "has not been loaded" in (denied(session.attempt(session.edit_event(name, "a = 1", "a = 2"))) or "")
 
 
-@pytest.mark.parametrize("name, old, new", [("app.py", "commit()", "await commit()"), ("app.py", "await commit()", "commit()"), ("a.sh", "x", 'rm -rf "$DIR"/*'), ("a.sh", "x", 'eval "$CMD"'), ("a.rb", "x", "eval(params[:x])"),
-                                            ("a.php", "x", "eval($_GET['x']);"), ("app.py", "x", 'cur.execute(f"SELECT * FROM t WHERE id = {uid}")'), ("app.py", "x", "shutil.rmtree(path)"), ("app.go", "x", "defer close(ch)"),
-                                            ("app.py", "x", 'open(path, "w").write(data)')])
+@pytest.mark.parametrize("name, old, new", [("app.py", "check_password(pw, h)", "True"), ("app.py", "True", "check_password(pw, h)"), ("app.js", "x", "user.isAdmin = true"), ("app.py", "total_price = x", "x")])
 def test_risky_text_is_not_small_whichever_side_of_the_edit_it_is_on(session, name, old, new):
     session.prompt("fix it")
     assert "has not been loaded" in (denied(session.attempt(session.edit_event(name, old, new))) or "")
@@ -499,7 +494,7 @@ def test_risky_text_is_not_small_whichever_side_of_the_edit_it_is_on(session, na
 def test_a_multi_edit_is_read_like_any_other(session):
     (session.project / "app.py").write_text("x = 1\n")
     session.prompt("fix it")
-    event = {"tool_name": "MultiEdit", "tool_input": {"file_path": str(session.project / "app.py"), "edits": [{"old_string": "x = 1", "new_string": "async def f(): await g()"}]}}
+    event = {"tool_name": "MultiEdit", "tool_input": {"file_path": str(session.project / "app.py"), "edits": [{"old_string": "x = 1", "new_string": "api_token = os.environ['TOKEN']"}]}}
     assert "has not been loaded" in (denied(session.attempt(event)) or "")
 
 
@@ -568,8 +563,7 @@ def test_more_ways_of_asking_a_program_about_itself_are_not_checks(words):
     assert not is_check(words)
 
 
-@pytest.mark.parametrize("prompt", ["fix the oauth callback", "fix the JWT expiry", "the SSO redirect is wrong", "fix the session timeout", "add access control to this endpoint", "fix the SQL query", "add a column to the users table",
-                                    "delete all inactive users", "change the tax rate", "this endpoint leaks PII", "disable TLS verification", "fix the `password` check", "the `login` handler is wrong"])
+@pytest.mark.parametrize("prompt", ["fix the oauth callback", "fix the JWT expiry", "the SSO redirect is wrong", "add access control to this endpoint", "change the tax rate", "fix the `password` check", "the `login` handler is wrong"])
 def test_more_consequential_requests_are_not_small(session, prompt):
     session.prompt(prompt)
     assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", "a = 1", "a = 2"))) or "")
@@ -582,8 +576,7 @@ def test_ordinary_small_requests_are_not_held_for_a_word_in_them(session, prompt
 
 
 @pytest.mark.parametrize("old, new", [("@login_required", ""), ("if not user.is_admin: raise Forbidden", "pass"), ("check_password(pw, h)", "True"), ("user_password = x", "x"), ("API_TOKEN = a", "API_TOKEN = b"), ("AWS_SECRET_ACCESS_KEY", "X"),
-                                      ("execute_query(sql)", "x"), ("delete_user(uid)", "x"), ("drop_table(t)", "x"), ("os.remove(path)", "x"), ("verify=False", "verify=True"), ("amount_due", "x"), ("total_price", "x"), ("isAdmin", "x"),
-                                      ("checkPassword(p)", "true"), ("executeQuery(q)", "x"), ("fs.rmSync(p)", "x"), ("execSync(c)", "x")])
+                                      ("amount_due", "x"), ("total_price", "x"), ("isAdmin", "x"), ("checkPassword(p)", "true")])
 def test_consequential_identifiers_are_seen_inside_longer_names(session, old, new):
     session.prompt("fix it")
     assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", old, new))) or "")
@@ -595,7 +588,7 @@ def test_everyday_typo_fixes_stay_small(session, old, new):
     assert denied(session.attempt(session.edit_event("app.py", old, new))) is None
 
 
-@pytest.mark.parametrize("name", ["alembic/versions/0007.py", "db/schema.rb", "app/models.py", "schema.py", "database.py", "app/settings.py", "cors.py", "iam.py", "sso.py", "pricing.py", "wallet.py", "subscription.py"])
+@pytest.mark.parametrize("name", ["alembic/versions/0007.py", "db/schema.rb", "schema.py", "iam.py", "sso.py", "pricing.py", "wallet.py", "subscription.py"])
 def test_more_consequential_paths_are_not_small(session, name):
     session.prompt("fix it")
     assert "has not been loaded" in (denied(session.attempt(session.edit_event(name, "a = 1", "a = 2"))) or "")
@@ -737,3 +730,74 @@ def test_the_fix_real_agents_write_for_a_trivial_bug_is_small(session):
     old = "def sku_line(sku, count):\n    return f\"{sku}: {count} items\"\n\n\ndef total_line(rows):\n    total = sum(count for _, count in rows)\n    return f\"Total: {total} items across {len(rows)} SKUs\""
     new = "def plural(count, word):\n    return f\"{count} {word}\" if count == 1 else f\"{count} {word}s\"\n\n\ndef sku_line(sku, count):\n    return f\"{sku}: {plural(count, 'item')}\"\n\n\ndef total_line(rows):\n    total = sum(count for _, count in rows)\n    return f\"Total: {plural(total, 'item')} across {plural(len(rows), 'SKU')}\""
     assert denied(session.attempt(session.edit_event("report.py", old, new))) is None
+
+
+# ------------------------------------------------------------ outside the owner's named list, edits go ahead (2026-11-09)
+# Until 2026-11-09 each of these was held for the core skill. The owner chose to hold only for auth, secrets, tenancy, money, pricing and
+# migrations, by path, request or edit text, after a measured run showed the broad hold forcing the core in with a denied call each time.
+
+@pytest.mark.parametrize("prompt", ["optimize this loop", "make it more efficient", "reduce memory use here", "add requests as a dependency", "upgrade lodash to 4.17.21",
+                                    "bump numpy", "install redis and use it", "refactor this", "speed up the report, it is too slow", "fix the SQL query",
+                                    "delete all inactive users", "this endpoint leaks PII", "disable TLS verification", "fix the session timeout", "add dependency injection for the logger",
+                                    "use dependency-injection here", "switch to constructor injection", "add a column to the dataframe", "remove the column from the CSV export",
+                                    "fix the cookie consent banner",
+                                    "make the progress bar show the token count"])
+def test_a_request_outside_the_named_list_goes_ahead(session, prompt):
+    session.prompt(prompt)
+    assert denied(session.attempt(session.edit_event("app.py", "a = 1", "a = 2"))) is None
+
+
+@pytest.mark.parametrize("name", [".github/workflows/deploy.yml", "terraform/prod.tf", "Dockerfile", "k8s/deployment.yaml", "composer.json", "uv.lock", "package-lock.json",
+                                  "config.toml", "app/models.py", "database.py", "app/settings.py", "cors.py", "requirements.txt"])
+def test_a_path_outside_the_named_list_goes_ahead(session, name):
+    session.prompt("fix it")
+    assert denied(session.attempt(session.edit_event(name, "a = 1", "a = 2"))) is None
+
+
+@pytest.mark.parametrize("name, old, new", [("app.py", "commit()", "await commit()"), ("app.py", "await commit()", "commit()"), ("a.sh", "x", 'rm -rf "$DIR"/*'), ("a.sh", "x", 'eval "$CMD"'), ("a.rb", "x", "eval(params[:x])"),
+                                            ("a.php", "x", "eval($_GET['x']);"), ("app.py", "x", 'cur.execute(f"SELECT * FROM t WHERE id = {uid}")'), ("app.py", "x", "shutil.rmtree(path)"), ("app.go", "x", "defer close(ch)"),
+                                            ("app.py", "x", 'open(path, "w").write(data)'), ("app.py", "execute_query(sql)", "x"), ("app.py", "delete_user(uid)", "x"), ("app.py", "drop_table(t)", "x"),
+                                            ("app.py", "os.remove(path)", "x"), ("app.py", "verify=False", "verify=True"), ("app.js", "executeQuery(q)", "x"), ("app.js", "fs.rmSync(p)", "x"),
+                                            ("app.js", "execSync(c)", "x"), ("app.py", "a = 1", "async def f(): pass")])
+def test_edit_text_outside_the_named_list_goes_ahead(session, name, old, new):
+    session.prompt("fix it")
+    assert denied(session.attempt(session.edit_event(name, old, new))) is None
+
+
+@pytest.mark.parametrize("prompt", ["restrict this endpoint to admins", "add an admin-only flag", "fix the privilege check", "fix the session cookie",
+                                    "hash the stored values with bcrypt", "add a column to the users table", "rotate the api key", "fix the ledger entry", "add 2FA to the account page",
+                                    "only administrators can delete posts", "migrate the users table"])
+def test_named_work_is_held_however_small_the_edit(session, prompt):
+    """The small path's own lists are older than the owner's named list, so named work is never small (a fresh review, 2026-11-09)."""
+    session.prompt(prompt)
+    assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", "a = 1", "a = 2"))) or "")
+
+
+def test_a_one_line_tenant_edit_is_held(session):
+    session.prompt("fix it")
+    assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", "x = 1", "tenant_id = x"))) or "")
+
+
+@pytest.mark.parametrize("name", ["tokenizer.py", "tokeniser.py", "author.py", "maintenance.py"])
+def test_names_that_only_contain_a_named_word_go_ahead(session, name):
+    session.prompt("fix it")
+    assert denied(session.attempt(session.edit_event(name, "a = 1", "a = 2"))) is None
+
+
+@pytest.mark.parametrize("old, new", [("x", "logInfo(x)"), ("x", "load_balancer()"), ("x", "tokenizer.encode(x)"), ("x", "self.author = a")])
+def test_edit_text_that_only_contains_a_named_word_goes_ahead(session, old, new):
+    session.prompt("fix it")
+    assert denied(session.attempt(session.edit_event("app.py", old, new))) is None
+
+
+@pytest.mark.parametrize("old, new", [("class V(LoginRequiredMixin, View):", "class V(View):"), ("x", "form = LoginForm()"), ("x", "LOGIN_REDIRECT_URL = '/'"),
+                                      ("x", "MAX_LOGIN_ATTEMPTS = 5"), ("x", "failed_logins += 1"), ("x", "if isLoggedIn: show()")])
+def test_login_code_in_any_case_is_held(session, old, new):
+    session.prompt("fix it")
+    assert "has not been loaded" in (denied(session.attempt(session.edit_event("app.py", old, new))) or "")
+
+
+@pytest.mark.parametrize("name", ["db/migrate/20240101_add_index_to_orders.rb", "scripts/migrate_db.py", "db/migrator.py"])
+def test_migration_paths_are_held_however_they_are_spelled(session, name):
+    session.prompt("fix it")
+    assert "has not been loaded" in (denied(session.attempt(session.edit_event(name, "a = 1", "t.string :name"))) or "")

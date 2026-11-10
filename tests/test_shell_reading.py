@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 import occam_hook  # noqa: E402
 from occam_tools import workflow  # noqa: E402
 from occam_tools.zero_tests import ran_no_tests  # noqa: E402
-from shell_reading import parse_shell, python_writes  # noqa: E402
+from python_reading import python_writes  # noqa: E402
+from shell_reading import parse_shell  # noqa: E402
 
 NO_CHECK = "No check has run since the last code edit"
 UNSETTLED = "hasn't passed since"
@@ -225,6 +226,16 @@ def test_a_quoted_message_cant_pass_for_a_check(agent):
     agent.edit()
     agent.bash("git commit --message=\"Fix; pytest passes\"")
     assert NO_CHECK in added(agent.stop("Done."))
+
+
+@pytest.mark.parametrize("command, covered", [
+    ("pytest -q && sed -i '' s/a/b/ app.py && pytest -q", True),  # the second, equal check runs after the edit
+    ("pytest -q && sed -i '' s/a/b/ app.py", False),
+])
+def test_an_edit_counts_against_the_last_check_not_an_equal_earlier_one(agent, command, covered):
+    agent.edit()
+    agent.bash(command, output="3 passed in 0.1s")
+    assert (NO_CHECK not in added(agent.stop("Done."))) is covered
 
 
 @pytest.mark.parametrize("command", ["FOO=\"a b\" pytest -q", "PYTEST_ADDOPTS=\"-x -q\" pytest"])
@@ -879,6 +890,21 @@ def test_many_distinct_missing_heredocs_stay_fast(agent):
     started = time.monotonic()
     agent.try_bash("".join(f"cat <<E{index}\n" for index in range(40_000)))
     assert time.monotonic() - started < 6
+
+
+@pytest.mark.parametrize("opening", ["$(", "$((", '"$(', "`$(", "${"])
+def test_many_unclosed_substitutions_stay_fast_and_still_ask(agent, opening):
+    """Retrying each `$(` that never closes rescanned to the end, so this ran past the hook's limit and the reset went through unasked."""
+    started = time.monotonic()
+    assert decision(agent.try_bash("git reset --hard; echo " + opening * 20_000)) == "ask"
+    assert time.monotonic() - started < 6
+
+
+@pytest.mark.parametrize("risky", ["git clean $(echo\n-n) -fdx", "git branch $(echo\n) -D main", "git checkout $(echo\n) -- ."])
+def test_one_substitution_the_reader_cant_close_doesnt_hide_later_ones(agent, risky):
+    """The apostrophe in the comment reads as a quote that never closes, though this is valid shell. Giving up on every later `$(`
+    after that one split the next substitution at its newline, and its flag landed on a line of its own."""
+    assert decision(agent.try_bash("x=$(\n  # it's the version\n  cat VERSION\n)\n" + risky)) == "ask"
 
 
 # ------------------------------------------------------------ a question nobody can answer stalls an agent for good

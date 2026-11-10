@@ -15,6 +15,9 @@ Run on 2026-11-05. Generated from the saved runs in `results/`, which are local 
 - **Python guidance: no measured benefit, at about 23% more cost per run.** On seven new cases on Sonnet, the plugin passed 7/21 and no skill 5/19 as graded, but the plugin passed fewer on one case (0/3 against 1/3), so by the criteria set in advance it reads as not helping. With one unfair check dropped, the six cases with full runs tied at 7/18 each. The new Python references were read in only 1 of 21 plugin runs. See "Python suite". Direct pointers to the references, tested afterwards, didn't get them read either: 1 of 15 runs. A last case on moved APIs and sinks tied at 3/3, at about 35% more cost per run.
 - **Auditing and repair: no measured benefit in finding or fixing.** Across two large tests, 3 runs per arm each, the plugin located 92.8 of 122 defects against 93.0 and fixed a median of 48.5 of 60 serious ones against 55 (293 and 294 of 360 in total, level only because one no-skill run fixed 19). It changed far less code, with fewer decoys acted on and fewer unflagged behavior changes, but left more open and took about 1.8 times as long. See "Large audit head-to-heads".
 
+- **Head-to-head with popular skills: occam lost to Ponytail on how easily its new code changes, and cost the most.** On 8 new-code specs on Sonnet 5.5, 3 builds per arm, a fresh agent changed 25% more lines adding a feature to occam's code than to Ponytail's (p = 0.016, preregistered bar 0.0167), with equal hidden-test pass rates. Against karpathy-skills and no skill: no difference shown (occam 10% and 8% more, p = 0.078 and 0.094). occam builds cost $0.55 against $0.30 to $0.32, took 12.5 turns against about 4.5, and wrote 789 product lines (median) against 547 for Ponytail and 775 for no skill.
+- **Retest of lean occam: still worse than Ponytail, by less.** On 8 fresh specs, a fresh agent changed 6.5% more lines on occam's code than on Ponytail's (p = 0.031, bar 0.05), down from 25%. Against no skill, no difference was shown. occam wrote 582 product lines (median) against 465 for Ponytail and 628 for no skill, and its builds cost $0.34 against $0.24 and $0.25. In 9 of occam's 24 builds, an edit hold refused the first write. That hold has since been narrowed, and the effect is unmeasured. See "Retest of lean occam".
+
 The evidence supports "this enforces process". It doesn't support "this produces better code". These cases may be too easy to show a benefit on harder work, and this suite can't establish one. Choose the full plugin for its enforcement, not for a measured quality gain.
 
 ## Environment
@@ -407,6 +410,73 @@ The rule fixed before it ran asked for at least 3 more passes out of 9. These 3 
 - **What the plugin got wrong.** A send-back at Stop replaced a good report with a short reply to a note the reader never sees, in all 3 `locker` plugin runs. Two of them then failed a check on the final message, though their first report passed it. The hook also counted a test's expected failure on a copy of the old code as this code's.
 - **What send-backs do.** After the fact, in 140 saved plugin runs: 65 were sent back, 74 times, and the agent changed code after 7 of those. The reviewer note accounts for most of what they achieve. One reviewer in the look found a real defect the repo's tests didn't cover. The two runs with a reviewer cost 1.7 and 3 times a no-skill run.
 - **Changed afterwards, and not measured.** A send-back now asks for the whole report again, and an unread diff no longer sends an agent back by itself. The skill says to test the old code in its own command, which the hook reads correctly. Counting that failure correctly inside a mixed command was tried and removed, because a fresh review got real failures recorded as passes. Replay on 73 saved runs shows runs sent back falling from 46 to 32, which shows what fires, not that it helps. See `PREREGISTRATION.md`.
+
+
+## Head-to-head with popular skills (post-evaluation)
+
+Preregistered 2026-11-08 in `PREREGISTRATION.md` ("head-to-head with popular skills") before any run, on the user's approval of a $100 cap.
+- **Arms:** occam at commit `29492f2`, Ponytail at `96608e0`, the CLAUDE.md of karpathy-skills at `2c60614`, and no skill.
+- **Runs:** Sonnet 5.5, the 8 `newcode2` specs, 3 builds per arm per spec. Each build's follow-on change was made by a fresh no-skill agent.
+- **Spend:** $48.93.
+- **Guidance:** every arm's text appeared in all 24 of its build transcripts, and the no-skill arm's in none.
+
+| occam against | Lines the follow-on change needed on occam's code, relative to the rival's | p (bar 0.0167) | Verdict |
+|---|---|---|---|
+| Ponytail | 25% more | 0.016 | **occam worse** |
+| karpathy-skills | 10% more | 0.078 | No difference shown |
+| No skill | 8% more | 0.094 | No difference shown |
+
+Spec `newcode2-02` drops out: every arm's follow-on change failed the same 5 of 110 hidden tests, so the preregistered penalty (twice the largest passing change) was 0 for all. That leaves 7 specs. The acceptance gate held in all three comparisons: first-build hidden tests were within 1.2 points across arms.
+
+| Arm, 24 builds each | Product lines, median | Build cost, mean | Turns | Minutes | Follow-on change passed |
+|---|---|---|---|---|---|
+| occam | 789 | $0.55 | 12.5 | 3.8 | 87.5% |
+| No skill | 775 | $0.32 | 4.3 | 2.3 | 83.3% |
+| Ponytail | 547 | $0.30 | 4.4 | 2.1 | 87.5% |
+| karpathy-skills | 711 | $0.32 | 4.9 | 2.2 | 83.3% |
+
+- **Where occam's extra turns went** (first 18 builds, from transcripts): the hooks never held an edit and never sent an agent back. The agents loaded the full skill (16 of 18), ran about three times the shell commands (6.1 against 2.1 a build) and wrote about twice the files (2.3 against 1.2), mostly tests. Product code was the same size as no skill's.
+- **Usage limit, and how its runs were replaced.** The account's 5-hour limit cut runs from about 16:30. Those runs ended at $0 or partway, with "You've hit your 5-hour limit" in their logs: Ponytail and karpathy on spec 06, every arm on 07 and 08, and one occam follow-on change on 06. They were moved to `evals/results/h2h-failed-5h-limit/`, not deleted, and rerun whole after the reset. A scan of every head-to-head log finds no other API error. The runner gained a skip for changes already made, so one set-aside change could rerun alone.
+- **What this shows:** on small greenfield Python with one model family, occam's code was no easier to change later than any rival's. It was harder than Ponytail's, at nearly twice the cost per build. This isn't long-term maintenance, other languages, existing codebases or human readability, and these specs are now development data for a skill change.
+
+## Retest of lean occam (post-evaluation)
+
+After the loss above, the user chose to make occam lean for new code and retest on fresh specs. The retest was preregistered on 2026-11-09 in `PREREGISTRATION.md` ("retest of lean occam") before any run, within the same $100 approval.
+- **Arms:**
+  - occam: a frozen copy of the working tree from 2026-11-09 10:12, sha256 prefix `7ac108d4`. It holds the two lean rules for new code, the routed language skills, the card at the first tool call, and the core skill for consequential work only.
+  - Ponytail at `96608e0`.
+  - No skill.
+- **Runs:** Sonnet 5.5 on 8 fresh `newcode3` specs, each written blind by a separate subagent. Each arm built each spec 3 times, and a fresh no-skill agent then made a follow-on change to each build.
+- **Spend:** $27.94 including runs set aside, and $76.87 of the $100 across both head-to-heads.
+- **Usage limit:** the account's limit cut specs 03 to 08 on 2026-11-09. Every folder from those specs was moved to `evals/results/h2h2-failed-limit/` and rerun whole on 2026-11-10. No scored run has an API error in its logs.
+
+| occam against | Lines the follow-on change needed on occam's code, relative to the rival's | p (bar 0.05) | Verdict |
+|---|---|---|---|
+| Ponytail | 6.5% more | 0.031 | **occam worse** |
+| No skill | 0.8% fewer | 0.84 | No difference shown |
+
+All 8 specs count. Against Ponytail, occam's change was the same size on 2 specs and larger on the other 6, by 2 to 15 lines. The acceptance gate held: first-build hidden tests were within 0.1 points across arms.
+
+| Arm, 24 builds each | Product lines, median | Build cost, mean | Turns | Minutes | Follow-on change passed |
+|---|---|---|---|---|---|
+| occam | 582 | $0.34 | 7.3 | 2.1 | 95.8% |
+| No skill | 628 | $0.25 | 4.0 | 1.6 | 100% |
+| Ponytail | 465 | $0.24 | 4.2 | 1.7 | 100% |
+
+- **Against the first head-to-head.** The specs differ, so read each figure against its run's no-skill arm.
+  - occam's product code went from 2% more than no skill's to 7% less, and from 44% more than Ponytail's to 25% more.
+  - Its build cost went from 72% to 40% over no skill, and its turns from 12.5 to 7.3.
+  - The gap to Ponytail on the follow-on change shrank from 25% to 6.5%.
+- **occam's own text per build:**
+  - 9,512 skill and reference characters, down from 12,726 (−25%).
+  - 45,182 characters times later model calls, down from 105,632 (−57%).
+  - 6.2 model calls, down from 10.5. No skill made 3.7 both times.
+- **Where the extra cost went.** The full skill loaded in all 24 occam builds.
+  - In 15, the request named money or pricing, and the agent loaded the skill on its first call, as designed.
+  - In the other 9, every build of specs 05, 07 and 08, the frozen copy's broad edit hold refused the first write of the whole program until the skill loaded. The agent then wrote the program a second time. Those builds cost $0.41 to $0.47, against $0.25 to $0.30 for occam's others.
+  - The hold was narrowed to the owner's named list later on 2026-11-09, after the snapshot. Today's version holds none of those 9 writes. Whether that brings their cost down is unmeasured.
+  - occam's follow-on change was larger with and without the hold, so the hold doesn't explain the primary result.
+- **What this shows:** the lean rules made occam's code smaller and cheaper than in the first round, and smaller than no skill's. Ponytail's code still took fewer lines to change, by about 6.5%, and Ponytail's builds cost about 70% of occam's. This is small greenfield Python with one model family, and these specs are now development data.
 
 ## Spend
 

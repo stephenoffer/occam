@@ -135,25 +135,27 @@ def find_user(db, user_id):
 
 ```console
 $ occam scan payments.py
-7 findings (1 more below the confidence cut). These are leads: confirm each before calling it a defect.
+8 findings (1 more below the confidence cut). These are leads: confirm each before calling it a defect.
 [...]
-  [CRIT/hig/B] sql-injection  payments.py:19
+  CRITICAL  payments.py:19  sql-injection (high confidence, tier B: fix with a check)
       db.execute() receives SQL built from runtime values.
-  [HIGH/hig/C] stub-body  payments.py:13
+  HIGH      payments.py:13  stub-body (high confidence, tier C: ask first)
       refund has no body.
-  [MEDI/hig/B] missing-timeout  payments.py:7
+  HIGH      payments.py:10  failure-reported-as-success (medium confidence, tier B: fix with a check)
+      This handler catches a failure and returns success, so the caller can't tell.
+  MEDIUM    payments.py:7  missing-timeout (high confidence, tier B: fix with a check)
       requests.post() waits forever by default.
-  [MEDI/med/B] broad-wrap  payments.py:5
+  MEDIUM    payments.py:5  broad-wrap (medium confidence, tier B: fix with a check)
       All of charge is inside a broad try that doesn't re-raise.
-  [MEDI/med/C] placeholder-comment  payments.py:14
+  MEDIUM    payments.py:14  placeholder-comment (medium confidence, tier C: ask first)
       Comment admits the code is a placeholder
-  [LOW/hig/A] ai-residue  payments.py:4
+  LOW       payments.py:4  ai-residue (high confidence, tier A: a mechanical fix)
       Comment talks to the reader or narrates the edit, not the code
-  [LOW/med/B] unreferenced-def  payments.py:18
+  LOW       payments.py:18  unreferenced-def (medium confidence, tier B: fix with a check)
       find_user has no references in this repository.
 ```
 
-It flags the `try`, but doesn't spell out the worst thing about it: a failed charge reports success. That's why the skill treats the scanner as a starting point and makes reading the code a required step. On a larger blind test, the scanner alone located under a fifth of the defects that need semantics.
+It names the worst thing here too: a failed charge reports success. Code this small is easy for a scanner. On a larger blind test, the scanner alone located under a fifth of the defects that need semantics, which is why the skill treats it as a starting point and makes reading the code a required step.
 
 <sub>Written for this page, and run with `occam scan`. Reproduce it by saving the code as `payments.py`.</sub>
 
@@ -268,34 +270,36 @@ def is_leap_year(year):
 
 ```console
 $ occam scan calendar_app --min-confidence low
-14 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
-  [HIGH/hig/C] no-tests  calendar_app/leap.py:1
+15 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
+  HIGH      calendar_app/leap.py:1  no-tests (high confidence, tier C: ask first)
       3 source files and 71 lines, and no test files.
-  [MEDI/hig/B] identical-branches  calendar_app/leap.py:40
+  MEDIUM    calendar_app/leap.py:40  identical-branches (high confidence, tier B: fix with a check)
       Both branches of this if do the same thing, so the condition decides nothing.
-  [MEDI/med/B] single-impl-abstraction  calendar_app/leap.py:8
+  MEDIUM    calendar_app/leap.py:8  single-impl-abstraction (medium confidence, tier B: fix with a check)
       AbstractLeapYearStrategy has one implementation in this repository.
-  [MEDI/med/B] pattern-one-product  calendar_app/leap.py:16
+  MEDIUM    calendar_app/leap.py:16  pattern-one-product (medium confidence, tier B: fix with a check)
       GregorianLeapYearStrategy has 1 public method.
-  [MEDI/med/B] pattern-one-product  calendar_app/leap.py:35
+  MEDIUM    calendar_app/leap.py:35  pattern-one-product (medium confidence, tier B: fix with a check)
       LeapYearStrategyFactory has 1 public method.
-  [LOW/hig/A] ai-residue  calendar_app/leap.py:4
+  LOW       calendar_app/leap.py:4  ai-residue (high confidence, tier A: a mechanical fix)
       Comment talks to the reader or narrates the edit, not the code
-  [LOW/hig/B] useless-except  calendar_app/leap.py:60
+  LOW       calendar_app/leap.py:60  useless-except (high confidence, tier B: fix with a check)
       This handler only re-raises what it caught.
-  [LOW/med/B] unused-option  calendar_app/leap.py:49
+  LOW       calendar_app/leap.py:49  unused-option (medium confidence, tier B: fix with a check)
       No call read here passes strategy, enable_cache, verbose to LeapYearCalculator().
-  [LOW/med/B] pass-through  calendar_app/leap.py:64
-      is_leap_year only forwards to ().
-  [LOW/low/B] banner-comment  calendar_app/leap.py:1
+  LOW       calendar_app/leap.py:64  pass-through (medium confidence, tier B: fix with a check)
+      is_leap_year only forwards to LeapYearCalculator().calculate().
+  LOW       calendar_app/leap.py:1  banner-comment (low confidence, tier B: fix with a check)
       3 banner comments in this file.
-  [LOW/low/B] narration-comment  calendar_app/leap.py:20
+  LOW       calendar_app/leap.py:19  handrolled-helper (low confidence, tier B: fix with a check)
+      is_leap reimplements calendar.isleap.
+  LOW       calendar_app/leap.py:20  narration-comment (low confidence, tier B: fix with a check)
       Comment restates the next line
-  [LOW/low/B] narration-comment  calendar_app/leap.py:22
+  LOW       calendar_app/leap.py:22  narration-comment (low confidence, tier B: fix with a check)
       Comment restates the next line
-  [LOW/low/B] narration-comment  calendar_app/leap.py:24
+  LOW       calendar_app/leap.py:24  narration-comment (low confidence, tier B: fix with a check)
       Comment restates the next line
-  [LOW/low/B] one-method-class  calendar_app/leap.py:46
+  LOW       calendar_app/leap.py:46  one-method-class (low confidence, tier B: fix with a check)
       LeapYearCalculator is one method plus a constructor.
 ```
 
@@ -307,7 +311,7 @@ import calendar
 calendar.isleap(2024)
 ```
 
-The scanner doesn't know `calendar.isleap` exists. It flags the shape, and reading the code, and what's already installed, finds the one line.
+The scanner names it, on the method that tests divisibility by 4, 100 and 400. The shape findings are what show how far the rest of the code wandered from that one line.
 
 <sub>Written for this page, and run with `occam scan`. It works: `is_leap_year` gives the right answer for 1900, 2000, 2023 and 2024.</sub>
 
@@ -371,26 +375,32 @@ if __name__ == "__main__":
 
 ```console
 $ occam scan notify
-10 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
-  [HIGH/hig/C] no-tests  notify/__init__.py:1
+13 findings (0 more below the confidence cut). These are leads: confirm each before calling it a defect.
+  HIGH      notify/__init__.py:1  no-tests (high confidence, tier C: ask first)
       3 source files and 79 lines, and no test files.
-  [HIGH/med/B] query-in-loop  notify/admins.py:47
+  HIGH      notify/admins.py:47  query-in-loop (medium confidence, tier B: fix with a check)
       send_admin_email() queries or calls out (notify/admins.py:15), and this runs it once per item.
-  [HIGH/med/B] query-in-loop  notify/admins.py:49
+  HIGH      notify/admins.py:49  query-in-loop (medium confidence, tier B: fix with a check)
       send_manager_email() queries or calls out (notify/admins.py:24), and this runs it once per item.
-  [HIGH/med/B] query-in-loop  notify/admins.py:51
+  HIGH      notify/admins.py:51  query-in-loop (medium confidence, tier B: fix with a check)
       send_owner_email() queries or calls out (notify/admins.py:33), and this runs it once per item.
-  [MEDI/hig/B] clone-function  notify/admins.py:15
+  MEDIUM    notify/admins.py:15  clone-function (high confidence, tier B: fix with a check)
       send_admin_email has the same structure as notify/admins.py:24 (send_manager_email), notify/admins.py:33 (send_owner_email).
-  [MEDI/med/B] handrolled-csv  notify/admins.py:10
+  MEDIUM    notify/admins.py:10  handrolled-csv (medium confidence, tier B: fix with a check)
       Splitting on commas breaks on quoted fields.
-  [MEDI/med/B] handrolled-retry  notify/admins.py:17
+  MEDIUM    notify/admins.py:16  handrolled-json (medium confidence, tier B: fix with a check)
+      JSON built by joining strings, so the values aren't escaped.
+  MEDIUM    notify/admins.py:17  handrolled-retry (medium confidence, tier B: fix with a check)
       A loop that catches and sleeps is a hand-written retry.
-  [MEDI/med/B] handrolled-retry  notify/admins.py:26
+  MEDIUM    notify/admins.py:25  handrolled-json (medium confidence, tier B: fix with a check)
+      JSON built by joining strings, so the values aren't escaped.
+  MEDIUM    notify/admins.py:26  handrolled-retry (medium confidence, tier B: fix with a check)
       A loop that catches and sleeps is a hand-written retry.
-  [MEDI/med/B] handrolled-retry  notify/admins.py:35
+  MEDIUM    notify/admins.py:34  handrolled-json (medium confidence, tier B: fix with a check)
+      JSON built by joining strings, so the values aren't escaped.
+  MEDIUM    notify/admins.py:35  handrolled-retry (medium confidence, tier B: fix with a check)
       A loop that catches and sleeps is a hand-written retry.
-  [MEDI/med/B] handrolled-argv  notify/admins.py:44
+  MEDIUM    notify/admins.py:44  handrolled-argv (medium confidence, tier B: fix with a check)
       Command-line options parsed by hand.
 ```
 

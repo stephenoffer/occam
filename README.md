@@ -92,7 +92,7 @@ Kept: the public is_leap(year) signature and behavior, and the existing test.
 
 ## What it tells your agent
 
-Every session and subagent gets a short card of rules, about 300 tokens. The full playbook is required only before risky edits, such as auth, money or stored data.
+Every session and subagent gets a short card of rules, a few hundred tokens. The full playbook is required only before risky edits, such as auth, money or stored data.
 
 - Do what was asked, all of it: no mock, TODO or cut-down version in place of the real thing, and nothing nobody asked for.
 - Leave other people's uncommitted work alone.

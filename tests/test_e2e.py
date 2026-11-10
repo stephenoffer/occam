@@ -298,3 +298,16 @@ def test_the_hooks_step_aside_when_asked_and_when_broken(session):
     assert session("PreToolUse", env={**session.env, "OCCAM_HOOKS": "off"}, **edit(code)) == {}
     done = subprocess.run(hook_command("PreToolUse"), input="not json", capture_output=True, text=True, env=session.env, timeout=30)
     assert done.returncode == 0 and done.stdout == "" and "failed open" in done.stderr
+
+
+def test_no_command_lists_the_commands_rather_than_an_argparse_error():
+    done = subprocess.run([sys.executable, str(OCCAM)], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 2 and "Find leads across all rule families" in done.stdout
+    assert "arguments are required" not in done.stdout + done.stderr
+
+
+def test_a_finding_reads_as_words_rather_than_codes(tmp_path):
+    (tmp_path / "a.py").write_text("def f(x):\n    try:\n        return int(x)\n    except Exception:\n        pass\n")
+    done = subprocess.run([sys.executable, str(OCCAM), "scan", "a.py"], capture_output=True, text=True, timeout=120, cwd=tmp_path)
+    assert re.search(r"^  MEDIUM\s+a\.py:4  swallowed-exception \(high confidence, tier B: fix with a check\)$", done.stdout, re.M), done.stdout
+    assert not re.search(r"\[(?:CRIT|HIGH|MEDI|LOW)/", done.stdout), "the old [MEDI/hig/B] codes"

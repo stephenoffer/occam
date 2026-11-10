@@ -36,7 +36,7 @@ LARGE_REPOSITORY_FILES = 50_000
 _BATCH_FILES = 1024
 _BATCH_BYTES = 6_000_000  # the limit is checked between batches, and analysis runs at very roughly 400 KB per CPU second
 _MAX_CACHE_BYTES = 2_000_000_000  # about 22 million lines. It can always be rebuilt, and nothing else ever shrinks it
-_CACHE_SCHEMA = f"{VERSION}-12-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
+_CACHE_SCHEMA = f"{VERSION}-15-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
 _PARSER_LANGUAGES = {"python", "notebook"}
 
 
@@ -87,6 +87,8 @@ def analyze_text(path: str, text: str, language: str | None = None) -> dict:
     if language is None:
         if src.reads_only_for_secrets(path):
             _analyze_for_secrets(path, text, record)
+        elif rules_config.PROSE.search(path) and not is_test:
+            _analyze_for_secrets(path, text, record, secrets=False)
         return record
     if src.looks_generated(text):
         record["generated"] = True
@@ -120,14 +122,15 @@ def _rules_for_what_runs(path: str, text: str, language: str, is_test: bool) -> 
     return found + ([] if is_test else list(rules_config.hidden_characters(text)))
 
 
-def _analyze_for_secrets(source_path: str, text: str, record: dict) -> None:
-    """A config file or Dockerfile. It stays language-less, so nothing else treats it as code, and stats say it was read for this and nothing more."""
-    record["secrets_only"] = True
+def _analyze_for_secrets(source_path: str, text: str, record: dict, secrets: bool = True) -> None:
+    """A config file or Dockerfile. It stays language-less, so nothing else treats it as code, and stats say it was read for this and nothing more.
+    Docs, logs and saved pages (secrets=False) are read only for text planted for an agent, since their examples aren't credentials."""
+    record["secrets_only"] = secrets
     record["lines"] = 0
     if src.is_fixture_path(source_path):
         return
     source = src.load(source_path, text, "shell" if src.DOCKERFILE.search(source_path) else None)
-    for rule, line, message, overrides in [*rules_text.secrets_only_findings(source), *rules_config.findings(source_path, text)]:
+    for rule, line, message, overrides in [*(rules_text.secrets_only_findings(source) if secrets else []), *rules_config.findings(source_path, text)]:
         if _suppressed(source, rule, line):
             record["suppressed"] = record.get("suppressed", 0) + 1
         else:
@@ -564,12 +567,13 @@ def _analyze_batch(root: Path, paths: list[str], cache: Cache, pool: _Workers, l
         if language is None:
             head = _head(root / path)
             language = src.language_of(path, head)
-        if language is None and not src.reads_only_for_secrets(path):
+        prose = language is None and bool(rules_config.PROSE.search(path)) and not src.reads_only_for_secrets(path)
+        if language is None and not src.reads_only_for_secrets(path) and not prose:
             records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0}
             continue
         text = filesystem.read_text(root / path)
         if text is None:
-            records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0, "unscanned": True}
+            records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0, "unscanned": not prose}  # a big log was never a promise
             continue
         key = hashlib.sha1(f"{_CACHE_SCHEMA}\0{path}\0".encode() + text.encode("utf-8", "replace")).hexdigest()
         keys[path] = key

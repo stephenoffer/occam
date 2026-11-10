@@ -24,6 +24,9 @@ RESOURCE_CASES = [
  ("nonatomic-state-write", "app/a.py", "import json\nSTATE = 'state.json'\ndef load():\n    with open(STATE) as f:\n        return json.load(f)\ndef save(state):\n    with open(STATE, 'w') as f:\n        json.dump(state, f)\n",
   "import json, os\nSTATE = 'state.json'\ndef load():\n    with open(STATE) as f:\n        return json.load(f)\ndef save(state):\n    with open(STATE + '.tmp', 'w') as f:\n        json.dump(state, f)\n    os.replace(STATE + '.tmp', STATE)\n"),
  ("nonatomic-state-write", "app/a.py", "def bump(self):\n    n = int(self.counter.read_text())\n    self.counter.write_text(str(n + 1))\n", "def report(self, n):\n    self.out.write_text(str(n))\n"),
+ # self-review: a device file isn't stored state, as a Cygwin clipboard copy and paste
+ ("nonatomic-state-write", "app/a.py", "def copy(text):\n    with open('state.txt', 'wt') as f:\n        f.write(text)\ndef paste():\n    with open('state.txt', 'rt') as f:\n        return f.read()\n",
+  "def copy(text):\n    with open('/dev/clipboard', 'wt') as f:\n        f.write(text)\ndef paste():\n    with open('/dev/clipboard', 'rt') as f:\n        return f.read()\n"),
  ("network-in-unit-test", "tests/test_a.py", "import requests\ndef test_price():\n    assert requests.get('https://api.stripe.com/v1/prices', timeout=5).ok\n", "import requests, responses\n@responses.activate\ndef test_price():\n    responses.get('https://api.stripe.com/v1/prices', json={})\n    assert requests.get('https://api.stripe.com/v1/prices', timeout=5).ok\n"),
  ("network-in-unit-test", "tests/test_a.py", "import httpx\ndef test_up():\n    assert httpx.get('https://status.example-corp.io/health').status_code == 200\n", "import httpx\ndef test_up(server):\n    assert httpx.get('http://localhost:8000/health').status_code == 200\n"),
  ("fixed-test-resource", "tests/test_a.py", "import socket\ndef test_listen():\n    s = socket.socket()\n    s.bind(('127.0.0.1', 8080))\n", "import socket\ndef test_listen():\n    s = socket.socket()\n    s.bind(('127.0.0.1', 0))\n"),
@@ -34,6 +37,10 @@ RESOURCE_CASES = [
  ("dense-comprehension", "app/a.py", "cells = [c.value for sheet in book for row in sheet if row for c in row if c]\n", "cells = [c.value for row in sheet for c in row if c]\n"),
  ("dense-comprehension", "app/a.py", "size = 'S' if n < 10 else 'M' if n < 100 else 'L' if n < 1000 else 'XL'\n", "size = 'S' if n < 10 else 'M' if n < 100 else 'L'\n"),
  ("range-len-loop", "app/a.py", "def total(prices):\n    t = 0\n    for i in range(len(prices)):\n        t += prices[i]\n    return t\n", "def scale(prices):\n    for i in range(len(prices)):\n        prices[i] = prices[i] * 2\n"),
+ # review of the self-review fixes: outside __iter__, `for x in self` is fine
+ ("range-len-loop", "app/a.py", "class Bag(list):\n    def total(self):\n        t = 0\n        for i in range(len(self)):\n            t += self[i]\n        return t\n", "def f(rows):\n    return [i for i in range(3)]\n"),
+ # self-review: inside __iter__, `for item in self` would call __iter__ again
+ ("range-len-loop", "app/a.py", "def show(rows):\n    for i in range(len(rows)):\n        print(rows[i])\n", "class Masked:\n    def __iter__(self):\n        for i in range(len(self)):\n            yield self[i]\n"),
  ("dropped-task", "app/a.py", "def run(pool, jobs):\n    for job in jobs:\n        pool.submit(work, job)\n", "def run(pool, jobs):\n    futures = [pool.submit(work, job) for job in jobs]\n    return [f.result() for f in futures]\n"),
  ("dropped-task", "app/a.py", "import threading\ndef start():\n    threading.Thread(target=loop).start()\n", "import threading\ndef start():\n    threading.Thread(target=serve_forever, daemon=True).start()\n"),
  ("query-in-loop", "app/models.py", "class Order(models.Model):\n    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)\ndef names():\n    return [o.customer.name for o in Order.objects.all()]\n",
@@ -51,6 +58,20 @@ RESOURCE_CASES = [
  ("lock-order", "app/a.py", "class A:\n    def f(self):\n        with self._lock:\n            with self.state_lock:\n                go()\n    def g(self):\n        with self.state_lock:\n            with self._lock:\n                go()\n",
   "class A:\n    def f(self):\n        with self._lock:\n            with self.state_lock:\n                go()\nclass B:\n    def g(self):\n        with self.state_lock:\n            with self._lock:\n                go()\n"),
 ]
+RESOURCE_CASES += [
+ # From occam-97's review of the committed rules.
+ ("client-per-call", "app/a.py", "import requests\nfor url in urls:\n    s = requests.Session()\n    s.get(url, timeout=5)\n",
+  "import psycopg2\nfrom sqlalchemy import create_engine\nfor attempt in range(5):\n    conn = psycopg2.connect(DSN)\nfor tenant in tenants:\n    url = tenant_url(tenant)\n    engine = create_engine(url)\n"),
+ ("unbounded-queue", "app/a.py", "import queue\nq = queue.Queue()\nwhile True:\n    q.put(read_sensor())\n", "import queue\nq = queue.Queue()\nwhile True:\n    url = q.get()\n    for link in links(url):\n        q.put(link)\n"),
+ ("await-under-thread-lock", "app/a.py", "async def f(self):\n    with self._lock:\n        await self.flush()\n", "def f(self):\n    with self._lock:\n        async def later():\n            await self.flush()\n        self.pending.append(later)\n"),
+ ("nonatomic-state-write", "app/a.py", "class Store:\n    def load(self):\n        return self.path.read_text()\n    def save(self, text):\n        self.path.write_text(text)\n",
+  "class Reader:\n    def load(self):\n        return self.path.read_text()\nclass Writer:\n    def save(self, text):\n        self.path.write_text(text)\n"),
+]
+RESOURCE_CASES += [
+ # From the third review: range(len(...)) is over items, and an annotated assignment carries the loop's value too.
+ ("client-per-call", "app/a.py", "import requests\nfor i in range(len(urls)):\n    s = requests.Session()\n    s.get(urls[i], timeout=5)\n",
+  "import boto3\nfor r in regions:\n    name: str = r.upper()\n    ec2 = boto3.client('ec2', region_name=name)\n"),
+]
 
 CONFIG_CASES = [
  ("formatter-conflict", "pyproject.toml", "[tool.black]\nline-length = 100\n\n[tool.ruff]\nline-length = 88\n\n[tool.ruff.format]\nquote-style = \"double\"\n", "[tool.black]\nline-length = 88\n\n[tool.ruff]\nline-length = 120\n"),
@@ -59,5 +80,8 @@ CONFIG_CASES = [
 
 FAKE_KEY = "AKIA" + "A" * 16  # built here so no credential shape sits in the repository
 SECRET_CASES = [
+ ("live-credential-in-test", "tests/test_jwt.py", f"KEY = '{FAKE_KEY}'\n", "PRIVATE = '-----BEGIN RSA " + "PRIVATE KEY-----\\nMIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun\\n-----END RSA " + "PRIVATE KEY-----'\n"),
  ("live-credential-in-test", "tests/test_upload.py", f"def test_upload(s3):\n    s3.login('{FAKE_KEY}')\n", "def test_upload(s3):\n    s3.login('AKIA-test-key')\n"),
+ # From the sweep: SkyPilot's tests hold eight URLs like this, all fakes.
+ ("live-credential-in-test", "tests/test_upload.py", f"def test_upload(s3):\n    s3.login('{FAKE_KEY}')\n", "def test_proxy(check):\n    check('http://user:" + "sup3rsecret" + "@env.example.com')\n"),
 ]

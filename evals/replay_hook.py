@@ -30,6 +30,8 @@ DEFAULT_SETS = ("holdout-plugin", "holdout-sonnet", "python-sonnet", "python-rer
 SENT_BACK = {
     "no check since the edit": "No check has run since",
     "claimed a pass": "no check passed during this turn",
+    "claimed tests, no test run": "not a test run",
+    "claimed all tests, filtered run": "filtered to part of the suite",
     "reviewer": "hasn't finished a review",
     "self-review not stated": "doesn't say the diff was reviewed",
     "diff not inspected": "final diff hasn't been inspected",

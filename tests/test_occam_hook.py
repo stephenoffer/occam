@@ -139,8 +139,10 @@ def test_documentation_edits_are_not_held(agent):
 
 
 def test_dependency_requirements_txt_counts_as_code_despite_its_suffix(agent):
+    """Since 2026-11-09 a dependency edit goes ahead without the core, by the owner's choice; being code shows in the dependency facts it hears."""
     agent.prompt("bump a dependency")
-    assert decision(agent.try_edit("requirements.txt")) == "deny"
+    output = agent.try_edit("requirements.txt")
+    assert decision(output) is None and "that the name you'd install is the package" in added(output)
 
 
 def test_files_outside_the_project_are_not_held(agent, tmp_path):
@@ -244,6 +246,19 @@ def test_plan_mode_leaves_a_shell_write_to_the_plan_gate(agent):
     (agent.project / "app.py").write_text("a = 1\n")
     agent.prompt("Review only, change nothing.")
     assert decision(agent.try_bash("rm app.py", permission_mode="plan")) is None
+
+
+@pytest.mark.parametrize("command, held", [
+    ("cd $HOME/project && rm app.py", True), ("rm ${HOME}/project/app.py", True), ("cd $HOME && rm project/app.py", True),
+    ("cd $HOME && rm app.py", False), ("rm -f $HOME/.cache/x.txt", False), ("cd $HOMEBREW_PREFIX && rm app.py", True),
+])
+def test_a_path_under_home_is_judged_by_where_it_is(tmp_path, command, held):
+    """$HOME was taken for scratch like $TMPDIR, so a write into a project inside the home folder went unseen on a read-only turn."""
+    made = Agent(tmp_path)
+    made.env["HOME"] = str(tmp_path)
+    (made.project / "app.py").write_text("a = 1\n")
+    made.prompt("Review only, change nothing.")
+    assert (decision(made.try_bash(command)) == "deny") == held
 
 
 @pytest.mark.parametrize("command", ["cd /tmp && echo hi > app.py", "cd $TMPDIR && rm app.py"])
@@ -354,6 +369,17 @@ def test_read_only_still_allows_scratch_files_and_checks(agent, tmp_path):
     "git clean -fd",
     "git push --force origin main",
     "git push -f",
+    "git push origin +main",
+    "git push origin main +HEAD:release",
+    "git push -fu origin feature",
+    "git push origin --delete old-feature",
+    "git push -d origin old-feature",
+    "git push origin :old-feature",
+    "git push --mirror backup",
+    "git push --prune origin",
+    "git restore --staged --worktree .",
+    "git restore -SW app.py",
+    "git restore -W --staged app.py",
     "git rebase main",
     "git branch -D old",
     "git commit --amend -m x",
@@ -371,8 +397,10 @@ def test_destructive_git_asks_a_person(agent, command):
 
 
 @pytest.mark.parametrize("command", [
-    "git status", "git diff HEAD", "git log --oneline", "git stash list", "git stash show", "git restore --staged a.py",
+    "git status", "git diff HEAD", "git log --oneline", "git stash list", "git stash show", "git restore --staged a.py", "git restore -S a.py",
     "git add app.py", "git add -A", "git add .", "git commit -am wip", "git -c user.name=a commit -m x", "git checkout -b feature", "git show HEAD", "git branch -a", "git push origin main",
+    "git push -u origin feature-fix", "git push --follow-tags origin main", "git push origin v1.0+build",
+    "git push git@github.com:org/repo.git main", "git push origin HEAD:refs/heads/feature", "git push --dry-run origin main",
 ])
 def test_safe_git_is_not_interrupted(agent, command):
     agent.prompt("Fix the bug")
@@ -842,6 +870,16 @@ def test_a_review_only_counts_once_finished_and_after_the_last_edit(agent):
     agent.edit("auth/login.py")
     agent.bash("pytest", output="1 passed")
     assert "occam:code-reviewer" in added(agent.stop("1 passed")), "the review predates the last edit"
+
+
+def test_another_plugins_code_reviewer_isnt_occams_review(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.read_reference("security")
+    agent.edit("auth/login.py")
+    agent.bash("pytest", output="1 passed")
+    agent.send("subagent-stop", agent_id="a1", agent_type="pr-review-toolkit:code-reviewer")
+    assert "occam:code-reviewer" in added(agent.stop("1 passed"))
 
 
 def test_a_directory_above_the_project_cannot_make_files_high_consequence(tmp_path):

@@ -8,9 +8,11 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import manifests
+from .files import SKIP_DIRS
 from .source import is_test_path
 
 RUST_ROOTS_SET = manifests.RUST_ROOTS
+_BUILT = {"dist", "build", "target", "out", ".next", ".nuxt"}
 JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".json", ".d.ts")
 
 
@@ -38,7 +40,7 @@ def _python_import(project, path, item, declared, has_manifest, stdlib, modules,
             return
         target = modules.get(dotted)
         if target is None and module and not item.get("optional"):
-            if project.root is not None:
+            if project.root is not None and not _unlisted(project, dotted.replace(".", "/")):
                 project.add("phantom-local-import", path, line, f"Relative import of '{module}' finds no such file.")
             return
         _local_name_check(project, path, item, dotted, target, modules)
@@ -53,7 +55,7 @@ def _python_import(project, path, item, declared, has_manifest, stdlib, modules,
             return
         if module in modules:
             _local_name_check(project, path, item, module, project.python_target(path, module), modules)
-        elif "." in module and top in {p.split("/")[0] for p in project.files if p.endswith(".py")} and modules.get(top) and not item.get("optional"):
+        elif "." in module and top in {p.split("/")[0] for p in project.files if p.endswith(".py")} and modules.get(top) and not item.get("optional") and not _unlisted(project, _package_folder(modules.get(top), module)):
             project.add("phantom-local-import", path, line, f"'{module}' isn't a module in this repository.")
         return
     private = next((part for part in [*module.split("."), *(item.get("names") or [])] if part.startswith("_") and not part.startswith("__")), None)
@@ -105,7 +107,8 @@ def _local_name_check(project, path, item, dotted, target, modules) -> None:
             continue
         if f"{dotted}.{name}" in modules:
             continue
-        if target.endswith("__init__.py") and any(p.startswith(target[:-len("__init__.py")] + name + "/") or p.startswith(target[:-len("__init__.py")] + name + ".") for p in project.files):
+        if target.endswith("__init__.py") and (any(p.startswith(target[:-len("__init__.py")] + name + "/") or p.startswith(target[:-len("__init__.py")] + name + ".") for p in project.files)
+                                               or _unlisted(project, target[:-len("__init__.py")] + name)):
             continue
         if not item.get("optional"):
             project.add("phantom-local-import", path, item["line"], f"{target} defines no '{name}'.")
@@ -135,6 +138,19 @@ def foreign_imports(project) -> None:
                     project.add("phantom-import", path, item["line"], f"'{module}' isn't required by go.mod.")
 
 
+def _unlisted(project, target: str, built: bool = False) -> bool:
+    """The file listing leaves out build/, vendor/ and the like, so a target inside one of those folders that exists can't be seen to be missing.
+    `built` is for JavaScript, whose package often imports its own dist/ before anything is built."""
+    parts = target.split("/")
+    return project.root is not None and any(part in SKIP_DIRS and ((built and part in _BUILT) or project.root.joinpath(*parts[:index + 1]).is_dir())
+                                            for index, part in enumerate(parts))
+
+
+def _package_folder(top_file: str | None, module: str) -> str:
+    """Where `pkg.vendor.qr` would live, from where the package `pkg` is."""
+    return top_file[:-len("__init__.py")] + "/".join(module.split(".")[1:]) if top_file and top_file.endswith("__init__.py") else ""
+
+
 def _rust_local(path: str, crate: str, files: set[str]) -> bool:
     folder = path.rsplit("/", 1)[0] if "/" in path else ""
     prefix = folder + "/" if folder else ""
@@ -154,8 +170,9 @@ def _js_import(project, path, item, node, aliases, has_package_json, files) -> N
                 parts.append(part)
         target = "/".join(parts)
         stripped = re.sub(r"\.(js|jsx|mjs|cjs)$", "", target)
-        options = [target, *(f"{target}{e}" for e in JS_EXTENSIONS), *(f"{stripped}{e}" for e in JS_EXTENSIONS), *(f"{target}/index{e}" for e in JS_EXTENSIONS)]
-        if not any(option in files for option in options) and not re.search(r"\.(css|scss|svg|png|jpg|json|sass|less|html|md|yaml|yml|txt|wasm|graphql|vue|svelte)(\?|$)", module) and "?" not in module:
+        options = [target, *(f"{target}{e}" for e in JS_EXTENSIONS), *(f"{stripped}{e}" for e in JS_EXTENSIONS), *(f"{target}/index{e}" for e in JS_EXTENSIONS),
+                   f"{target}/package.json"]  # a folder with its own package.json resolves through its "main"
+        if not any(option in files for option in options) and not _unlisted(project, target, built=True) and not re.search(r"\.(css|scss|svg|png|jpg|json|sass|less|html|md|yaml|yml|txt|wasm|graphql|vue|svelte)(\?|$)", module) and "?" not in module:
             project.add("phantom-local-import", path, line, f"'{module}' resolves to no file.")
         return
     head = module.split("/")[0]
@@ -180,7 +197,8 @@ def local_attributes(project) -> None:
             if not facts or not use["chain"] or use.get("guarded") or facts.get("has_star") or facts.get("has_getattr"):
                 continue
             name = use["chain"][0]
-            is_submodule = f"{use['module']}.{name}" in modules or (target.endswith("__init__.py") and any(p.startswith(target[:-len("__init__.py")] + name) for p in project.files))
+            is_submodule = f"{use['module']}.{name}" in modules or (target.endswith("__init__.py") and (any(p.startswith(target[:-len("__init__.py")] + name) for p in project.files)
+                                                                                               or _unlisted(project, target[:-len("__init__.py")] + name)))
             if name not in (facts.get("top_names") or []) and not name.startswith("__") and not is_submodule:
                 project.add("phantom-local-import", path, use["line"], f"{target} defines no '{name}'.")
 

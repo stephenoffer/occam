@@ -518,6 +518,9 @@ def main(argv: list[str]) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # a document or a path can hold what this terminal can't show
     parser = _parser()
+    if not argv:  # a person trying it out: the commands and what each does, not argparse's "arguments are required"
+        parser.print_help()
+        return 2
     args = parser.parse_args(argv)
     try:
         os.getcwd()

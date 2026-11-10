@@ -351,8 +351,8 @@ def test_an_edit_the_hook_cant_size_is_still_recorded(agent):
 
 def test_every_trigger_pattern_is_quick_on_hostile_input():
     import time
-    from classify import CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_SHELL_PATH
-    for pattern in (switches.BUG_PROMPT, switches.BUILD_PROMPT, switches._DEFINES, switches._IMPORTS, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_SHELL_PATH):
+    from classify import CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_PATH
+    for pattern in (switches.BUG_PROMPT, switches.BUILD_PROMPT, switches._DEFINES, switches._IMPORTS, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_PATH):
         for text in ("a" * 200_000, " " * 200_000, "def " * 50_000, "import " * 50_000, "\t" * 100_000 + "x", "public\n" * 15_000,
                      "export \n" * 15_000, "pub \n" * 30_000, "from x\n" * 20_000, "const a =\n" * 15_000):
             start = time.perf_counter()

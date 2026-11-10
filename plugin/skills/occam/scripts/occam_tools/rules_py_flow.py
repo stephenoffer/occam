@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import ast
 import builtins
+import functools
 import re
 
 from .py_helpers import (
     NESTED_QUANTIFIER,
-    COMPARED_SECRET, HTTP_MODULES, HTTP_VERBS, MIGRATION_PATH, MONEY_NAME, PLACEHOLDER_NAME, QUERY_METHODS, SECRET_NAME, SQL_NUMBER_CALLS, _call_name, _chain,
+    COMPARED_SECRET, HTTP_MODULES, HTTP_VERBS, MIGRATION_PATH, MONEY_NAME, PLACEHOLDER_NAME, QUERY_METHODS, ROUTE_DECORATOR_NAME, SECRET_NAME, SQL_NUMBER_CALLS,
+    _call_name, _chain,
     _dotted, _has_sql, _interpolated, _is_constant_none_or_empty, _is_dynamic_string, _last, _names_in,
-    _string_parts, _walk_own, builds_bind_markers, head_is_re, holds_at, is_literal_binding, looks_like_auth_check,
+    _is_literal, _looks_up_a_constant, _string_parts, _walk_own, builds_bind_markers, head_is_re, holds_at, is_literal_binding, looks_like_auth_check,
 )
 
 _BUILTINS = frozenset(dir(builtins))
@@ -25,6 +27,16 @@ CREDENTIAL_ARGUMENT = re.compile(r"password|passwd|passphrase|secret|(?:^|_)pwd(
 MEANS_A_FOLDER = re.compile(r"cwd|dir|path|folder", re.I)  # `cwd_key(pwd)`: there, pwd is where it's working
 HASHES_A_PASSWORD = re.compile(r"(?:hash|digest|encrypt|encode|store|save|set|check|verify)\w*_(?:password|passwd)|(?:password|passwd)_?(?:hash|digest)", re.I)
 WEAK_HASHES = {"hashlib.md5", "hashlib.sha1", "md5", "sha1"}
+# Sound digests that are still fast, so a password run through one once is cheap to guess. Fine for tokens with real entropy.
+FAST_HASHES = {f"{prefix}{name}" for prefix in ("hashlib.", "") for name in
+               ("sha224", "sha256", "sha384", "sha512", "sha3_224", "sha3_256", "sha3_384", "sha3_512", "blake2b", "blake2s")}
+PASSWORD_ARGUMENT = re.compile(r"password|passwd|passphrase|(?:^|_)pwd(?:_|$)", re.I)
+# `sha256(user.password_hash)` derives something from a stored hash, and `sha256(password_reset_token)` stores a random token as it should.
+ALREADY_HASHED = re.compile(r"hash|digest|token|nonce|otp|reset|code|salt", re.I)
+SLOW_KDF = re.compile(r"pbkdf2|scrypt|bcrypt|argon2|hashpw|make_password|generate_password_hash|passlib|CryptContext", re.I)
+# What a token made by hashing has to contain to be unguessable: a secret, or randomness. A clock, an id or an email isn't either.
+SECRET_MATERIAL = re.compile(r"secret|key|salt|pepper|nonce|urandom|token|random|randbits|uuid4|SystemRandom", re.I)
+GUESSABLE_PART = re.compile(r"\btime\.time(?:_ns)?\(|\b(?:datetime\.)?(?:now|utcnow|today)\(|\bid\b|\.(?:id|pk|email|username)\b|\b(?:email|username|user_id)\b")
 RANDOM_CALLS = {"random", "randint", "choice", "choices", "randrange", "sample", "getrandbits"}
 CODE_LOADERS = {"pickle.load", "pickle.loads", "cPickle.loads", "cPickle.load", "marshal.loads", "marshal.load", "dill.load", "dill.loads", "shelve.open"}
 ARRAY_GROWERS = {"pd.concat", "pandas.concat", "np.append", "numpy.append", "np.concatenate", "numpy.concatenate", "np.vstack", "np.hstack", "numpy.vstack", "numpy.hstack"}
@@ -78,12 +90,50 @@ def check_try(ctx, node, function) -> None:
             for statement in handler.body:
                 if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Constant) and statement.value.value is True:
                     ctx.add("fail-open", statement, f"{function.name} returns True when its check errors.")
+        if not ctx.is_test:
+            _check_unverified_fallback(ctx, handler)
         if not broad or ctx.is_test:
             continue
         if _drops_error(handler):
             comments = [line for line in range(handler.lineno, (handler.end_lineno or handler.lineno) + 1) if line in ctx.comment_lines]
             confidence = ("low" if _states_a_reason(ctx, comments) else "medium") if comments else None
             ctx.add("swallowed-exception", handler, f"except {caught or ''} drops the error.".replace("  ", " "), **({"confidence": confidence} if confidence else {}))
+
+
+def _check_unverified_fallback(ctx, handler: ast.ExceptHandler) -> None:
+    """An error path that decodes the token unverified and carries on. Reported on the handler, not the decode, which jwt-unverified already
+    names, and as a lead: whether the claims then grant anything is beyond this."""
+    unverified = any(isinstance(call, ast.Call) and _decodes_unverified(call) for statement in handler.body for call in ast.walk(statement))
+    if unverified and not _denies(handler.body):
+        ctx.add("fail-open", handler, "When verification fails with this error, the handler decodes the token without checking its signature and "
+                                      "carries on, so a forged token is accepted for as long as the error lasts. Deny instead.", confidence="medium")
+
+
+_DENIES = re.compile(r"(?:^|\.)(?:abort|HTTPException|PermissionDenied|Unauthorized|Forbidden|AuthenticationFailed|NotAuthenticated|HttpResponseForbidden)$")
+
+
+def _denies(statements: list) -> bool:
+    """The handler ends in a refusal: it raises, aborts, or returns nothing, False, or an error. Reading unverified claims to log them is fine then."""
+    for node in (inner for statement in statements for inner in ast.walk(statement)):
+        if isinstance(node, ast.Raise) or (isinstance(node, ast.Call) and _DENIES.search(_dotted(node.func) or "")):
+            return True
+    last = statements[-1] if statements else None
+    return isinstance(last, ast.Return) and (last.value is None or (isinstance(last.value, ast.Constant) and last.value.value in (None, False)))
+
+
+def _decodes_unverified(call: ast.Call) -> bool:
+    """A `jwt.decode` that turns signature checking off, through its options or its verify argument, on one line: only what jwt-unverified
+    already reports, since gate blocks on fail-open at any confidence and this mustn't add a block or a send-back of its own."""
+    if _call_name(call) not in ("jwt.decode", "decode") or "jwt" not in _dotted(call.func).lower():
+        return False
+    for keyword in call.keywords:
+        if keyword.arg == "verify" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False and keyword.value.lineno == call.lineno:
+            return True
+        if keyword.arg == "options" and isinstance(keyword.value, ast.Dict):
+            for key, value in zip(keyword.value.keys, keyword.value.values):
+                if isinstance(key, ast.Constant) and key.value == "verify_signature" and isinstance(value, ast.Constant) and value.value is False:
+                    return True
+    return False
 
 
 def _logs_at_debug(statement: ast.AST) -> bool:
@@ -164,11 +214,34 @@ _AUTH_WORD = re.compile(r"\b(?:is_(?:admin|staff|superuser|authenticated|authori
                         r"|\b(?:owner|tenant|account)_id\b.{0,80}\b(?:current_)?user\b|\b(?:current_)?user\b.{0,80}\b(?:owner|tenant|account)_id\b", re.I)
 
 
+_REQUEST_STATE = re.compile(r"\brequest\.(?:args|form|json|data|values|files|headers|cookies|GET|POST|method|user|query_params|body|get_json)\b|\bcurrent_user\b|\bg\.user\b")
+
+
+def _serves_requests(function) -> bool:
+    """A route handler, or what a framework calls per request: a FastAPI dependency, which takes others through Depends()."""
+    decorated = [_dotted(decorator.func if isinstance(decorator, ast.Call) else decorator) for decorator in function.decorator_list]
+    if any(ROUTE_DECORATOR_NAME.search(name) for name in decorated if name):
+        return True
+    defaults = [*function.args.defaults, *(d for d in function.args.kw_defaults if d is not None)]
+    return any(isinstance(default, ast.Call) and _last(_call_name(default)) in ("Depends", "Security") for default in defaults)
+
+
+def _narrows_a_type(test: ast.AST) -> bool:
+    """`assert x is not None` and `assert isinstance(...)` tell a type checker something. They check no input."""
+    if isinstance(test, ast.Call) and _call_name(test) == "isinstance":
+        return True
+    return isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.IsNot) and _is_constant_none_or_empty(test.comparators[0])
+
+
 def check_assert(ctx, node, function) -> None:
     is_type_check = isinstance(node.test, ast.Call) and _call_name(node.test) == "isinstance"
     if not is_type_check and _AUTH_WORD.search(ast.unparse(node.test)):
         # Access checks are the costly case: run with -O and the check is gone while everything else still works.
         ctx.add("assert-validation", node, "This access check is an assert, so python -O removes it and lets everyone through. Raise or deny instead.", severity="high", confidence="medium")
+        return
+    if not _narrows_a_type(node.test) and (_serves_requests(function) or _REQUEST_STATE.search(ast.unparse(node.test))):
+        ctx.add("assert-validation", node, "This asserts something about a request, its input or its user, and python -O removes asserts, so the check is gone "
+                                           "in an optimized deployment. Raise or return an error instead.", severity="high", confidence="medium")
         return
     params = {arg.arg for arg in function.args.args + function.args.kwonlyargs}
     if not function.name.startswith("_") and _names_in(node.test) & params:
@@ -244,6 +317,23 @@ def check_format_string(ctx, node: ast.JoinedStr) -> None:
         ctx.add("handrolled-json", node, "JSON built by formatting, so the values aren't escaped.")
 
 
+def check_string_join(ctx, node: ast.BinOp) -> None:
+    """JSON glued together with +, as check_format_string reads it from an f-string. Once per chain, and a value through json.dumps is escaped."""
+    if not isinstance(node.op, ast.Add) or getattr(node, "_occam_inner_join", False):
+        return
+    pieces, inner = [], node
+    while isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Add):
+        inner._occam_inner_join = True
+        pieces.append(inner.right)
+        inner = inner.left
+    pieces.append(inner)
+    first = pieces[-1]
+    values = [piece for piece in pieces if not isinstance(piece, ast.Constant)]
+    if (isinstance(first, ast.Constant) and isinstance(first.value, str) and re.match(r"\s*\{\s*\"\w+\"\s*:", first.value)
+            and values and not all(isinstance(value, ast.Call) and _call_name(value).endswith("dumps") for value in values)):
+        ctx.add("handrolled-json", node, "JSON built by joining strings, so the values aren't escaped.")
+
+
 def check_call(ctx, node: ast.Call, statement: ast.AST, loops: int, function: ast.AST | None) -> None:
     name = _call_name(node)
     if isinstance(function, ast.AsyncFunctionDef) and isinstance(statement, ast.Expr) and statement.value is node and (name in ("asyncio.sleep", "asyncio.gather", "asyncio.wait_for") or name in ctx.async_names):
@@ -290,8 +380,16 @@ def _security_call(ctx, node, name, last, head, keywords, statement, function) -
             ctx.add("weak-password-hash", node, f"{name}() on a password or secret.")
         else:
             ctx.add("weak-crypto", node, f"{name}() in use.")
+    elif (name in FAST_HASHES or (name == "hashlib.new" and first is not None)) and _hashes_a_password(node, function):
+        # A lead rather than a stop: the digest itself is sound, and the same call on a random token is right.
+        ctx.add("weak-password-hash", node, f"{name}() on a password is fast to brute-force, salted or not. Use argon2, scrypt or bcrypt.", confidence="medium")
     if head == "random" and last in RANDOM_CALLS and _targets_secret(statement, function):
         ctx.add("insecure-random", node, f"{name}() isn't safe for secrets.")
+    if name in ("uuid.uuid1", "uuid1") and _targets_secret(statement, function):
+        ctx.add("insecure-random", node, "uuid1() is built from the clock and the host's MAC address, so nearby values are guessable. Use secrets.token_urlsafe().")
+    if head == "hashlib" and _hashes_only_guessable(ctx, node, statement, function):
+        ctx.add("insecure-random", node, "This token is a hash of values someone else can know or guess, such as an id, an email or the time, and hashing "
+                                         "doesn't make them secret. Use secrets.token_urlsafe().")
     if name == "tempfile.mktemp":
         ctx.add("insecure-tempfile", node)
     if name == "os.chmod" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant) and node.args[1].value == 0o777:
@@ -313,6 +411,55 @@ def _hashes_a_credential(node: ast.Call, statement: ast.AST, function: ast.AST |
         return True
     targets = [target.id for target in getattr(statement, "targets", []) if isinstance(target, ast.Name)]
     return any(HASHES_A_PASSWORD.search(name) for name in [*targets, *([function.name] if function is not None else [])])
+
+
+def _argument_names(node: ast.Call) -> list[str]:
+    names = []
+    for child in (inner for argument in [*node.args, *(keyword.value for keyword in node.keywords)] for inner in ast.walk(argument)):
+        if isinstance(child, ast.Name):
+            names.append(child.id)
+        elif isinstance(child, ast.Attribute):
+            names.append(child.attr)
+        elif isinstance(child, ast.Subscript) and isinstance(child.slice, ast.Constant):
+            names.append(str(child.slice.value))
+    return names
+
+
+def _hashes_a_password(node: ast.Call, function: ast.AST | None) -> bool:
+    """A fast digest of a password, by what's hashed, or in `def hash_password(p):` by its own parameter. A function that also uses a slow
+    KDF is pre-hashing for it, as bcrypt's 72-byte limit makes people do, and `sha256(os.urandom(32))` there makes a salt."""
+    if function is not None and SLOW_KDF.search(ast.unparse(function)):
+        return False
+    names = _argument_names(node)
+    if any(PASSWORD_ARGUMENT.search(name) and not ALREADY_HASHED.search(name) for name in names):
+        return True
+    if function is None or not HASHES_A_PASSWORD.search(function.name):
+        return False
+    parameters = {arg.arg for arg in [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]} - {"self", "cls"}
+    return bool(parameters & set(names))
+
+
+_TOKEN_TARGET = re.compile(r"token|nonce|otp|session_?id|csrf|api_?key|secret|(?:reset|invite|invitation|verification|verify|confirm|magic)_?(?:code|key|link|id)", re.I)
+_NOT_A_TOKEN = re.compile(r"cache|etag|fingerprint|checksum|lookup", re.I)  # `make_reset_cache_key` names where to look, not a secret
+
+
+def _hashes_only_guessable(ctx, node: ast.Call, statement: ast.AST, function: ast.AST | None) -> bool:
+    """`token = md5(f"{user.id}:{email}:{time.time()}")`: what's hashed, and what the names in it were set to, holds no secret or randomness."""
+    if isinstance(statement, ast.Assign):
+        targets = [ast.unparse(target) for target in statement.targets]
+    elif isinstance(statement, ast.Return) and function is not None:
+        targets = [function.name]
+    else:
+        return False
+    if not any(_TOKEN_TARGET.search(target) and not _NOT_A_TOKEN.search(target) for target in targets) or not node.args:
+        return False
+    hashed = node.args[1:] if _call_name(node) == "hashlib.new" else node.args
+    parts = [ast.unparse(argument) for argument in hashed]
+    for name in {inner.id for argument in hashed for inner in ast.walk(argument) if isinstance(inner, ast.Name)}:
+        for binding in (ctx.bindings(function).get(name, []) if function is not None else []):
+            parts.append(ast.unparse(binding.value) if binding.value is not None else name)
+    text = " ".join(parts)
+    return bool(GUESSABLE_PART.search(text)) and not SECRET_MATERIAL.search(text)
 
 
 def _tls_disabled(ctx, node: ast.Call, head: str, keywords: dict) -> None:
@@ -358,10 +505,53 @@ def _is_safe_in_sql(ctx, expression: ast.AST, function: ast.AST | None, comprehe
             return True
         if expression.func.id == "str" and expression.args:
             return _is_safe_in_sql(ctx, expression.args[0], function, comprehensions)
-    if builds_bind_markers(expression):
+    if builds_bind_markers(expression) or _looks_up_a_constant(expression):
         return True
+    if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Attribute) and expression.func.attr == "join" \
+            and isinstance(expression.func.value, ast.Constant) and len(expression.args) == 1 and isinstance(expression.args[0], ast.Name):
+        return _holds_only_written_out_pieces(ctx, expression.args[0].id, function)
+    if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Name) and expression.func.id in ctx.top_names:
+        return _returns_safe_sql(ctx, expression.func.id)
     names = _names_in(expression)
     return bool(names) and all(_name_is_safe_in_sql(ctx, name, function, comprehensions) for name in names)
+
+
+def _holds_only_written_out_pieces(ctx, name: str, function: ast.AST | None) -> bool:
+    """`where = ["a = :a"]`, grown only by `where.append("b = :b")`, then joined: every piece of the clause is written in the code."""
+    bindings = ctx.bindings(function).get(name) if function is not None else None
+    if not bindings or name in ctx.declared_global():
+        return False
+    for binding in bindings:
+        if not (isinstance(binding.node, (ast.Assign, ast.AugAssign)) and isinstance(binding.value, (ast.List, ast.Tuple))
+                and all(_is_literal(item, True) for item in binding.value.elts)):
+            return False
+    for call in _walk_own(function):
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and call.func.value.id == name:
+            added = call.args[-1:] if call.func.attr in ("append", "insert") else call.args[:1] if call.func.attr == "extend" else []
+            for item in added:
+                pieces = item.elts if call.func.attr == "extend" and isinstance(item, (ast.List, ast.Tuple)) else [item] if call.func.attr != "extend" else [None]
+                if not all(_is_literal(piece, True) for piece in pieces):
+                    return False
+    return True
+
+
+def _returns_safe_sql(ctx, name: str) -> bool:
+    """A helper in this module that builds a clause, such as `ORDER BY {column}` from an allow-list: safe when every return is, read in its own scope."""
+    key = ("returns-safe-sql", name)
+    depth = ctx.name_verdicts.get("returns-safe-sql-depth", 0)
+    if key not in ctx.name_verdicts:
+        if depth >= 3:  # helpers calling helpers: three deep is as far as this reads, so a long chain stays a lead
+            return False
+        ctx.name_verdicts[key] = False  # a helper that calls itself isn't trusted
+        ctx.name_verdicts["returns-safe-sql-depth"] = depth + 1
+        try:
+            helpers = [node for node in ctx.tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+            returns = [node for node in _walk_own(helpers[0]) if isinstance(node, ast.Return)] if len(helpers) == 1 else []
+            ctx.name_verdicts[key] = bool(returns) and all(
+                node.value is not None and all(_is_safe_in_sql(ctx, part, helpers[0], {}) for part in _interpolated(node.value)) for node in returns)
+        finally:
+            ctx.name_verdicts["returns-safe-sql-depth"] = depth
+    return ctx.name_verdicts[key]
 
 
 def _sql_call(ctx, node: ast.Call, keywords: dict, statement: ast.AST, function: ast.AST | None) -> None:
@@ -409,8 +599,26 @@ def _sql_held_by_name(ctx, node: ast.Call, chain: str, name: str, function: ast.
 
 
 def _regex_literal(ctx, node, name, first) -> None:
-    if name.split(".")[0] in ("re", "regex") and isinstance(first, ast.Constant) and isinstance(first.value, str) and NESTED_QUANTIFIER.search(first.value):
+    if name.split(".")[0] in ("re", "regex") and isinstance(first, ast.Constant) and isinstance(first.value, str) and _ambiguous_repeat(first.value):
         ctx.add("redos-regex", node, "This pattern has a repeated group containing a repeat.")
+
+
+# A separator opening each pass: a character class of non-word characters, an escaped character, or a plain non-word one.
+_SEPARATOR = re.compile(r"(?:\[([^\]\w\\^]+)\]|\\([^\w\s])|([^\w\s\\.\[(|^$?*+{)]))(?![?*+{])")
+
+_CLASSES_AND_ESCAPES = re.compile(r"\\.|\[(?:\\.|[^\]\\])*\]")  # `\|` and `[|]` aren't alternatives
+
+
+def _ambiguous_repeat(pattern: str) -> bool:
+    """A repeated group with a repeat inside can split one string many ways, unless each pass opens with a separator the rest can't match, as `(?:[-:]\\d+)*`."""
+    for match in NESTED_QUANTIFIER.finditer(pattern):
+        body = match.group(0)[1:-2]
+        body = body[2:] if body.startswith("?:") else body
+        lead = _SEPARATOR.match(body)
+        rest = body[lead.end():] if lead else ""
+        if not lead or "|" in _CLASSES_AND_ESCAPES.sub("", body) or any(character in rest for character in "".join(part or "" for part in lead.groups())) or re.search(r"\.|\[\^|\\[WSD]", rest):
+            return True
+    return False
 
 
 def _command_execution(ctx, node, name, head, keywords, first, function) -> None:
@@ -420,11 +628,52 @@ def _command_execution(ctx, node, name, head, keywords, first, function) -> None
         ctx.add("dynamic-eval", node, f"{name}() on a value computed at runtime.")
     if isinstance(first, ast.Name) and _is_only_written_out(ctx, first.id, function):  # `cmd = "git log"`, which is a shell command and no injection
         return
+    if _shell_quoted(ctx, first, function):
+        return
     shell = keywords.get("shell")
     if head == "subprocess" and isinstance(shell, ast.Constant) and shell.value is True:
         ctx.add("shell-injection", node, f"{name}(shell=True) with a value computed at runtime.")
     elif name in ("os.system", "os.popen"):
         ctx.add("shell-injection", node, f"{name}() with a value computed at runtime.")
+
+
+_SHELL_QUOTERS = {"shlex.quote", "pipes.quote", "shlex.join"}
+
+
+def _is_shell_quoter(ctx, func: ast.AST, function: ast.AST | None) -> bool:
+    """`shlex.quote`, or a name for it: `from shlex import quote`, or `q = shlex.quote` in this function or module."""
+    name = _dotted(func)
+    if name in _SHELL_QUOTERS or ctx.module_aliases.get(name) in _SHELL_QUOTERS:
+        return True
+    if not isinstance(func, ast.Name):
+        return False
+    bindings = (ctx.bindings(function).get(func.id) if function is not None else None) or ctx.bindings(None).get(func.id) or []
+    return bool(bindings) and all(binding.value is not None and _dotted(binding.value) in _SHELL_QUOTERS for binding in bindings)
+
+
+def _quoted_for_the_shell(ctx, part: ast.AST, function: ast.AST | None) -> bool:
+    if isinstance(part, ast.Constant) or (isinstance(part, ast.Call) and _dotted(part.func) in SQL_NUMBER_CALLS):
+        return True
+    if isinstance(part, ast.Call) and _is_shell_quoter(ctx, part.func, function):
+        return True
+    joined = isinstance(part, ast.Call) and isinstance(part.func, ast.Attribute) and part.func.attr == "join" and isinstance(part.func.value, ast.Constant)
+    if joined and len(part.args) == 1 and isinstance(part.args[0], (ast.GeneratorExp, ast.ListComp)):
+        return _quoted_for_the_shell(ctx, part.args[0].elt, function)
+    return False
+
+
+def _shell_quoted(ctx, command: ast.AST, function: ast.AST | None, seen: frozenset = frozenset()) -> bool:
+    """A command string whose every runtime piece went through shlex.quote, directly or by way of the name holding it. A name met again,
+    as in `a = b` on one branch and `b = a` on the other, proves nothing."""
+    if isinstance(command, ast.Name):
+        if command.id in seen:
+            return False
+        bindings = ctx.bindings(function).get(command.id) if function is not None else None
+        values = [binding.value for binding in bindings or []]
+        return bool(values) and all(value is not None and _shell_quoted(ctx, value, function, seen | {command.id}) for value in values)
+    if _is_dynamic_string(command):
+        return all(_quoted_for_the_shell(ctx, part, function) for part in _interpolated(command))
+    return _quoted_for_the_shell(ctx, command, function) and not isinstance(command, ast.Constant)
 
 
 def _deserialization(ctx, node, name, keywords) -> None:
@@ -506,7 +755,7 @@ def _in_loop(ctx, node, name, last, head, function) -> None:
     if not (ctx.is_test or ctx.is_script or MIGRATION_PATH.search(ctx.path)) and _is_remote_call(name, last, head):  # these run once, or against no real load
         ctx.add("query-in-loop", node, f"{name}() runs once per item.")
     if name == "sorted" or (last == "sort" and isinstance(node.func, ast.Attribute)):
-        ctx.add("sort-in-loop", node, f"{last}() inside a loop.")
+        _resort(ctx, node, last, function)
     if name == "re.compile":
         ctx.add("regex-compile-loop", node)
     if name in ARRAY_GROWERS:
@@ -519,6 +768,88 @@ def _in_loop(ctx, node, name, last, head, function) -> None:
     is_linear_method = last in ("remove", "index", "count") and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
     if is_linear_method and function is not None and _is_local_list(node.func.value.id, function):
         ctx.add("list-membership-in-loop", node, f"list.{last}() is linear, so this loop is quadratic.")
+
+
+def _resort(ctx, node: ast.Call, last: str, function: ast.AST | None) -> None:
+    """A sort repeated on every pass over the same data: a list the loop keeps adding to, or one that never changes. Sorting what this pass
+    produced, as `sorted(row.tags)` or `sorted(d[k])`, is fine."""
+    sorting = node.args[0] if node.args else node.func.value if last == "sort" else None  # `np.sort(m)` sorts m, `xs.sort()` sorts xs
+    where = (node.lineno, node.col_offset)
+    passes = [(fresh, carried) for start, end, fresh, carried in _loop_bodies(function or ctx.tree) if start <= where <= end]
+    if sorting is None or not passes:
+        return
+    # What it reads: not a comprehension's own names, a called function, or a module, since `os.listdir(p)` changes with p, not os.
+    skip = {name.id for name in ast.walk(sorting) if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)} | set(ctx.imported_names) | _BUILTINS
+    parents = {id(child): parent for parent in ast.walk(sorting) for child in ast.iter_child_nodes(parent)}
+    fresh, carried = passes[-1]
+    reads = [(name.id, _read_as(name, parents, fresh)) for name in ast.walk(sorting) if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load)
+             and name.id not in skip and not (isinstance(parents.get(id(name)), ast.Call) and parents[id(name)].func is name)]
+    names = {name for name, _ in reads}
+    repeated = {name for name, how in reads if how == "prefix" or (how == "whole" and name in carried)} | (names if not names & fresh else set())
+    if repeated:
+        ctx.add("sort-in-loop", node, f"{last}() sorts {', '.join(sorted(repeated))} again on every pass. Sort once outside the loop, or keep it ordered "
+                "with bisect.insort or heapq.")
+
+
+def _read_as(name: ast.Name, parents: dict, fresh: frozenset) -> str:
+    """How a sort reads a name: a method called on it ("receiver"), one element chosen by this pass ("item"), a prefix or suffix that moves with
+    the pass, as a running median's `xs[:i + 1]` ("prefix"), or all of it ("whole")."""
+    parent = parents.get(id(name))
+    if isinstance(parent, ast.Attribute) and isinstance(parents.get(id(parent)), ast.Call) and parents[id(parent)].func is parent:
+        return "receiver"
+    if not (isinstance(parent, ast.Subscript) and parent.value is name):
+        return "whole"
+    index = parent.slice
+    if isinstance(index, ast.Slice):
+        lower, upper = (end is not None and bool(_names_in(end) & fresh) for end in (index.lower, index.upper))
+        return "prefix" if lower != upper else "item" if lower else "whole"
+    return "item" if _names_in(index) & fresh else "whole"
+
+
+_GROWS = {"append", "extend", "insert", "add", "appendleft", "update", "setdefault"}
+
+
+@functools.lru_cache(maxsize=16)
+def _loop_bodies(scope: ast.AST) -> tuple:
+    """Each loop in a scope as (body start, body end, fresh, carried), innermost last. Fresh names are made anew on each pass: its targets, and
+    names bound by `with ... as`, `:=` or an assignment from something other than themselves. Carried names outlive a pass and grow in it, as
+    `items = sorted(items + [r])`, `seen[k] = r` or `seen.append(r)`."""
+    bodies = []
+    for loop in (node for node in _walk_own(scope) if isinstance(node, (ast.For, ast.AsyncFor, ast.While))):
+        fresh = set() if isinstance(loop, ast.While) else _bound(loop.target)
+        carried = set()
+        for node in (node for part in loop.body for node in ast.walk(part)):
+            made, kept = _pass_names(node)
+            fresh |= made
+            carried |= kept
+        bodies.append(((loop.body[0].lineno, loop.body[0].col_offset), (loop.body[-1].end_lineno, loop.body[-1].end_col_offset),
+                       frozenset(fresh), frozenset(carried - fresh)))
+    return tuple(sorted(bodies, key=lambda body: body[0]))
+
+
+def _pass_names(node: ast.AST) -> tuple[set[str], set[str]]:
+    """What one node of a loop body makes anew on each pass, and what it carries over and grows."""
+    if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        used, bound = _names_in(node.value), set().union(*(_bound(target) for target in targets))
+        indexed = {target.value.id for target in targets if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)}
+        return bound - used, (bound & used) | indexed
+    if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+        return set(), {node.target.id}
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return set().union(*(_bound(item.optional_vars) for item in node.items if item.optional_vars is not None)), set()
+    if isinstance(node, ast.NamedExpr):
+        return _bound(node.target), set()
+    if isinstance(node, ast.ExceptHandler) and node.name:
+        return {node.name}, set()
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _GROWS and isinstance(node.func.value, ast.Name):
+        return set(), {node.func.value.id}
+    return set(), set()
+
+
+def _bound(target: ast.AST) -> set[str]:
+    """Names a target binds, through tuples and `*rest`. `seen[k] = r` binds none."""
+    return {name.id for name in ast.walk(target) if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store)}
 
 
 def _hardware_in_loop(ctx, node, name, last) -> None:

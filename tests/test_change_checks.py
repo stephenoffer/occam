@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -12,7 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import change_checks, depcheck, files as filesystem, verify  # noqa: E402
+from occam_tools import change_checks, depcheck, files as filesystem, verify, workflow  # noqa: E402
 
 
 def git(root, *args):
@@ -206,10 +209,24 @@ def test_nothing_changed_says_nothing(tmp_path):
     ("pypi", "flask==2.0.0", {"info": {}, "releases": {"2.0.0": []}}, "exists"), ("pypi", "flask==99.0.0", {"info": {}, "releases": {"2.0.0": []}}, "not found"),
     ("npm", "@scope/pkg@1.2.3", {"versions": {"1.2.3": {}}}, "exists"), ("npm", "@scope/pkg@9.9.9", {"versions": {"1.2.3": {}}}, "not found"), ("npm", "@scope/pkg", {"versions": {"1.2.3": {}}}, "exists"),
     ("crates", "serde==1.0.0", {"crate": {}, "versions": [{"num": "1.0.0"}]}, "exists"), ("crates", "serde==2.0.0", {"crate": {}, "versions": [{"num": "1.0.0"}]}, "not found"),
+    # As the installer reads a short pin: pip pads it with zeros, npm and Cargo take any release under it.
+    ("pypi", "requests==2.31", {"info": {}, "releases": {"2.31.0": []}}, "exists"), ("pypi", "requests==2.31", {"info": {}, "releases": {"2.31.1": []}}, "not found"),
+    ("pypi", "requests==2.31.0", {"info": {}, "releases": {"2.31": []}}, "exists"), ("pypi", "requests==2.3", {"info": {}, "releases": {"2.30.0": []}}, "not found"),
+    ("npm", "left-pad@1.3", {"versions": {"1.3.0": {}}}, "exists"), ("npm", "left-pad@1", {"versions": {"10.0.0": {}}}, "not found"),
+    ("crates", "serde==1", {"crate": {}, "versions": [{"num": "1.0.219"}]}, "exists"),
 ])
 def test_a_version_that_doesnt_exist_is_not_found(monkeypatch, registry, spec, document, status):
     monkeypatch.setattr(depcheck, "_fetch", lambda url: (200, document))
     assert depcheck.check_package(registry, spec)["status"] == status
+
+
+def test_a_go_module_with_capitals_is_asked_for_as_the_proxy_spells_it(monkeypatch):
+    """proxy.golang.org answers 404 to github.com/Azure/... as written, which read as a hallucinated module."""
+    asked = []
+    monkeypatch.setattr(depcheck, "_fetch", lambda url: (asked.append(url), (200, {}))[1])
+    depcheck.check_package("go", "github.com/Azure/azure-sdk-for-go")
+    depcheck.check_package("pypi", "Flask")
+    assert asked == ["https://proxy.golang.org/github.com/!azure/azure-sdk-for-go/@latest", "https://pypi.org/pypi/Flask/json"]
 
 
 def test_a_partial_read_names_what_it_couldnt_check(tmp_path):
@@ -253,6 +270,22 @@ def test_named_paths_dont_claim_the_change_reached_everything(tmp_path, monkeypa
     assert "Reached everything it must" not in text and "what the change reaches elsewhere" in text
 
 
+def test_the_macos_shim_gives_way_to_the_git_it_would_run(tmp_path, monkeypatch):
+    """The shim looks up the developer folder on every call: 84 ms a call on one Mac, against 22 for the same git run directly."""
+    developer_git = tmp_path / "developer" / "usr" / "bin" / "git"
+    developer_git.parent.mkdir(parents=True)
+    developer_git.write_text("#!/bin/sh\nexit 0\n")
+    developer_git.chmod(0o755)
+    monkeypatch.setenv("DEVELOPER_DIR", str(tmp_path / "developer"))
+    monkeypatch.setattr(filesystem, "_SHIMS", {"/usr/bin/git"}, raising=False)
+    filesystem._usable.cache_clear()
+    try:
+        assert filesystem._usable("/usr/bin/git") == str(developer_git)
+        assert filesystem._usable("/opt/elsewhere/git") == "/opt/elsewhere/git"  # not a shim, so used as found
+    finally:
+        filesystem._usable.cache_clear()
+
+
 # On macOS the git on PATH is an xcrun shim, and inside a sandbox it fails while the developer tools' own git works.
 # Every gate in the eval sandbox answered "Not a git repository" until the tools looked past it.
 def test_a_git_on_path_that_doesnt_answer_falls_back_to_one_that_does(tmp_path, monkeypatch):
@@ -266,6 +299,7 @@ def test_a_git_on_path_that_doesnt_answer_falls_back_to_one_that_does(tmp_path, 
     monkeypatch.setattr(filesystem.shutil, "which", lambda name, *args, **kwargs: str(broken) if name == "git" else None)
     monkeypatch.setattr(filesystem, "_SHIMS", {str(broken)}, raising=False)
     monkeypatch.setattr(filesystem, "_OTHER_GITS", (working,), raising=False)
+    monkeypatch.setattr(filesystem, "_behind_the_shim", lambda: None, raising=False)  # nothing behind it answers either
     clear = getattr(getattr(filesystem, "_usable", None), "cache_clear", lambda: None)
     clear()
     try:
@@ -273,3 +307,86 @@ def test_a_git_on_path_that_doesnt_answer_falls_back_to_one_that_does(tmp_path, 
         assert "Not a git repository" not in verify.gate(root)[0]
     finally:
         clear()
+
+
+def test_a_long_blank_line_after_a_deprecation_mark_stays_fast():
+    """Two repeats over leading spaces once took 5 s on one blank line of 12,000 spaces, and four times that at twice the length."""
+    started = time.monotonic()
+    assert change_checks._DEFINES.search(" " * 40000) is None
+    assert time.monotonic() - started < 1
+    assert [next(group for group in change_checks._DEFINES.search(line).groups() if group) for line in ("  public static int total(", "\tdef total(", "  List<Row> rows(")] == ["total", "total", "rows"]
+
+
+def test_goal_evidence_isnt_stuck_on_a_dirty_link_to_a_fifo(tmp_path):
+    """Its tree state read every dirty path's bytes, and a new link to a FIFO kept that read, and `goal`, waiting forever."""
+    root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
+    os.mkfifo(tmp_path / "pipe")
+    (root / "link").symlink_to(tmp_path / "pipe")
+    script = ("import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); from occam_tools import workflow; "
+              "print(workflow._tree_state(Path(sys.argv[2])))")
+    done = subprocess.run([sys.executable, "-c", script, str(ROOT / "plugin" / "skills" / "occam" / "scripts"), str(root)], capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0 and len(done.stdout.strip()) == 16, done.stderr
+
+
+def test_a_dependency_an_untouched_manifest_already_declares_isnt_new(tmp_path):
+    """Untouched manifests were found by a list of names that had drifted from the reader's, leaving out environment.yaml and constraints files."""
+    root = repository(tmp_path / "r", {"environment.yaml": "dependencies:\n  - attrs\n", "requirements.txt": "click\n"})
+    write(root, {"requirements.txt": "click\nattrs\n"})
+    assert workflow.new_dependencies(root, "HEAD", ["requirements.txt"]) == []
+
+
+@pytest.mark.parametrize("request_text, limits", [
+    ("Add retries to the client. No new dependencies, please.", ["new-dependency"]),
+    ("Fix it without adding any new packages.", ["new-dependency"]),
+    ("Standard library only.", ["new-dependency"]),
+    ("Don't add any new files; keep it in utils.py.", ["new-file"]),
+    ("Add the field, but don't change the public API.", ["api-break"]),
+    ("Keep the API backwards compatible, and no third-party libraries.", ["new-dependency", "api-break"]),
+    ("You can add a dependency if you need one.", []),
+    ("Fix the dependency resolution bug in packages.py.", []),
+    ("No new tests are needed for this.", []),
+    # From the first fresh review: the plain phrasings, and statements, quotes and exceptions that aren't directives.
+    ("Keep the public API.", ["api-break"]), ("Preserve the public API.", ["api-break"]), ("The public API must not change.", ["api-break"]),
+    ("Fix the bug where the sync command reports no new files even when files changed.", []),
+    ("There are no new dependencies in this PR, so just bump the version.", []),
+    ("No new dependencies unless you really need one.", []), ("Don't add any new files except the test.", []),
+    ("Fix the issue below.\n\n> Reviewer: no new dependencies please", []), ("Keep the API client in sync with the server.", []),
+])
+def test_a_request_states_the_limits_a_goal_can_check(request_text, limits):
+    assert workflow.stated_limits(request_text) == limits
+
+
+def test_a_stated_limit_is_recorded_once_and_the_gate_checks_it(tmp_path, monkeypatch):
+    """The owner's call on 2026-11-08: a constraint in the user's own words becomes a goal limit, so breaking it shows at the gate."""
+    monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
+    root = repository(tmp_path / "r", {"requirements.txt": "click\n", "app.py": "x = 1\n"})
+    assert workflow.record_stated_limits(root, "Add retries to the client. No new dependencies.") == ["No new dependencies"]
+    assert workflow.record_stated_limits(root, "Also, no new dependencies!") == []
+    write(root, {"requirements.txt": "click\ntenacity\n"})
+    text, code = verify.gate(root)
+    assert "VIOLATED" in text and code == 1, text[-600:]
+
+
+def test_a_goal_from_a_request_belongs_to_its_session(tmp_path, monkeypatch):
+    """The store is per repository, so one task's limits would otherwise follow the next session's work there."""
+    monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
+    root = repository(tmp_path / "r", {"app.py": "x = 1\n"})
+    assert workflow.record_stated_limits(root, "No new dependencies.", "s1") == ["No new dependencies"]
+    assert workflow.record_stated_limits(root, "Add a cache.", "s1") == [] and workflow._load(root) is not None
+    assert workflow.record_stated_limits(root, "Rename the helper.", "s2") == [] and workflow._load(root) is None
+    workflow.record_stated_limits(root, "Don't add any new files.", "s3")
+    _, code = workflow.goal(root, SimpleNamespace(action="init", text=["Faster", "startup"]))
+    state = workflow._load(root)
+    assert code == 0 and state["goal"] == "Faster startup" and [c["no"] for c in state["constraints"]] == ["new-file"]
+    assert workflow.record_stated_limits(root, "Also no new dependencies.", "s4") == ["No new dependencies"]  # a goal started by hand only gains limits
+    assert workflow._load(root)["goal"] == "Faster startup"
+
+
+def test_a_goal_someone_added_requirements_to_isnt_cleared(tmp_path, monkeypatch):
+    """Another session's request clears a goal made from a request, but not once requirements went into it: that would lose them."""
+    monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
+    root = repository(tmp_path / "r", {"app.py": "x = 1\n"})
+    workflow.record_stated_limits(root, "No new dependencies.", "s1")
+    workflow.goal(root, SimpleNamespace(action="add", text=["retries", "happen"], check=None))
+    assert workflow.record_stated_limits(root, "Rename the helper.", "s2") == []
+    assert [r["text"] for r in workflow._load(root)["requirements"]] == ["retries happen"]

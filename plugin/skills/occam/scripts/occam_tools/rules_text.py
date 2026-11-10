@@ -9,8 +9,11 @@ from typing import Iterable, NamedTuple
 
 from .py_helpers import PLACEHOLDER_NAME, _has_sql
 from .rules_shell import shell_findings
+from . import rules_scripts
 from .rules_config import CLIENT_VISIBLE_SECRET
-from . import rules_js
+from . import rules_config
+from . import rules_go, rules_js, rules_jvm
+from . import rules_native, rules_php, rules_ruby  # team native: Ruby, PHP, C, C++ and Rust
 from .source import C_FAMILY, DOCKERFILE, Source
 
 JS = ("javascript", "typescript")
@@ -80,8 +83,8 @@ TEXT_RULES: list[TextRule] = [
 
     # Security
     _r("tls-disabled", ALL,
-       r"\brejectUnauthorized\s*:\s*false\b|\bInsecureSkipVerify\s*:\s*true\b"
-       r"|NODE_TLS_REJECT_UNAUTHORIZED|CURLOPT_SSL_VERIFYPEER\s*,\s*(?:0|false)\b|\bssl\._create_unverified_context\b"
+       r"(?<![.\w$!?])(?<!\? )(?<!\?  )rejectUnauthorized\s*:\s*false\b|\bInsecureSkipVerify\s*:\s*true\b"  # not `x ? options.rejectUnauthorized : false`, a ternary
+       r"|NODE_TLS_REJECT_UNAUTHORIZED\s*(?:\?\?|\|\|)?=(?!=)|(?<!\.)NODE_TLS_REJECT_UNAUTHORIZED\s*:|CURLOPT_SSL_VERIFYPEER\s*,\s*(?:0|false)\b|\bssl\._create_unverified_context\b"
        r"|\bcheck_hostname\s*=\s*False\b|\b(?:verify_mode|cert_reqs)\s*=\s*(?:ssl\.)?CERT_NONE\b(?!\s*,)|\bdanger_accept_invalid_certs\(\s*true\b"
        r"|\bTrustAllCerts\b|\bcurl\b[^\n|]*(?:\s-[a-zA-Z]*k\b|\s--insecure\b)", view="code"),
     # `verify=False` is only TLS on an HTTP client: the Python rules can see the call, and `session.verify = False` says so here.
@@ -90,22 +93,22 @@ TEXT_RULES: list[TextRule] = [
     _r("sql-injection", ("go",), r"""\.(?:Query|QueryRow|Exec)(?:Context)?\((?:\w+,\s*)?(?:fmt\.Sprintf\(|"[^"\n]*"\s*\+)""", view="raw"),
     _r("sql-injection", ("java", "kotlin", "scala", "csharp"), r"""(?:executeQuery|executeUpdate|prepareStatement|createQuery|ExecuteReader|ExecuteNonQuery)\(\s*"[^"\n]*"\s*\+""", view="raw"),
     _r("sql-injection", ("rust",), r"""\.(?:execute|query)\(\s*&?format!\(""", view="raw"),
-    _r("sql-injection", ("ruby",), r"""\.(?:where|find_by_sql|execute)\(\s*"[^"\n]*#\{""", view="raw"),
-    _r("sql-injection", ("php",), r"""(?:mysqli_query|->query)\([^)\n]*\$_(?:GET|POST|REQUEST)""", view="raw"),
     _r("dynamic-eval", JS + ("php", "ruby"), r"(?<![\w.])eval\s*\(|\bnew\s+Function\s*\("),
     # A bare exec, or child_process's. `RE.exec(...)` runs a regex and `db.exec(...)` runs SQL.
     _r("shell-injection", JS, r"""(?<![\w.])(?:child_process\.|childProcess\.|cp\.)?exec(?:Sync)?\(\s*(?:`[^`\n]*\$\{|["'][^"'\n]*["']\s*\+)""", view="raw"),
-    _r("shell-injection", ("go",), r"""exec\.Command\(\s*"(?:sh|bash)"\s*,\s*"-c\"""", view="raw"),
+    # Go's `sh -c` is in rules_go, which tells a fixed command line from a built one.
     _r("shell-injection", ("java", "kotlin"), r"Runtime\.getRuntime\(\)\.exec\("),
     _r("shell-injection", ("rust",), r"""Command::new\(\s*"(?:sh|bash)"\s*\)""", view="raw"),
     _r("shell-injection", ("c", "cpp"), r"(?<![\w.])system\s*\("),
     _r("shell-injection", ("php",), r"\b(?:shell_exec|passthru|system|popen)\s*\("),
-    _r("xss-sink", ("javascript", "typescript", "html"), r"""\.(?:innerHTML|outerHTML)\s*=(?!=)(?!\s*(?:"[^"\n]*"|'[^'\n]*')\s*(?:;|$))|dangerouslySetInnerHTML|document\.write\(|\bv-html=|\{@html\b""", flags=re.M),
+    _r("xss-sink", ("html",), r"""\.(?:innerHTML|outerHTML)\s*=(?!=)(?!\s*(?:"[^"\n]*"|'[^'\n]*')\s*(?:;|$))|dangerouslySetInnerHTML|document\.write\(|\bv-html=|\{@html\b""", flags=re.M),
     _r("xss-sink", PY, r"\bmark_safe\(|\bMarkup\("),
+    # team py: Jinja and Django templates turn escaping off with `|safe` or an autoescape block, the template side of mark_safe.
+    # `|tojson|safe` stays out, since tojson escapes for a script context itself.
+    _r("xss-sink", ("html",), r"\{\{[^{}\n]{0,200}?(?<!tojson)(?<!tojson )\|\s{0,3}safe\b|\{%-?\s{0,3}autoescape\s+(?:false|off)\b"),
     _r("weak-crypto", JS, r"""createHash\(\s*["'](?:md5|sha1)["']""", view="raw"),
     _r("weak-crypto", ("java", "kotlin", "scala"), r"""getInstance\(\s*"(?:MD5|SHA-?1)"\s*\)""", view="raw"),
     _r("weak-crypto", ("go",), r"\b(?:md5|sha1)\.(?:New|Sum)\b"),
-    _r("insecure-random", JS, r"(?i:token|secret|password|session|nonce|salt|otp)\w*[^\n]{0,60}Math\.random\(\)|Math\.random\(\)[^\n]{0,60}(?i:token|secret|password|nonce|salt)"),
     _r("permissive-cors", ALL,
        r"""Access-Control-Allow-Origin["']?\s*[:,]\s*["']\*|\borigin\s*:\s*["']\*["']|\ballow_origins\s*=\s*\[\s*["']\*"""
        r"""|\bCORS_(?:ORIGIN_ALLOW_ALL|ALLOW_ALL_ORIGINS)\s*=\s*True\b|\bALLOWED_HOSTS\s*=\s*\[\s*["']\*""", view="raw"),
@@ -116,8 +119,8 @@ TEXT_RULES: list[TextRule] = [
     # YAML.load (safe_load from Psych 4), and PHP's unserialize with allowed_classes or as some class's own method.
     _r("unsafe-deserialize", ("java", "kotlin", "scala"), r"\bnew\s+ObjectInputStream\s*\((?![\s\S]{0,1500}?ObjectInputFilter)|\bnew\s+XMLDecoder\s*\(", view="raw", confidence="medium"),
     _r("unsafe-deserialize", ("ruby",), r"\bMarshal\.load\s*\(|\bYAML\.unsafe_load\s*\(", confidence="medium"),
-    _r("unsafe-deserialize", ("php",), r"(?<![\w>:$])unserialize\s*\(\s*\$(?![^;]{0,300}allowed_classes)", view="raw", confidence="medium"),
-    _r("error-details-exposed", JS, r"\bres\.(?:status\([^)\n]*\)\.)?(?:send|json|end)\([^)\n]*\b(?:err|error|e)\.stack\b"),
+    # Any argument holding a variable, as unserialize(base64_decode($cookie)). serialize() inside is a deep copy of the app's own value.
+    _r("unsafe-deserialize", ("php",), r"(?<![\w>:$])unserialize\s*\(\s*(?!serialize\s*\()(?=[^;]{0,300}\$)(?![^;]{0,300}allowed_classes)", view="raw", confidence="medium"),
     _r("debug-exposed", ("python", "javascript", "typescript"), r"^[ \t]*DEBUG\s*=\s*True\b|\.run\([^)\n]*\bdebug\s*=\s*True|\bapp\.debug\s*=\s*True\b|\bintrospection\s*[:=]\s*[Tt]rue\b", flags=_M, scripts=False),
     _r("mock-in-production", PY, r"^[ \t]*(?:from unittest(?:\.mock)? import\b[^\n]*\b(?:mock|Mock|MagicMock|patch)\b|import unittest\.mock\b|from mock import\b|import mock\b)", flags=_M, scripts=False),
     _r("test-detection-in-code", PY, r"""["']pytest["']\s+in\s+sys\.modules|PYTEST_CURRENT_TEST|["']unittest["']\s+in\s+sys\.modules""", view="raw", scripts=False),
@@ -127,7 +130,6 @@ TEXT_RULES: list[TextRule] = [
     _r("open-redirect", JS, r"\bres\.redirect\(\s*(?:\d+\s*,\s*)?req\.(?:query|body|params)\b"),
     _r("mass-assignment", JS, r"\.(?:create|update|updateOne|findByIdAndUpdate|findOneAndUpdate|insertOne)\(\s*(?:[^,()\n]*,\s*)?req\.body\s*[,)]|\bnew\s+[A-Z]\w*\(\s*req\.body\s*\)|\bObject\.assign\(\s*\w+\s*,\s*req\.body\s*\)"),
     _r("mass-assignment", PY, r"""^[ \t]*fields\s*=\s*["']__all__["']""" , view="raw", flags=_M, confidence="low"),
-    _r("mass-assignment", ("ruby",), r"\bparams\.permit!"),
     _r("weak-path-check", ("python", "javascript", "typescript"), r"""\.replace\(\s*["']\.\./?["']\s*,\s*["']["']\s*\)""", view="raw"),
     _r("insecure-cookie", JS, r"""\bres\.cookie\((?![^)]*\bsecure\b)"""),
     _r("token-in-browser-storage", JS, r"""\b(?:localStorage|sessionStorage)\.setItem\(\s*["'`][^"'`\n]*(?i:token|jwt|secret|password|auth)""", view="raw"),
@@ -147,9 +149,7 @@ TEXT_RULES: list[TextRule] = [
        r"|\bskip_?(?:auth|verification|validation|signature)\s*[:=]\s*(?:True|true|1)\b", flags=_I),
     _r("disabled-control", ALL, r"^nosec\b(?!\s*\S)", view="comment"),
     _r("path-traversal", PY, r"\b(?:open|send_file|FileResponse|os\.path\.join)\([^)\n]*\brequest\.(?:args|form|json|GET|POST|query_params|files)\b"),
-    _r("path-traversal", JS, r"\b(?:readFile(?:Sync)?|sendFile|createReadStream)\([^)\n]*\breq\.(?:params|query|body)\b"),
     _r("ssrf", PY, r"\b(?:requests\.\w+|httpx\.\w+|urlopen)\([^)\n]*\brequest\.(?:args|form|json|GET|POST|query_params)\b"),
-    _r("ssrf", JS, r"(?<![\w.])(?:fetch|axios\.\w+|got)\([^)\n]*\breq\.(?:params|query|body)\b"),
     _r("unsafe-c-string", ("c", "cpp"), r"(?<![\w.])(?:strcpy|strcat|sprintf|vsprintf|gets)\s*\("),
     _r("unsafe-c-string", ("c", "cpp"), r"""\bscanf\(\s*"%s""", view="raw"),
     _r("world-writable", ALL, r"\bchmod\s+(?:-R\s+)?(?:0)?777\b|\bchmod\([^)\n]*0o?777\b", view="code"),
@@ -163,7 +163,7 @@ TEXT_RULES: list[TextRule] = [
     _r("swallowed-exception", JS, r"\.catch\(\s*(?:\(\s*\w*\s*\)|\w+)\s*=>\s*(?:\{\s*\}|null|undefined)\s*\)", view="raw", tests="include"),
     _r("swallowed-exception", ("ruby",), r"\brescue\b[^\n]*\n\s*end\b"),
     _r("ignored-error", ("go",), r"\bif\s+err\s*!=\s*nil\s*\{\s*return\s+nil\s*\}|\b\w+\s*,\s*_\s*:?=\s*[\w.]+\("),
-    _r("ignored-error", ("shell",), r"\|\|\s*true\b"),
+    _r("ignored-error", ("shell",), r"\|\|\s*true\b", confidence="low"),  # always deliberate, and only reading says whether what it ignores matters
     _r("ignored-error", ("rust",), r"\blet\s+_\s*=\s*[^;\n]+\?;|\.ok\(\);"),
     _r("panic-in-library", ("rust",), r"\.unwrap\(\)|\.expect\(|(?<![\w:])panic!\("),
     _r("panic-in-library", ("go",), r"(?<![\w.])panic\("),
@@ -212,7 +212,7 @@ TEXT_RULES: list[TextRule] = [
     _r("missing-timeout", ("go",), r"\bhttp\.(?:Get|Post|PostForm|Head)\(|\bhttp\.DefaultClient\b"),
     _r("hardcoded-host", ALL, r"""["'`](?:https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?:[:/"'`])|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+)""", view="raw", scripts=False),
     _r("absolute-path", ALL, r"""["'`](?:/Users/\w|/home/\w|[A-Z]:\\Users\\)""", view="raw", scripts=False),
-    _r("a11y-missing", ("javascript", "typescript", "html"), r"<img\b(?![^>]*\balt=)[^>]*>|<div\b(?![^>]*\brole=)[^>]*\bonClick=", view="raw"),
+    _r("a11y-missing", ("javascript", "typescript", "html"), r"<img\b(?![^>]{0,2000}\balt=)[^>]{0,2000}>|<div\b(?![^>]{0,2000}\brole=)[^>]{0,2000}\bonClick=", view="raw"),
 
     # Reinvention
     _r("handrolled-helper", JS, r"JSON\.parse\(\s*JSON\.stringify\("),
@@ -274,6 +274,8 @@ _NOT_A_SECRET = re.compile(
     r"|^(?:example|changeme|change_me|change-me|your|xxx|placeholder|dummy|fake|sample|redacted|replace)|^(?:test|secret|password|none|null|true|false)\d*$"
     r"|^(?:AKIA|ASIA)[0-9A-Z]*EXAMPLE$"                                           # AWS's documented key
     r"|^[a-z]+(?:[_.-][a-z]+)+$|^[A-Za-z_]+(?:\.[A-Za-z_]+)+$|(?-i:^[A-Z][A-Z0-9]*(?:_[A-Z][A-Z0-9]*)+$)"  # the name of something, or of an environment variable. A digit in every part reads as a value
+    r"|(?-i:^V\d+(?:(?:alpha|beta)\d+)?(?:[A-Z][a-z]+)+$)"                       # a versioned API type, as an OpenAPI map's V1SecretReference
+    r"|^(?:list|dict|set|tuple|frozenset|optional|union|sequence|mapping|iterable)\[[\w\[\],.]*\]$"  # a container type, as list[str]
     r"|^\.{0,2}/|^\w+://|^arn:"                                                   # where something is
     r"|^\^|\$$|\(\?|\\[dwsb]|\[[^\]]*-[^\]]*\]",                                  # a pattern
     re.I,
@@ -327,6 +329,8 @@ def text_findings(source: Source, is_test: bool, is_script: bool) -> Iterable[tu
     yield from _comment_shape(source, is_test)
     if language == "shell":
         yield from _shell_file_rules(source)
+    if language == "html" and not is_test:  # config team: a saved page an agent reads, with an instruction hidden in it
+        yield from rules_config.addressed_in_data(source.path, source.text, hidden=False)
     if language in ("c", "cpp") and source.path.endswith((".h", ".hpp", ".hh")):
         for match in re.finditer(r"^[ \t]*using\s+namespace\s+\w+", source.code, re.M):
             yield "namespace-in-header", source.line_of(match.start()), None, {}
@@ -334,11 +338,29 @@ def text_findings(source: Source, is_test: bool, is_script: bool) -> Iterable[tu
         yield from _unsafe_without_reason(source)
     if language in ("java", "kotlin"):
         yield from _equality_contract(source)
+    # team jvmgo: Java, Kotlin and Go checks that need more than one pattern. One that breaks on odd code loses only its own findings.
+    if language in ("java", "kotlin", "go"):
+        try:
+            yield from (rules_go if language == "go" else rules_jvm).findings(source, is_test)
+        except (RecursionError, ValueError, AttributeError, TypeError, IndexError, KeyError):  # occam: ignore[swallowed-exception] a module that breaks on odd code loses only its own findings
+            pass
     if language in JS:
         yield from rules_js.findings(source, is_test)
+    module = {"ruby": rules_ruby, "php": rules_php, "c": rules_native, "cpp": rules_native, "rust": rules_native}.get(language or "")
+    if module is not None:
+        yield from _guarded(module, source, is_test, is_script)
 
 
-_UNSAFE_BLOCK = re.compile(r"\bunsafe\s*\{")
+def _guarded(module, source: Source, is_test: bool, is_script: bool) -> list[tuple]:
+    """A language module's findings. One that breaks on odd code loses only its own findings, as rules_py.analyze does for its modules."""
+    try:
+        return list(module.findings(source, is_test, is_script))
+    except (RecursionError, ValueError, AttributeError, TypeError, IndexError, KeyError, re.error):  # occam: ignore[swallowed-exception] a module that breaks loses only its own findings
+        return []
+
+
+# A block, and `unsafe impl Send for T {}`, which promises the compiler what it can't check.
+_UNSAFE_BLOCK = re.compile(r"\bunsafe\s*(?:\{|impl\b)")
 _SAFETY_NOTE = re.compile(r"\bsafety\b", re.I)
 _COMMENT_OR_ATTRIBUTE = re.compile(r"^\s*(?://|/\*|\*|#\[)|\*/\s*$")
 # An inline test module ends the code worth checking. `#[cfg(test)] mod tests;` points to another file, so it doesn't.
@@ -414,8 +436,10 @@ def _token_findings(source: Source) -> Iterable[tuple]:
 
 def _secrets(source: Source, is_test: bool) -> Iterable[tuple]:
     if is_test:
-        for _, line, _, _ in _token_findings(source):  # a test is a fake's place, so a live shape may be a working credential copied in
-            yield "live-credential-in-test", line, "A test holds a credential in a live shape (value withheld). Use an obviously fake value, and rotate this one if it was ever real.", {}
+        # A test is a fake's place, so only a vendor's token shape counts: a password in a URL there is nearly always `user:hunter2@host`.
+        for match in (found for found in _LIVE_TOKENS.finditer(source.text) if not found.group(0).startswith("-----")):  # JWT tests sign with test keys
+            yield ("live-credential-in-test", source.line_of(match.start()), "A test holds a token in a vendor's live format (value withheld). Use an obviously "
+                   "fake value, and rotate this one if it was ever real.", {})
         return
     seen = set()
     for finding in _token_findings(source):
@@ -707,6 +731,7 @@ _HAS_PIPEFAIL = re.compile(r"^#!.*\b(?:bash|zsh|ksh)\b")
 
 def _shell_file_rules(source: Source) -> Iterable[tuple]:
     yield from shell_findings(source)
+    yield from _script_rules(source.text)
     errexit = re.search(r"^[ \t]*set\s+-[a-zA-Z]*e|^[ \t]*set\s+-o\s+errexit", source.code, re.M)
     if len(source.line_starts) >= 10 and not errexit:
         yield "shell-no-strict", 1, None, {}
@@ -716,6 +741,15 @@ def _shell_file_rules(source: Source) -> Iterable[tuple]:
         if pipe:
             # set -e looks only at the last command of a pipeline, so a failure before the pipe goes unnoticed
             yield "shell-no-strict", 1 + source.text.split("\n").index(pipe), "set -e here ignores a failure before the last `|` of a pipeline. Add set -o pipefail.", {}
+
+
+def _script_rules(text: str) -> Iterable[tuple]:
+    """config team, 2026-11-08: what a script does with credentials and the outside world. A CI step gets the same from rules_config."""
+    # A served file is a firmer sign than the Python rule's read-back, so it shows at the default confidence.
+    for checks, rule, overrides in ((rules_scripts.traced_secrets, "sensitive-log", {}), (rules_scripts.retried_writes, "retry-not-idempotent", {}),
+                                    (rules_scripts.sent_credentials, "sends-credentials", {}), (rules_scripts.truncated_served_files, "nonatomic-state-write", {"confidence": "medium"})):
+        for line, message in checks(text):
+            yield rule, line, message, overrides
 
 
 # ---------------------------------------------------------------- structure for languages without a parser here
@@ -728,7 +762,8 @@ _FUNCTION_HEADS = {
         r"|^[ \t]*(?:export\s+)?(?:const|let|var)\s+(?P<name2>\w+)\s*=\s*(?:async\s*)?\((?P<params2>[^)]{0,500})\)\s*(?::[^=\n]+)?=>\s*\{"
         r"|^[ \t]+(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*(?P<name3>[a-zA-Z_]\w*)\s*\((?P<params3>[^)]{0,500})\)\s*(?::[^{\n]+)?\{", re.M),
     "java": re.compile(r"^[ \t]*(?:(?:public|private|protected|static|final|abstract|synchronized|override|suspend|open|internal)\s+)*(?:fun\s+|[\w<>\[\],.]+\s+)(?P<name>[a-zA-Z_]\w*)\s*\((?P<params>[^)]{0,500})\)[^{;\n]*\{", re.M),
-    "c": re.compile(r"^[a-zA-Z_][\w\s\*:<>,&]*?\s\*?(?P<name>[a-zA-Z_][\w:~]*)\s*\((?P<params>[^)]{0,500})\)\s*(?:const\s*)?(?:noexcept\s*)?\{", re.M),
+    # Bounded: unbounded, the lazy return type ran from every line start to the end of a file with no `(`, quadratic in its lines.
+    "c": re.compile(r"^[a-zA-Z_][\w\s\*:<>,&]{0,300}?\s\*?(?P<name>[a-zA-Z_][\w:~]*)\s*\((?P<params>[^)]{0,500})\)\s*(?:const\s*)?(?:noexcept\s*)?\{", re.M),
 }
 _FUNCTION_HEADS["typescript"] = _FUNCTION_HEADS["javascript"]
 _FUNCTION_HEADS["kotlin"] = _FUNCTION_HEADS["java"]

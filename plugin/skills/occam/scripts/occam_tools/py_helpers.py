@@ -41,6 +41,8 @@ PUBLIC_ROUTE = re.compile(r"(?:^|_)(?:health|healthz|healthcheck|ping|ready|read
                           r"|webhooks?|callbacks?|root|favicon|version|reset)(?:_|$)", re.I)
 CHANGES_DATA_NAME = re.compile(r"_*(?:delete|update|change|reset_all|export)", re.I)  # update_order_status is about an order, however public a status check is
 ROUTE_DECORATOR = {"route", "get", "post", "put", "patch", "delete", "api_view", "websocket"}
+# A decorator's dotted name that makes a request handler, in Flask, FastAPI, Starlette or Django REST framework.
+ROUTE_DECORATOR_NAME = re.compile(r"(?:^|\.)(?:route|get|post|put|patch|delete|api_route|api_view|action|websocket)$")
 LOOP_NODES = (ast.For, ast.AsyncFor, ast.While)
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 ONCE_ONLY_CALLS = {"datetime.now", "datetime.utcnow", "datetime.datetime.now", "datetime.datetime.utcnow", "date.today", "datetime.date.today", "time.time",
@@ -69,6 +71,8 @@ HELPERS = {
 }
 KNOWN_NAMES = set(dir(builtins)) | {"__file__", "__name__", "__doc__", "__package__", "__spec__", "__path__", "__class__", "__builtins__",
                                      "__annotations__", "__dict__", "__loader__", "__cached__", "__qualname__", "__module__", "__debug__",
+                                     # builtins newer than the oldest Python this runs on, which code written for a newer one uses
+                                     "aiter", "anext", "EncodingWarning", "ExceptionGroup", "BaseExceptionGroup", "PythonFinalizationError",
                                      "WindowsError", "reveal_type", "reveal_locals", "_", "unicode", "basestring", "long", "xrange", "raw_input",
                                      "unichr", "cmp", "reduce", "file", "execfile", "reload", "get_ipython", "display", "exit", "quit"}
 
@@ -263,11 +267,21 @@ def _is_literal(value: ast.AST | None, upper: bool) -> bool:
         return True
     if isinstance(value, ast.Name):
         return upper and value.id.isupper()
+    if upper and _looks_up_a_constant(value):
+        return True
     if isinstance(value, ast.JoinedStr):
         return not any(isinstance(part, ast.FormattedValue) for part in value.values)
     if isinstance(value, ast.IfExp):
         return _is_literal(value.body, upper) and _is_literal(value.orelse, upper)
     return isinstance(value, ast.BinOp) and _is_literal(value.left, upper) and _is_literal(value.right, upper)
+
+
+def _looks_up_a_constant(value: ast.AST | None) -> bool:
+    """`SORT_COLUMNS[key]` or `SORT_COLUMNS.get(key, "id")`: whatever the key, the value is one a module constant holds, as an allow-list gives."""
+    if isinstance(value, ast.Subscript):
+        return isinstance(value.value, ast.Name) and value.value.id.isupper()
+    return (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and value.func.attr == "get" and isinstance(value.func.value, ast.Name)
+            and value.func.value.id.isupper() and all(isinstance(default, ast.Constant) for default in value.args[1:]))
 
 
 def _is_literal_iterable(iterable: ast.AST | None, upper: bool) -> bool:

@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from .py_helpers import ROUTE_DECORATOR, _decorator_names, _dotted, _walk_own as _own
 
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-LOOPS = (ast.For, ast.AsyncFor, ast.While)
 # Mock methods that look like assertions and aren't: a Mock answers any name with a truthy Mock, so these pass whatever happened.
 _NOT_ASSERTIONS = {"called_once_with", "called_with", "called_once", "not_called", "has_calls", "any_call", "awaited_once_with", "awaited_with"}
 # Calls that return something lazy, which reads its argument only when iterated.
@@ -28,7 +27,6 @@ _CLIENTS = {"requests.Session", "requests.session", "httpx.Client", "httpx.Async
             "openai.OpenAI", "anthropic.Anthropic", "Elasticsearch"}
 _IO_CALLS = re.compile(r"^(?:requests|httpx|urllib\.request|subprocess|boto3|socket)\.\w+$|^(?:open|urlopen)$|\.(?:execute|fetchall|fetchone|urlopen|read_text|read_bytes)$")
 _QUEUES = {"queue.Queue", "Queue", "asyncio.Queue", "multiprocessing.Queue", "queue.LifoQueue", "queue.PriorityQueue", "queue.SimpleQueue", "SimpleQueue"}
-_WRITERS = {"json.dump", "pickle.dump", "yaml.dump", "yaml.safe_dump", "toml.dump"}
 _REPLACES = re.compile(r"\bos\.(?:replace|rename)\(|\.(?:replace|rename)\(\s*\w|NamedTemporaryFile|mkstemp|atomic", re.I)
 _HTTP_CALL = re.compile(r"^(?:requests|httpx)\.(?:get|post|put|patch|delete|head|request)$|^(?:urllib\.request\.)?urlopen$")
 _LOCAL_URL = re.compile(r"^\w+://(?:localhost|127\.|0\.0\.0\.0|\[::1\]|testserver|[\w.-]*\.(?:test|invalid|example|local|localhost)(?:[:/]|$)|example\.(?:com|org|net)(?:[:/]|$))", re.I)
@@ -62,7 +60,7 @@ def _lazy_after_close(tree: ast.Module) -> Iterator[tuple]:
     for function in (node for node in ast.walk(tree) if isinstance(node, FUNCTIONS)):
         for block in (node for node in _own(function) if isinstance(node, ast.With)):
             held = {item.optional_vars.id for item in block.items if isinstance(item.optional_vars, ast.Name)}
-            for returned in (node for statement in block.body for node in [statement, *_own(statement)] if isinstance(node, ast.Return)):
+            for returned in (node for node in _run_here(block.body) if isinstance(node, ast.Return)):
                 reads = _iterated(returned.value) & held
                 if reads:
                     yield ("lazy-after-close", returned.lineno, f"This returns a lazy reader of `{min(reads)}`, which the `with` closes as the function returns, "
@@ -76,6 +74,14 @@ def _iterated(value: ast.AST | None) -> set[str]:
     if _called(value) in _LAZY:
         return {argument.id for argument in value.args if isinstance(argument, ast.Name)}
     return set()
+
+
+def _run_here(block: list) -> Iterator[ast.AST]:
+    """The nodes a block runs itself, not those of the functions or classes it defines, which run at another time."""
+    for statement in block:
+        if not isinstance(statement, (*FUNCTIONS, ast.ClassDef)):
+            yield statement
+            yield from _own(statement)
 
 
 def _within(scope: ast.AST) -> Iterator[ast.AST]:
@@ -104,11 +110,11 @@ def _locks_in(scope: ast.AST) -> Iterator[tuple]:
     for outer in (node for node in _within(scope) if isinstance(node, ast.With)):
         names = [name for name in map(_lock_name, outer.items) if name]
         for name in names:
-            for inner in (node for statement in outer.body for node in [statement, *_own(statement)] if isinstance(node, ast.With)):
+            for inner in (node for node in _run_here(outer.body) if isinstance(node, ast.With)):
                 for other in filter(None, map(_lock_name, inner.items)):
                     if other != name:
                         seen.setdefault((name, other), inner.lineno)
-            awaited = next((node for statement in outer.body for node in [statement, *_own(statement)] if isinstance(node, (ast.Await, ast.AsyncFor, ast.AsyncWith))), None)
+            awaited = next((node for node in _run_here(outer.body) if isinstance(node, (ast.Await, ast.AsyncFor, ast.AsyncWith))), None)
             if awaited is not None:
                 yield ("await-under-thread-lock", awaited.lineno, f"This awaits while holding `{name}` in a plain `with`. Another coroutine that wants it blocks the "
                        "event loop's only thread, and that deadlocks. Use asyncio.Lock with `async with`, or release it before awaiting.", {})
@@ -122,7 +128,8 @@ def _cache_reads_user(tree: ast.Module) -> Iterator[tuple]:
     for function in (node for node in ast.walk(tree) if isinstance(node, FUNCTIONS)):
         if not set(_decorator_names(function)) & _CACHES:
             continue
-        who = next((text for node in _own(function) if isinstance(node, (ast.Attribute, ast.Name)) for text in [_dotted(node)] if _USER.match(text)), None)
+        names = (_dotted(node) for node in _own(function) if isinstance(node, (ast.Attribute, ast.Name)))
+        who = next((name for name in names if _USER.match(name)), None)
         if who:
             yield ("cache-reads-user", function.lineno, f"{function.name} is cached by its arguments, but reads `{who}`, which isn't one, so one user's result "
                    "is served to the next. Pass the user or tenant in as an argument, or don't cache it.", {})
@@ -137,11 +144,12 @@ def _clients_per_call(tree: ast.Module, is_test: bool) -> Iterator[tuple]:
     if is_test:
         return
     # Over items, not `while`, which is how a worker reconnects after a failure.
-    places = [(loop, "loop") for loop in ast.walk(tree) if isinstance(loop, (ast.For, ast.AsyncFor))]
+    # Over items, not a fixed `range(5)`, which is a bounded retry like `while`. `range(len(urls))` is over items.
+    places = [(loop, "loop") for loop in ast.walk(tree) if isinstance(loop, (ast.For, ast.AsyncFor)) and not _is_retry_count(loop.iter)]
     places += [(function, "request handler") for function in ast.walk(tree) if isinstance(function, FUNCTIONS) and _is_route(function)]
     reported = set()
     for place, kind in places:
-        varies = {node.id for node in ast.walk(place.target) if isinstance(node, ast.Name)} if kind == "loop" else set()
+        varies = _varies_per_pass(place) if kind == "loop" else set()
         for call in (call for node in _own(place) for call in _made_here(node)):
             per_target = varies & {node.id for node in ast.walk(call) if isinstance(node, ast.Name)}  # one client per region or URL is the point
             if isinstance(call, ast.Call) and _called(call) in _CLIENTS and call.lineno not in reported and not per_target:
@@ -150,11 +158,26 @@ def _clients_per_call(tree: ast.Module, is_test: bool) -> Iterator[tuple]:
                        "Make it once at startup and share it, or reuse one passed in.", {})
 
 
+def _is_retry_count(node: ast.AST) -> bool:
+    return _called(node) == "range" and all(isinstance(argument, ast.Constant) and isinstance(argument.value, int) for argument in node.args)
+
+
+def _varies_per_pass(loop: ast.AST) -> set[str]:
+    """The loop's variables and what's assigned from them in its body, as `url = tenant_url(tenant)`."""
+    varies = {node.id for node in ast.walk(loop.target) if isinstance(node, ast.Name)}
+    for _ in range(3):  # a short chain of derived values is enough
+        for node in _own(loop):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) and node.value else []
+            if targets and {name.id for name in ast.walk(node.value) if isinstance(name, ast.Name)} & varies:
+                varies |= {name.id for target in targets for name in ast.walk(target) if isinstance(name, ast.Name)}
+    return varies
+
+
 def _made_here(node: ast.AST) -> list:
     """What a statement makes for itself: bound to a plain name, opened by `with`, or used at once. One stored in a dict or attribute is kept for reuse."""
     if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         return [node.value]
-    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.value is not None:  # a bare `n: int` makes nothing
         return [node.value]
     if isinstance(node, (ast.With, ast.AsyncWith)):
         return [item.context_expr for item in node.items]
@@ -184,9 +207,11 @@ def _unbounded_queues(tree: ast.Module, is_test: bool) -> Iterator[tuple]:
     # A producer that runs until stopped, putting with a blocking put. A loop over a fixed input, or a crawl that feeds its own queue, isn't one.
     forever = (node for node in ast.walk(tree) if isinstance(node, ast.While) and isinstance(node.test, ast.Constant) and node.test.value is True)
     for loop in forever:
-        for node in _own(loop):
-            name = _dotted(node.func.value) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "put" else ""
-            if name in made:
+        calls = [node for node in _own(loop) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
+        consumed = {_dotted(node.func.value) for node in calls if node.func.attr in ("get", "get_nowait")}  # a crawl feeds its own queue
+        for node in calls:
+            name = _dotted(node.func.value) if node.func.attr == "put" else ""
+            if name in made and name not in consumed:
                 yield ("unbounded-queue", made.pop(name), f"`{name}` has no maxsize and a loop that never stops puts into it, so a producer faster than its "
                        "consumer grows it until memory runs out. Give it a maxsize, so put waits.", {})
 
@@ -195,24 +220,78 @@ def _nonatomic_writes(tree: ast.Module, text: str, is_test: bool) -> Iterator[tu
     """A file this module writes in place and reads back is left half-written by a crash, and the next read fails on it."""
     if is_test or _REPLACES.search(text):
         return
-    writes, reads = {}, set()
+    writes, reads, structured, read_bare = {}, set(), set(), set()
+    owner = _class_of_each_method(tree)
+    # A read inside a try that handles the error treats a bad file as a cache miss, so a truncated one costs a rebuild, not an outage.
+    recovered = {id(inner) for node in ast.walk(tree) if isinstance(node, ast.Try) and node.handlers for statement in node.body for inner in ast.walk(statement)}
     for scope in [tree, *(node for node in ast.walk(tree) if isinstance(node, FUNCTIONS))]:
-        own = {argument.arg for argument in ast.walk(scope.args) if isinstance(argument, ast.arg)} - {"self", "cls"} if isinstance(scope, FUNCTIONS) else set()
         for node in _own(scope) if isinstance(scope, FUNCTIONS) else _module_level(scope):
             found = _file_access(node)
-            if found:
-                written, target = found
-                # `path` passed to two functions is two values, and `self.path` or `STATE_FILE` is one.
-                local = {name.id for name in ast.walk(target) if isinstance(name, ast.Name)} & own
-                key = ast.dump(target) + (f"@{id(scope)}" if local else "")
-                if written:
-                    writes.setdefault(key, node.lineno)
-                else:
-                    reads.add(key)
+            if found and isinstance(found[1], ast.Constant) and str(found[1].value).startswith(("/dev/", "/proc/", "/sys/")):
+                continue  # a device or kernel file, not stored state
+            if found and found[0]:
+                key = _file_key(found[1], scope, owner)
+                writes.setdefault(key, node.lineno)
+                # A local `path` in two functions may be two files, as a checkpoint directory's own file is, so only a name the module fixes counts.
+                if _serializes(node) and not (isinstance(found[1], ast.Name) and isinstance(scope, FUNCTIONS) and _binds(scope, found[1].id)):
+                    structured.add(key)
+            elif found:
+                reads.add(_file_key(found[1], scope, owner))
+                if id(node) not in recovered:
+                    read_bare.add(_file_key(found[1], scope, owner))
     for target, line in sorted(writes.items(), key=lambda item: item[1]):
         if target in reads:
+            # A truncated JSON, pickle or YAML document never parses, so for those the next read fails for certain.
             yield ("nonatomic-state-write", line, "This file is written in place and read back by this module, so a crash mid-write leaves it truncated and the "
-                   "next read fails. Write a temporary file beside it and os.replace it over the original.", {})
+                   "next read fails. Write a temporary file beside it and os.replace it over the original.", {"confidence": "medium"} if target in structured and target in read_bare else {})
+
+
+def _binds(function: ast.AST, name: str) -> bool:
+    return any(isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == name for target in node.targets) for node in _own(function))
+
+
+def _serializes(node: ast.AST) -> bool:
+    """The write is a whole document in a format that has to be complete to parse: json.dump(..., fh), or write_text(json.dumps(...))."""
+    return any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr in _DUMPS
+               and _dotted(call.func.value).split(".")[0] in _FORMATS for call in ast.walk(node))
+
+
+def _class_of_each_method(tree: ast.Module) -> dict[int, int]:
+    owner = {}
+    for cls in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        owner.update({id(method): id(cls) for method in cls.body if isinstance(method, FUNCTIONS)})
+    return owner
+
+
+def _file_key(target: ast.AST, scope: ast.AST, owner: dict[int, int]) -> str:
+    """Which file an expression names. `STATE_FILE` is one file everywhere, a parameter is that function's own value, and `self.path` is its
+    class's: two functions' `path`, or two classes' `self.path`, are two files."""
+    names = {name.id for name in ast.walk(target) if isinstance(name, ast.Name)}
+    parameters = {argument.arg for argument in ast.walk(scope.args) if isinstance(argument, ast.arg)} - {"self", "cls"} if isinstance(scope, FUNCTIONS) else set()
+    if isinstance(target, ast.Name) and target.id in parameters:
+        default = _constant_default(scope, target.id)
+        if default is not None:  # `def save(state, path=STATE_PATH)` and `def load(path=STATE_PATH)` name one file
+            return ast.dump(default)
+    if names & parameters:
+        return f"{ast.dump(target)}@{id(scope)}"
+    if "self" in names:
+        return f"{ast.dump(target)}@class{owner.get(id(scope))}"
+    return ast.dump(target)
+
+
+_OPENS_BY_NAME = {"io.open", "codecs.open", "gzip.open", "bz2.open", "lzma.open"}
+_MODULES_WITH_OPEN = {"os", "io", "codecs", "gzip", "bz2", "lzma", "tarfile", "zipfile", "webbrowser", "shelve", "dbm", "sqlite3", "wave", "aifc", "Image", "h5py", "self", "cls"}
+_DUMPS = {"dump", "dumps", "safe_dump"}
+_FORMATS = {"json", "pickle", "yaml", "toml", "tomli_w", "tomlkit", "orjson", "ujson", "simplejson", "marshal"}
+
+
+def _constant_default(function: ast.AST, parameter: str) -> ast.AST | None:
+    """The module constant a parameter defaults to, as `path=STATE_PATH` does, or None."""
+    arguments = function.args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    pairs = list(zip(positional[len(positional) - len(arguments.defaults):], arguments.defaults)) + list(zip(arguments.kwonlyargs, arguments.kw_defaults))
+    default = next((value for argument, value in pairs if argument.arg == parameter), None)
+    return default if isinstance(default, (ast.Name, ast.Attribute)) else None
 
 
 def _module_level(tree: ast.Module) -> Iterator[ast.AST]:
@@ -229,9 +308,13 @@ def _file_access(node: ast.AST) -> tuple[bool, ast.AST] | None:
     if isinstance(node, ast.With):
         for item in node.items:
             call = item.context_expr
-            if _called(call) == "open" and call.args:
+            if (_called(call) == "open" or _called(call) in _OPENS_BY_NAME) and call.args:
                 mode = call.args[1] if len(call.args) > 1 else next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
                 return isinstance(mode, ast.Constant) and str(mode.value).startswith("w"), _named_file(call)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "open" and _dotted(call.func.value) \
+                    and _dotted(call.func.value).split(".")[0] not in _MODULES_WITH_OPEN:  # pathlib's `path.open("w")`: the file is the receiver
+                mode = call.args[0] if call.args else next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+                return isinstance(mode, ast.Constant) and str(mode.value).startswith("w"), call.func.value
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("write_text", "write_bytes", "read_text", "read_bytes"):
         return node.func.attr.startswith("write"), _named_file(node.func.value)
     return None
@@ -263,17 +346,20 @@ def _fixed_resources(tree: ast.Module) -> Iterator[tuple]:
         if port:
             yield ("fixed-test-resource", node.lineno, f"Port {port} is fixed, so parallel runs or anything already listening there collide. Bind port 0 and read "
                    "back the port given.", {})
-        if _writes_to_tmp(node, name):
-            yield ("fixed-test-resource", node.lineno, f"{_first_text(node)} is shared by every run on this machine, so parallel runs overwrite each other. Use tmp_path.", {})
+        path = _tmp_written(node, name)
+        if path:
+            yield ("fixed-test-resource", node.lineno, f"{path} is shared by every run on this machine, so parallel runs overwrite each other. Use tmp_path.", {})
 
 
-def _writes_to_tmp(call: ast.Call, name: str) -> bool:
-    """`open("/tmp/x", "w")` or `Path("/tmp/x").write_text(...)`. Reading a fixed path, or expecting it to be missing, collides with nothing."""
+def _tmp_written(call: ast.Call, name: str) -> str:
+    """The fixed /tmp path of `open("/tmp/x", "w")` or `Path("/tmp/x").write_text(...)`, or "". Reading one, or expecting it missing, collides with nothing."""
     if name == "open":
         mode = call.args[1] if len(call.args) > 1 else next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
-        return _first_text(call).startswith("/tmp/") and isinstance(mode, ast.Constant) and str(mode.value)[:1] in ("w", "a", "x")
+        written = isinstance(mode, ast.Constant) and str(mode.value)[:1] in ("w", "a", "x")
+        return _first_text(call) if written and _first_text(call).startswith("/tmp/") else ""
     receiver = call.func.value if isinstance(call.func, ast.Attribute) and call.func.attr in ("write_text", "write_bytes", "mkdir", "touch") else None
-    return isinstance(receiver, ast.Call) and _called(receiver) in ("Path", "pathlib.Path") and _first_text(receiver).startswith("/tmp/")
+    path = _first_text(receiver) if isinstance(receiver, ast.Call) and _called(receiver) in ("Path", "pathlib.Path") else ""
+    return path if path.startswith("/tmp/") else ""
 
 
 def _first_text(call: ast.Call) -> str:
@@ -358,11 +444,12 @@ def _source(node: ast.AST) -> str:
 
 
 def _index_loops(tree: ast.Module) -> Iterator[tuple]:
-    """`for i in range(len(xs))` that only ever reads `xs[i]` is `for x in xs`."""
+    """`for i in range(len(xs))` that only ever reads `xs[i]` is `for x in xs`, except `self` in __iter__, where that would recurse."""
+    in_iter = {id(node) for function in ast.walk(tree) if isinstance(function, FUNCTIONS) and function.name == "__iter__" for node in ast.walk(function)}
     for loop in (node for node in ast.walk(tree) if isinstance(node, ast.For)):
         call = loop.iter
         if not (isinstance(loop.target, ast.Name) and _called(call) == "range" and len(call.args) == 1 and _called(call.args[0]) == "len"
-                and len(call.args[0].args) == 1 and isinstance(call.args[0].args[0], ast.Name)):
+                and len(call.args[0].args) == 1 and isinstance(call.args[0].args[0], ast.Name) and not (call.args[0].args[0].id == "self" and id(loop) in in_iter)):
             continue
         index, sequence = loop.target.id, call.args[0].args[0].id
         uses = [node for statement in loop.body for node in ast.walk(statement) if isinstance(node, ast.Name) and node.id == index]

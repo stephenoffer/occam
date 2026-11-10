@@ -44,6 +44,12 @@ def _parse_time(text: str | None) -> dt.datetime | None:
         return None
 
 
+def _url(registry: str, name: str) -> str:
+    """The Go proxy spells each capital as `!` and the lower-case letter, and answers 404 to `github.com/Azure/...` as written."""
+    path = re.sub(r"[A-Z]", lambda capital: "!" + capital.group(0).lower(), name) if registry == "go" else name
+    return _REGISTRIES[registry].format(name=urllib.parse.quote(path, safe="@/!"))
+
+
 def _known_versions(registry: str, document: dict) -> set | None:
     if registry == "pypi":
         return set(document.get("releases", {}))
@@ -60,17 +66,36 @@ def check_package(registry: str, spec: str) -> dict:
     name, version = (pinned.group("name"), pinned.group("version")) if pinned else (spec, None)
     result = _check_name(registry, name)
     if version and result.get("status") == "exists":
-        code, document = _fetch(_REGISTRIES[registry].format(name=urllib.parse.quote(name, safe="@/")))
+        code, document = _fetch(_url(registry, name))
         known = _known_versions(registry, document) if code == 200 else None
-        if known is not None and version not in known:
+        if known is not None and not _has_release(registry, version, known):
             result.update(status="not found", warning=f"{name} exists, and it has no release {version}. Agents often invent version numbers.")
     return result
+
+
+def _has_release(registry: str, version: str, known: set) -> bool:
+    """As the installer reads the pin: pip pads a release with zeros, so ==2.31 is 2.31.0, while npm and Cargo read 1.2 as any 1.2.x."""
+    if version in known:
+        return True
+    if registry == "pypi":
+        return _padded(version) in {_padded(str(release)) for release in known}
+    return version.count(".") < 2 and any(str(release).startswith(version + ".") for release in known)
+
+
+def _padded(version: str) -> tuple:
+    match = re.match(r"v?(\d+(?:\.\d+)*)(.*)", version.lower())
+    if not match:
+        return ((), version)
+    numbers = [int(number) for number in match.group(1).split(".")]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return (tuple(numbers), match.group(2))
 
 
 def _check_name(registry: str, name: str) -> dict:
     if registry not in _REGISTRIES or not _NAME.match(name):
         return {"registry": registry, "name": name, "status": "invalid request"}
-    code, document = _fetch(_REGISTRIES[registry].format(name=urllib.parse.quote(name, safe="@/")))
+    code, document = _fetch(_url(registry, name))
     if code == 404:
         return {"registry": registry, "name": name, "status": "not found", "warning": "No such package. This may be a hallucinated name, and it could be registered later by someone malicious."}
     if code != 200:

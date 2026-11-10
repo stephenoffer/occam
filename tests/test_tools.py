@@ -68,7 +68,7 @@ def test_map_shows_the_worst_leads_it_already_found(repo):
     done = repo.occam("map")
     assert done.returncode == 0
     head = done.stdout.split("Tests:", 1)[0]  # above the rest, so `map | head` still shows it
-    assert "shell-injection  bad.py:4" in head and "unconfirmed" in head
+    assert "bad.py:4  shell-injection" in head and "unconfirmed" in head
     data = json.loads(repo.occam("map", "--format", "json").stdout)
     assert data["lead_count"] >= len(data["leads"]) >= 1
 
@@ -312,6 +312,14 @@ def test_gate_isnt_ready_while_a_goal_constraint_is_broken(repo):
     repo.write("app/extra.py", "x = 1\n")
     done = repo.occam("gate")
     assert done.returncode == 1 and "VIOLATED: No new files: app/extra.py" in done.stdout and "NOT CHECKED here: Keep the public API compatible" in done.stdout
+
+
+def test_a_file_moved_with_plain_mv_isnt_new(repo):
+    repo.occam("goal", "init", "x")
+    repo.occam("goal", "add", "works", "--check", f"{sys.executable} -c pass")
+    repo.occam("goal", "constrain", "--no", "new-file")
+    (repo.path / "app" / "core.py").rename(repo.path / "app" / "totals.py")
+    assert "VIOLATED" not in repo.occam("goal", "verify").stdout
 
 
 def test_goal_constrain_takes_one_kind_at_a_time(repo):

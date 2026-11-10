@@ -10,7 +10,7 @@ import test_tools
 repo = test_tools.repo  # the shared fixture
 sys.path.insert(0, str(test_tools.ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import files, verify, workflow  # noqa: E402
+from occam_tools import files, manifests, verify, workflow  # noqa: E402
 from occam_tools.zero_tests import ran_no_tests  # noqa: E402
 
 PYTHON = sys.executable
@@ -469,6 +469,48 @@ def test_a_committed_config_doesnt_block(repo):
     assert "gate-config-changed" not in repo.occam("gate").stdout
 
 
+@pytest.mark.parametrize("name", ["Pipfile", "setup.cfg", "environment.yml", "requirements-dev.in", "constraints.txt", "requirements/base.txt"])
+def test_gate_notices_a_dependency_added_in_any_manifest_it_reads(repo, name):
+    """The gate's own list of manifest names had drifted from the reader's, so these changed without a word."""
+    repo.write(name, "[options]\ninstall_requires =\n    attrs\n" if name == "setup.cfg" else "attrs\n")
+    repo.commit("manifest")
+    repo.write(name, "[options]\ninstall_requires =\n    attrs\n    leftpad\n" if name == "setup.cfg" else "attrs\nleftpad\n")
+    assert "This adds leftpad" in repo.occam("gate").stdout  # the gate's note, not the scanner's unused-dependency rule
+
+
+def test_the_manifest_names_are_the_ones_read(tmp_path):
+    named = ["pyproject.toml", "setup.py", "setup.cfg", "Pipfile", "environment.yml", "environment.yaml", "conda.yaml", "package.json", "Cargo.toml", "go.mod",
+             "requirements.txt", "dev-requirements.in", "constraints.txt", "requirements/base.txt", "sub/Pipfile",
+             "Pipfile.lock", "requirements.md", "setup.cfg.bak", "tsconfig.json", "notes/constraints.md"]
+    texts = {"pyproject.toml": '[project]\ndependencies = ["attrs"]\n', "setup.py": "setup(install_requires=['attrs'])\n", "setup.cfg": "[options]\ninstall_requires =\n    attrs\n",
+             "package.json": '{"dependencies": {"attrs": "1"}}', "Cargo.toml": '[dependencies]\nattrs = "1"\n', "go.mod": "module m\nrequire example.com/attrs v1.0.0\n"}
+    for name in named:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(texts.get(name.rsplit("/", 1)[-1], "attrs\n"))
+    read = set(manifests.read_manifests(tmp_path, named)["files"]) - {"tsconfig.json"}  # aliases, not dependencies
+    assert read == {name for name in named if manifests.DEPENDENCY_FILE.search(name)}
+
+
+def test_a_moved_files_functions_arent_new(repo):
+    """After `git mv`, the gate compared the moved file with nothing at its new path, so every function in it read as new and uncalled."""
+    repo.write("app/extra.py", "def scale(x, k):\n    return x * k\n")
+    repo.commit("extra")
+    repo.git("mv", "app/extra.py", "app/moved.py")
+    done = repo.occam("gate")
+    assert "app/moved.py" in done.stdout or "1 changed" in done.stdout, done.stdout
+    assert "New scale" not in done.stdout
+
+
+@pytest.mark.parametrize("written", ['{"disable": ["narration-comment"]}\r\n', '﻿{"disable": ["narration-comment"]}\n'])
+def test_a_committed_config_with_crlf_or_a_bom_doesnt_block_and_is_read(repo, written):
+    """Git's copy had its line endings normalized and the disk copy its byte-order mark stripped, so every gate saw the config as changed."""
+    (repo.path / ".occam.json").write_bytes(written.encode("utf-8"))
+    repo.commit("config")
+    repo.write("app/core.py", "def total(a, b):\n    return a + b + 0\n")
+    assert "gate-config-changed" not in repo.occam("gate").stdout
+    assert files.load_config(repo.path) == {"disable": ["narration-comment"]}
+
+
 @pytest.mark.parametrize("spelling", ["./src/../migrations", "././migrations", "src/../migrations/"])
 def test_more_spellings_of_a_forbidden_folder_are_enforced(repo, spelling):
     repo.occam("goal", "init", "x")
@@ -540,3 +582,27 @@ def test_saying_an_assistant_wrote_it_doesnt_mark_it_generated(repo, header):
 def test_a_real_generator_header_still_marks_it_generated(repo, header):
     repo.write("app/made.py", header + "\n\n\ndef f(a):\n    return eval(a)\n")
     assert "dynamic-eval" not in repo.occam("scan", "app/made.py").stdout
+
+
+@pytest.mark.parametrize("path, blocked", [("app/billing.py", True), ("app/auth/session.py", True), ("app/report_format.py", False)])
+def test_a_security_or_money_change_without_a_test_blocks_the_gate(repo, path, blocked):
+    """The owner chose on 2026-11-08: where a fresh reviewer is needed, a change no test came with blocks; elsewhere it warns."""
+    repo.write(path, "def total(a, b):\n    return a + b\n")
+    repo.commit("add")
+    repo.write(path, "def total(a, b):\n    return a + b + 1\n")
+    done = repo.occam("gate")
+    assert "module-untested" in done.stdout and (done.returncode == 1) == blocked, done.stdout
+    repo.write("tests/test_total.py", "from app import billing\n\n\ndef test_total():\n    assert billing.total(1, 2) == 4\n")
+    assert "module-untested" not in repo.occam("gate").stdout
+
+
+def test_the_gate_and_the_hooks_agree_on_security_and_money_paths():
+    sys.path.insert(0, str(test_tools.ROOT / "plugin" / "hooks"))
+    import classify
+    words = ["auth", "oauth", "login", "session", "sessions", "token", "password", "secret", "credential", "permission", "acl", "rbac", "tenant", "tenancy",
+             "crypto", "signature", "billing", "payment", "invoice", "checkout", "refund", "ledger", "migrations", "webhook", "author", "authors", "admin",
+             "tokenizer", "report", "Auth", "BILLING", "payments_v2", "x"]
+    shapes = ["{w}.py", "app/{w}/x.py", "src/{w}_service.ts", "lib/x-{w}.go", "pkg/{w}.rs", "{w}s/y.rb", "x{w}.py", "a/{w}"]
+    for path in (shape.format(w=word) for word in words for shape in shapes):
+        hooks_say = bool(classify.SECURITY_CRITICAL.search(path) or classify.MONEY.search(path))
+        assert bool(verify._SECURITY_OR_MONEY.search(path)) == hooks_say, path

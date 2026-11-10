@@ -67,7 +67,7 @@ _DEPRECATED_MARK = r"DeprecationWarning|@deprecated|@Deprecated|#\[deprecated|//
 _MARKS_WHAT_FOLLOWS = re.compile(r"^\s*(?:\*\s*|/\*\*\s*|//\s*)?(?:@deprecated|@Deprecated|#\[deprecated|Deprecated:)")
 _ONLY_FILTERS_WARNINGS = re.compile(r"filterwarnings|simplefilter|catch_warnings|pytest\.warns|assertWarns")
 _PY_DEF = re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")
-_DEFINES = re.compile(r"\b(?:def|function|func|fn|fun|class)\s+(?:\([^)]*\)\s*)?(\w+)|^\s*(?:public|protected|private|static|final|abstract|\s)*[\w<>\[\],.]+\s+(\w+)\s*\(")
+_DEFINES = re.compile(r"\b(?:def|function|func|fn|fun|class)\s+(?:\([^)]*\)\s*)?(\w+)|^(?:public|protected|private|static|final|abstract|\s)*[\w<>\[\],.]+\s+(\w+)\s*\(")  # no `\s*` before the repeat that already takes spaces: two went quadratic on a blank line
 _RELATIVE_IMPORT = re.compile(r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\(\s*|^[ \t]*import\s+)["'](\.\.?/[^"']+)["']""", re.M)
 _PY_PRIVATE_IMPORT = re.compile(r"^[ \t]*(?:from|import)[ \t]+([A-Za-z_]\w*)((?:\.\w+){0,8}\._[a-z]\w*)", re.M)
 _HOST_CALL = re.compile(r"""(?:requests\.\w+|httpx\.\w+|urlopen|fetch|axios\.\w+|http\.(?:Get|Post)|curl|wget)\s*\(?\s*f?["'`]?https?://([\w.-]+)""")
@@ -692,6 +692,7 @@ _MEMORY_UNSAFE = {
     "rust": re.compile(r"\bunsafe\s*(?:\{|fn\b|impl\b)|\.get_unchecked(?:_mut)?\("),
     "c": re.compile(r"(?<![\w.])(?:memcpy|memmove|alloca)\s*\(|\breinterpret_cast\s*<"),
     "cython": re.compile(r"\bboundscheck\(\s*False\s*\)|\bwraparound\(\s*False\s*\)"),
+    "go": re.compile(r"\bunsafe\.(?:Pointer|Slice|String|StringData|SliceData|Add)\(|\bC\.free\("),  # team jvmgo
     "build": re.compile(r"-fno-sanitize="),
 }
 # Linter and type checker settings. In a shared file only a linter's own section counts, and a per-file or per-module
@@ -709,7 +710,7 @@ _SWITCHED_OFF = re.compile(r"^(?:ignore_errors|ignore_missing_imports)$")
 _ENTRY = re.compile(r"[\w./*@-]+")
 _TS_LOOSENED = re.compile(r"""["'](strict|noImplicitAny|strictNullChecks)["']\s*:\s*false\b""")
 # An eslint rule name has a dash or a slash, which keeps `tabWidth: 0` out.
-_ESLINT_OFF = re.compile(r"""["']?([\w@/-]+)["']?\s*:\s*(?:["']off["']|0)\s*,?\s*$""", re.M)  # one class, so linear
+_ESLINT_OFF = re.compile(r"""(?<![\w@/-])["']?(?<![\w@/-])([\w@/-]+)["']?\s*:\s*(?:["']off["']|0)\s*,?\s*$""", re.M)  # a name starts only where one begins, so linear
 _NATIVE_BUILD_OR_SOURCE = re.compile(r"\.(?:pyx|pxd|pxi)$|(?:^|/)(?:CMakeLists\.txt|Makefile|meson\.build)$|\.cmake$")
 _LOWER_PRECISION = re.compile(r"\.half\(\)|\.to\([^)\n]*\b(?:b?float16|half)\b|(?:\b|_)dtype\s*=\s*[\w.]*\b(?:b?float16|half)\b|\bautocast\((?![^)\n]*enabled\s*=\s*False)"
                               r"|\ballow_tf32\s*=\s*True\b|\bset_float32_matmul_precision\(\s*[\"'](?:high|medium)|\bquantize_(?:dynamic|per_tensor|per_channel|fx)\(|\bprepare_qat\(")  # torch's, not Decimal.quantize
@@ -725,7 +726,7 @@ def _memory_safety_added(change: Change) -> Iterator[dict]:
         found = next((match for line in change.added(path) if not _COMMENT_LINE.match(line) for match in [pattern.search(line)]
                       if match and (family == "build" or line[:match.start()].count('"') % 2 == 0)), None) if pattern else None  # source: not inside a string
         if found:
-            yield _note("memory-safety-added", path, 1, f"This adds `{found.group(0).strip()[:40]}`, where a wrong index, length or lifetime corrupts memory and still passes tests. Run what checks it: Miri for Rust, AddressSanitizer and UBSan for C and C++, a bounds-checked build for Cython. State the invariant it relies on beside it.")
+            yield _note("memory-safety-added", path, 1, f"This adds `{found.group(0).strip()[:40]}`, where a wrong index, length or lifetime corrupts memory and still passes tests. Run what checks it: Miri for Rust, AddressSanitizer and UBSan for C and C++, a bounds-checked build for Cython, -gcflags=all=-d=checkptr and -race for Go. State the invariant it relies on beside it.")
 
 
 def _memory_family(path: str) -> str | None:
@@ -792,7 +793,7 @@ def _precision_lowered(change: Change) -> Iterator[dict]:
             yield _note("precision-lowered", path, 1, f"This lowers numeric precision (`{found.group(0)}`). Compare the results with full precision on the inputs most sensitive to rounding, against a tolerance you state, before calling it equivalent.")
 
 
-_TYPE_ESCAPE = re.compile(r"\b(?:typing\.)?cast\(|(?::|->)\s*(?:typing\.)?Any\b|\bAny\]|#\s*type:\s*ignore\[")
+_TYPE_ESCAPE = re.compile(r"\b(?:typing\.)?cast\(|(?::|->)\s*(?:typing\.)?Any\b|#\s*type:\s*ignore\[")  # not `dict[str, Any]`, a JSON value's honest type
 
 
 def _types_silenced(change: Change) -> Iterator[dict]:

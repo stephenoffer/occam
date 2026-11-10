@@ -363,20 +363,51 @@ def _concurrency(tree: ast.Module) -> Iterator[tuple]:
         source = _text(function)
         yield from _lost_update(function, source)
         yield from _writes_apart(function, source)
+        yield from _commits_apart(function, source)
+
+
+def _changes_from_itself(node: ast.AST) -> ast.Attribute | None:
+    """`x.n += q`, or `x.n = x.n + q` and `x.n = max(0, x.n - q)`: a new value worked out in Python from the one read. None otherwise."""
+    if isinstance(node, ast.AugAssign) and isinstance(node.op, (ast.Add, ast.Sub)):
+        target = node.target
+    elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.value, (ast.BinOp, ast.Call)):
+        target = node.targets[0]
+        read = _text(target)
+        arithmetic = [inner for inner in ast.walk(node.value) if isinstance(inner, ast.BinOp) and isinstance(inner.op, (ast.Add, ast.Sub))]
+        if not any(_text(side) == read for inner in arithmetic for side in (inner.left, inner.right)):
+            return None
+    else:
+        return None
+    return target if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id not in ("self", "cls") else None
+
+
+def _commits_it(save: ast.Call, name: str) -> bool:
+    """`order.save()` for the object itself, or a session's commit: `db.commit()`, `self.session.commit()`, `db.session.commit()`."""
+    receiver = _text(save.func.value)
+    if save.func.attr == "save":
+        return receiver == name
+    return receiver.rsplit(".", 1)[-1] in _COMMITS
 
 
 def _lost_update(function: ast.AST, source: str) -> Iterator[tuple]:
     """The object changed has to be the one saved, or a session committing it. `stats.count += 1; img.save()` isn't this."""
     if _TAKES_A_LOCK.search(source):
         return
-    saves = [node for node in ast.walk(function) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("save", "commit") and isinstance(node.func.value, ast.Name)]
+    saves = [node for node in ast.walk(function) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ("save", "commit")
+             and isinstance(node.func.value, (ast.Name, ast.Attribute))]
     for node in ast.walk(function):
-        if not (isinstance(node, ast.AugAssign) and isinstance(node.op, (ast.Add, ast.Sub)) and isinstance(node.target, ast.Attribute) and isinstance(node.target.value, ast.Name)):
+        target = _changes_from_itself(node)
+        if target is None:
             continue
-        name = node.target.value.id
-        if name not in ("self", "cls") and any(save.lineno > node.lineno and (save.func.value.id == name or (save.func.attr == "commit" and save.func.value.id in _COMMITS)) for save in saves):
-            yield "lost-update", node.lineno, f"{_text(node.target)} is read, changed and saved with no lock or transaction, so two at once lose one update.", {}
+        name = target.value.id
+        if any(save.lineno > node.lineno and _commits_it(save, name) for save in saves):
+            yield "lost-update", node.lineno, f"{_text(target)} is read, changed and saved with no lock or transaction, so two at once lose one update.", {}
             return
+
+
+def _saves_nothing(call: ast.Call) -> bool:
+    """A Django form's `save(commit=False)` builds the instance and writes nothing."""
+    return any(keyword.arg == "commit" and isinstance(keyword.value, ast.Constant) and keyword.value.value is False for keyword in call.keywords)
 
 
 def _writes_apart(function: ast.AST, source: str) -> Iterator[tuple]:
@@ -385,12 +416,54 @@ def _writes_apart(function: ast.AST, source: str) -> Iterator[tuple]:
     writes = 0
     for node in ast.walk(function):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if node.func.attr == "save" and not node.args:
+            if node.func.attr == "save" and not node.args and not _saves_nothing(node):
                 writes += 1
             elif node.func.attr in ("execute", "executemany") and node.args and isinstance(node.args[0], ast.Constant) and _SQL_WRITE.match(str(node.args[0].value)):
                 writes += 1
     if writes >= 2:
         yield "multi-write-no-transaction", function.lineno, f"{function.name} writes {writes} times with no transaction, so a failure between them leaves half of it done.", {}
+
+
+_OPENS_A_TRANSACTION = re.compile(r"atomic|\bbegin(?:_nested)?\(|savepoint|transaction\(", re.I)
+
+
+def _written_objects(statements: list) -> set[str]:
+    """What a run of statements changes: objects whose fields it sets, and what it saves, deletes or adds to a session."""
+    written = set()
+    for node in (inner for statement in statements for inner in ast.walk(statement)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AugAssign) else []
+        written.update(target.value.id for target in targets if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                       and target.value.id not in ("self", "cls"))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("save", "delete") and isinstance(node.func.value, ast.Name):
+                written.add(node.func.value.id)
+            elif node.func.attr in ("add", "add_all", "merge", "delete") and _text(node.func.value).rsplit(".", 1)[-1] in _COMMITS:
+                written.update(_text(argument.func if isinstance(argument, ast.Call) else argument) for argument in node.args)
+    return written
+
+
+def _is_commit(statement: ast.AST) -> bool:
+    call = statement.value if isinstance(statement, ast.Expr) else None
+    call = call.value if isinstance(call, ast.Await) else call
+    return (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "commit" and not call.args
+            and _text(call.func.value).rsplit(".", 1)[-1] in _COMMITS)
+
+
+def _commits_apart(function: ast.AST, source: str) -> Iterator[tuple]:
+    """One operation committed in two steps: a failure after the first commit keeps the first half, as a debit saved without its credit.
+    The commits have to sit in the function's own straight-line body, since a loop committing per batch means to, and the second step has to
+    change something the first didn't, since saving one row and then marking it sent is one record's progress."""
+    if _OPENS_A_TRANSACTION.search(source):
+        return
+    body = [statement for statement in function.body]
+    commits = [index for index, statement in enumerate(body) if _is_commit(statement)]
+    if len(commits) < 2:
+        return
+    first, second = commits[0], commits[1]
+    before, between = _written_objects(body[:first]), _written_objects(body[first + 1:second])
+    if before and between - before:
+        yield ("multi-write-no-transaction", body[second].lineno, f"{function.name} commits once after changing {', '.join(sorted(before))} and again after "
+               f"changing {', '.join(sorted(between - before))}, so a failure between the commits keeps only the first half. Make it one transaction.", {})
 
 
 def _train_test_leak(tree: ast.Module) -> Iterator[tuple]:

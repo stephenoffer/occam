@@ -9,7 +9,7 @@ import ast
 import re
 from typing import Iterable
 
-from . import rules_py_agent, rules_py_resources, rules_py_semantics, rules_py_defs as defs, rules_py_flow as flow
+from . import rules_py_agent, rules_py_resources, rules_py_semantics, rules_py_systems, rules_py_trust, rules_py_defs as defs, rules_py_flow as flow
 from .py_helpers import (
     COMPREHENSIONS,
     DYNAMIC_NAMESPACE, FUNCTION_NODES, Found, HTTP_MODULES, HTTP_VERBS, KNOWN_NAMES, LOOP_NODES, Binding,
@@ -360,6 +360,8 @@ class Analyzer:
                         flow.note_attribute(self, node)
                     elif isinstance(node, ast.JoinedStr):
                         flow.check_format_string(self, node)
+                    elif isinstance(node, ast.BinOp):
+                        flow.check_string_join(self, node)
                     elif isinstance(node, ast.Compare):
                         flow.check_compare(self, node, loops, function)
 
@@ -503,4 +505,14 @@ def analyze(text: str, path: str, code_view: str, comment_lines: set, is_test: b
         facts = analyzer.run()
     except RecursionError as error:
         return analyzer.findings, {}, f"RecursionError: {error}"
-    return [*analyzer.findings, *rules_py_agent.findings(tree, path, is_test, is_script, comment_lines, text), *rules_py_semantics.findings(tree, path, is_test, text), *rules_py_resources.findings(tree, path, is_test, text)], facts, None
+    found = list(analyzer.findings)
+    for module_findings in (lambda: rules_py_agent.findings(tree, path, is_test, is_script, comment_lines, text),
+                            lambda: rules_py_semantics.findings(tree, path, is_test, text),
+                            lambda: rules_py_resources.findings(tree, path, is_test, text),
+                            lambda: rules_py_trust.findings(tree, path, is_test, text),
+                            lambda: rules_py_systems.findings(tree, path, is_test, is_script, text)):
+        try:
+            found += module_findings()
+        except Exception:  # occam: ignore[swallowed-exception] a module that breaks on odd code loses only its own findings, as scan.py treats a file
+            continue
+    return found, facts, None

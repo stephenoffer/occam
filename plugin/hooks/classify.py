@@ -27,8 +27,11 @@ LANGUAGE_SKILLS = {
 LANGUAGE_NAMES = {"occam-python": "Python", "occam-typescript": "TypeScript and JavaScript", "occam-rust": "Rust",
                   "occam-go": "Go", "occam-jvm": "Java and Kotlin", "occam-cpp": "C and C++", "occam-sql": "SQL",
                   "occam-shell": "shell"}
+# "review-only" naming a kind of account or setting describes the code, not the request.
+_THINGS = r"(?:role|user|mode|access|token|permission|flag|field)s?\b"
+_NAMES_A_THING = r"(?!\s+" + _THINGS + ")"
 READ_ONLY = re.compile(
-    r"(?<![\w-])(review|plan|planning|audit)[- ]only\b"
+    r"(?<![\w-])(review|plan|planning|audit)[- ]only\b" + _NAMES_A_THING +
     r"|\bread[- ]only\s+(review|pass|audit|please|for now)\b"
     r"|\b(do not|don'?t|dont|without)\s+(change|changing|modify|modifying|edit|editing|touch|touching|fix|fixing|make|making|write|writing|apply|applying)\s+"
     r"(anything|any\s+(code|files?|changes|edits|fixes)|the code|changes|edits)\b"
@@ -43,13 +46,13 @@ READ_ONLY_LIFTED = re.compile(
     re.I,
 )
 AUDIT_REQUEST = re.compile(r"\b(audit|deslop|vibe[- ]coded|ai[- ]generated (?:code|codebase|app)|clean ?up (?:this|the) (?:code|codebase|repo)|pay down)\b", re.I)
-AUDIT_ONLY = re.compile(r"^\W*(?:(?:please|hey|ok|okay|can you|could you|would you|just|go ahead and|let'?s)\W+)*(?:audit|assess)\b(?!\s+(?:trail|log\w*|entries)\b)"
+AUDIT_ONLY = re.compile(r"^\W*(?:(?:please|hey|ok|okay|can you|could you|would you|just|go ahead and|let'?s)\W+)*(?:audit|assess)\b(?!\s+(?:trail|log\w*|entries)\b|[- ]only\s+" + _THINGS + ")"
                         r"|\b(?:run|do|perform|conduct|want|need)\s+(?:an?\s+)?(?:\w+\s+){0,2}audit\b(?!\s+(?:trail|log\w*)\b)|^\W*what'?s wrong with\b", re.I)
 AUDIT_WITH_REPAIR = re.compile(r"\b(?:fix(?:es|ing)?|repair\w*|clean(?:ing)? ?up|harden\w*|refactor\w*|deslop\w*|remediat\w*|resolve|rewrite|improve|update|implement|add|patch|change|make|build|create|write)\b", re.I)
 # A request that opens by asking for work keeps its restrictions as restrictions. "Fix the bug. Don't change any APIs" isn't read-only.
 BUILD_REQUEST = re.compile(r"(?:^|[.!?\n]\s*)(?:(?:please|can you|could you|would you|let'?s)\s+)*(?:fix|refactor|add|implement|write|build|create|update|change|remove|delete|rename|migrate|speed up|optimi[sz]e|make|improve|port|convert|clean up|harden)\b"
                            r"(?!\s+(?:nothing\b|no\b|up\b|an?\s+(?:plan|review|report|summary|analysis|audit|assessment)\b(?!-)))", re.I)
-EXPLICIT_READ_ONLY = re.compile(r"(?<![\w-])(?<!\ba\s)(?<!\ban\s)(?:review|plan|planning|audit)[- ]only\b(?!\s+(?:role|user|mode|access|token|permission|flag|field)\b)"
+EXPLICIT_READ_ONLY = re.compile(r"(?<![\w-])(?<!\ba\s)(?<!\ban\s)(?:review|plan|planning|audit)[- ]only\b" + _NAMES_A_THING +
                                 r"|\b(?:fix|change|touch|edit|modify|update)\s+nothing\b", re.I)
 NOT_FROM_THE_USER = re.compile(r"\s*(<task-notification\b|<agent-message\b|<cross-session-message\b|Another Claude session sent a message)", re.I)
 REVIEW_OR_PLAN = re.compile(r"\b(review|audit|pull request|merge|plan how|how would you (add|build|change)|architecture)\b", re.I)
@@ -71,14 +74,33 @@ ASKS_FOR_REVIEW = re.compile(r"\b(?:fresh|independent|second|separate|outside)[-
 # PaymentService), so a word ends at anything but a lowercase letter. Left out on purpose: "tokens" and "sessions", as often an LLM's or a
 # terminal's as a login's; "checkout" after git; "migrate" for code or tools, as against a database migration; "subscriptions", as often
 # a websocket's as a customer's.
-_REQUEST_WORDS = (r"authenticat[a-z]*|authori[sz][a-z]*|o?auth(?:[nz]|2)?|jwt|sso|saml|mfa|2fa|log[ -]?ins?|sign[ -]?(?:ins?|ups?)|passwords?|secrets?"
+_REQUEST_WORDS = (r"secur[a-z]*|vulnerab[a-z]*|xss|csrf|cve|(?<!dependency )(?<!dependency-)(?<!constructor )(?<!setter )injection|admins?|admin-only|administrators?"
+                  r"|privileg[a-z]*|(?:session|auth|login|secure|httponly|samesite) cookies?|cookie flags?|httponly|samesite|bcrypt|argon2|authenticat[a-z]*|authori[sz][a-z]*|o?auth(?:[nz]|2)?|jwt|sso|saml|mfa|2fa|log[ -]?ins?|sign[ -]?(?:ins?|ups?)|passwords?|secrets?"
                   r"|credentials?|api[ _-]?keys?|permissions?|access control|rbac|acl|tenan[a-z]*|crypto[a-z]*|encrypt[a-z]*|decrypt[a-z]*"
                   r"|billing|payments?|invoic[a-z]*|(?<!git )checkout|refunds?|ledgers?|money|currenc[a-z]*|prices?|pricing|tax|taxes|vat|wallets?"
-                  r"|migrations?|alembic|(?:schema|database|db|data|table)s? migrat[a-z]*|migrat[a-z]* (?:the |a |our )?(?:schema|database|db|data|tables?)")
+                  r"|migrations?|alembic|(?:add|drop|rename|remove)[a-z]* (?:a |an |the )?(?:new )?columns? (?:to|from|on|in) (?:the )?[a-z_]+ tables?|alter table|(?:schema|database|db|data|table)s? migrat[a-z]*|migrat[a-z]* (?:the |a |our )?(?:[a-z_]+ )?(?:schema|database|db|data|tables?)")
 CONSEQUENTIAL_REQUEST = re.compile(rf"(?<![A-Za-z])(?i:{_REQUEST_WORDS})(?![a-z])")
-# Paths an edit tool is held on that a shell command can write without a hold: the auth, money and migration words of scale_notes.NOT_SMALL_PATH.
-CONSEQUENTIAL_SHELL_PATH = re.compile(r"auth|login|logout|passw|secret|token|credential|permission|rbac|(^|[/_.\-])(acl|iam|sso)([/_.\-]|$)|tenan|crypto|encrypt"
-                                      r"|secur|jwt|saml|signature|billing|payment|invoice|checkout|refund|pricing|wallet|subscription|ledger|migrat|alembic|schema", re.I)
+# Paths whose edits wait for the core skill, by the owner's decision of 2026-11-09: auth, secrets, tenancy, money, pricing and migrations.
+# A shell command writing one gets a note instead, since shell commands are held only for destructive actions.
+# CONSEQUENTIAL_TEXT is the same work as the code says it: removing `@login_required` or editing `total_price` in app.py is still auth or money.
+# It's the auth and money words of scale_notes.NOT_SMALL_TEXT, without its SQL, deletion, process, async and file-write words, which the owner
+# chose to let go ahead, and without "session", which in code is as often a database's.
+CONSEQUENTIAL_TEXT = re.compile(r"(?i:passw|secret|api_?key|credential|token(?!i[sz])|auth(?!or(?![ia]))|log(?:ged)?[ _]?ins?(?-i:(?![a-z]))|logout|cookie|csrf|permission|admin|is_staff|forbidden"
+                                r"|crypt|price|pricing|amount|balance(?!r)|payment|invoice|refund|currency|tenant|billing|ledger|migrat)")
+CONSEQUENTIAL_PATH = re.compile(r"auth(?!or(?![ia]))|login|logout|passw|secret|token(?!i[sz])|credential|permission|admin|rbac|(^|[/_.\-])(acl|iam|sso)([/_.\-]|$)|(?<!main)tenan|crypto"
+                                r"|encrypt|secur|jwt|saml|signature|billing|payment|invoice|checkout|refund|pricing|wallet|subscription|ledger|migrat|alembic|schema", re.I)
+
+
+def names_consequential_work(paths: list[str], written: str, entries: list[dict]) -> bool:
+    """Auth, secrets, tenancy, money, pricing or migrations, by a path, a request this session named it in, or what an edit writes or removes
+    (`written`, old and new together, since taking something out matters as much). Only this work waits for the core skill, by the owner's
+    decision of 2026-11-09; async, SQL, deletion, performance and the rest go ahead on the rule card, since each hold costs a denied call."""
+    if len(written) > scale_notes.CONSEQUENCE_CHARS:  # bounds the pattern's work, and an edit this large isn't ordinary anyway
+        return True
+    named = any(entry.get("kind") == "prompt" and entry.get("named") for entry in entries)  # judged on the whole prompt when it arrived
+    return any(CONSEQUENTIAL_PATH.search(path) for path in paths) or named or bool(CONSEQUENTIAL_TEXT.search(written))
+
+
 SECURITY_PROMPT = re.compile(r"\b(authenticat\w*|authoriz\w*|tenant\w*|permissions?|credentials?|secrets?|vulnerab\w*|injection)\b", re.I)
 PERFORMANCE_PROMPT = re.compile(
     r"\b(p[59]\d|latency|throughput|slow(er|ness)?|performance|faster|speed up|scal(e|es|ing|able|ability)"

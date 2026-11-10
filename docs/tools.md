@@ -23,7 +23,7 @@ occam gate    # critique your own change before calling it done
 
 | Problem | Tool | What it does |
 |---|---|---|
-| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 281 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
+| Stubs, fake success, invented APIs and packages, duplication, needless abstraction, dead code, bloat, security, masked errors, weak tests, N+1, unbounded work, process-local state, comment noise, naming, reinvented helpers, deprecated APIs, notebooks | `scan`, `rules` | 314 rules. Parsed for Python, text and brace level for others. `--stdin` for a cell, `--diff`, `--new-only`, SARIF output. `rules` lists what it can report |
 | Finding your way | `query` | Plain answers about the code, with bounded output: size, commands, entry points, outlines, callers, import graph, what a change reaches, which tests, churn, owners, public API, boundaries. See [Asking questions](#asking-questions) |
 | Not using what exists | `query find`, `deps` | Where a name is already defined and called. Is this package real, and that version? `--online` checks registries, and `--online --name pypi:x==1.2` checks the version exists before you add it |
 | Established analyzers | `tools` | Finds and runs ruff, mypy, semgrep, skylos, eslint, clippy and others, and they outrank occam's own rules |
@@ -112,13 +112,13 @@ Two agents have used these queries, one on that repository and one on a clone of
 
 ## Reading findings
 
-A finding such as `[CRIT/hig/B] sql-injection  payments.py:19` gives its severity, its confidence and its tier.
+A finding such as `CRITICAL  payments.py:19  sql-injection (high confidence, tier B: fix with a check)` gives its severity, where it is, the rule, how sure the scanner is, and the kind of fix it needs.
 
-| Tier | Means | What an agent may do |
+| Tier | Shown as | What an agent may do |
 |---|---|---|
-| **A** | Mechanical | Fix it |
-| **B** | Needs a check | Fix it, with a check that shows the fix works |
-| **C** | Needs a person | Ask first |
+| **A** | a mechanical fix | Fix it |
+| **B** | fix with a check | Fix it, with a check that shows the fix works |
+| **C** | ask first | Ask a person first |
 
 Findings are **leads, not defects**. Confirm each one before calling it a defect. Expect many on any large repository: Python's standard library, used as a control, gets about 3,600 at all confidences, mostly complexity and duplication, which are true of that code and don't make it defective.
 
@@ -128,22 +128,21 @@ These ran on a 20-line sample, [shown in the examples](examples.md#code-that-loo
 
 ```console
 $ occam scan payments.py
-occam scan 2.0.0: 1 of 1 files, 20 lines, 0.06s. python 1.
-7 findings (1 more below the confidence cut). These are leads: confirm each before calling it a defect.
+occam scan 2.1.0: 1 of 1 files, 20 lines, 0.05s. python 1.
+8 findings (1 more below the confidence cut). These are leads: confirm each before calling it a defect.
 [...]
-  [CRIT/hig/B] sql-injection  payments.py:19
+  CRITICAL  payments.py:19  sql-injection (high confidence, tier B: fix with a check)
       db.execute() receives SQL built from runtime values.
-  [HIGH/hig/C] stub-body  payments.py:13
+  HIGH      payments.py:13  stub-body (high confidence, tier C: ask first)
       refund has no body.
-  [MEDI/hig/B] missing-timeout  payments.py:7
-      requests.post() waits forever by default.
+  HIGH      payments.py:10  failure-reported-as-success (medium confidence, tier B: fix with a check)
+      This handler catches a failure and returns success, so the caller can't tell.
 [...]
-Tier: A mechanical, B fix with a check, C ask first.
 ```
 
 ```console
 $ occam gate payments.py
-occam gate: 1 changed files, 0 deleted, 2 blockers, 7 warnings.
+occam gate: 1 changed files, 0 deleted, 3 blockers, 7 warnings.
 
 FAIL  Implementation is complete
   ! payments.py:13  stub-body: refund has no body.
@@ -204,7 +203,7 @@ It keeps up with big repositories. Most queries answered within 38 seconds on Dj
 The limits matter as much:
 
 - The scanner alone misses most of what matters. On a blind test, cold, it located about half of the defects a pattern could catch (20 of 41) and under a fifth of those that need semantics (8 of 42), such as a tenant leak. That's why the skill makes reading a required step and treats the scanner as a starting point. With the plugin, agents located as many defects overall as agents without it, not more.
-- Python is parsed, and other languages aren't. They get text and brace-level rules, so treat those as weaker.
+- Python is parsed, and other languages aren't. They get text and brace-level rules, so treat those as weaker. On cases written blind to these rules, scan, gate and the hooks together caught 88 of 188 P0 failures, about half: see the measured recall in [quality-catalog.md](quality-catalog.md#measured-recall-p0). The Java and PHP rules have been checked against hand-written near misses only, since no Java or PHP code was available to scan.
 - The shell rules were read against real scripts, not scored. They were tuned on 296 scripts on one Mac, reading a sample of each rule's hits, and no blind score exists. shellcheck outranks them.
 - It has been through adversarial review. A fresh reviewer, on the same model, found three ways the tools could run or break a user's code, after 400 tests written by their author had passed. Those are fixed, with regression tests.
 

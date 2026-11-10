@@ -59,10 +59,26 @@ def _answers(git: str) -> bool:
         return False
 
 
+def _behind_the_shim() -> str | None:
+    """The git the shim would run, from where xcode-select records the developer folder. The shim looks that up on every call:
+    84 ms a call on this Mac, against 22 for the same git run directly, and `gate` makes about 80 calls."""
+    folder = os.environ.get("DEVELOPER_DIR") or (os.path.realpath(_SELECTED_DEVELOPER_FOLDER) if os.path.islink(_SELECTED_DEVELOPER_FOLDER) else "")
+    git = os.path.join(folder, "usr", "bin", "git") if folder else ""
+    return git if git and os.access(git, os.X_OK) else None
+
+
+_SELECTED_DEVELOPER_FOLDER = "/var/db/xcode_select_link"
+
+
 @functools.lru_cache(maxsize=8)
 def _usable(found: str) -> str:
-    """Asked once per binary: a shim that answers is used, and one that doesn't gives way to the first of the usual others that does."""
-    if found not in _SHIMS or _answers(found):
+    """Asked once per binary: a shim gives way to the git it would run, then is used if it answers, and otherwise to the first of the usual others that does."""
+    if found not in _SHIMS:
+        return found
+    behind = _behind_the_shim()
+    if behind and _answers(behind):
+        return behind
+    if _answers(found):
         return found
     return next((other for other in _OTHER_GITS if os.access(other, os.X_OK) and _answers(other)), found)
 
@@ -311,8 +327,16 @@ def load_config(root: Path) -> dict:
     if not path.is_file() or path.is_symlink():
         return {}
     try:
-        config = json.loads(path.read_text())
+        return parse_config(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
+        return {}
+
+
+def parse_config(text: str | None) -> dict:
+    """What a .occam.json text decides, so a copy from git and one from disk compare by effect, not by line endings or a byte-order mark."""
+    try:
+        config = json.loads((text or "").lstrip("\ufeff"))
+    except ValueError:
         return {}
     if not isinstance(config, dict):
         return {}

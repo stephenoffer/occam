@@ -8,11 +8,11 @@ data, so nothing here should grow faster than the command does.
 
 from __future__ import annotations  # the stock macOS python3 is 3.9
 
-import ast
 import os
 import re
 import shlex
 from collections import defaultdict, deque
+from collections.abc import Iterator
 from typing import Callable, NamedTuple
 
 from occam_commands import PYTHON, PYTHON_VALUE_FLAGS, head, run_by, unquote
@@ -21,8 +21,10 @@ MAX_ASSIGNMENTS = 50
 MAX_DEPTH = 5
 MAX_NESTED_QUOTES = 50
 MAX_MISSING_DELIMITERS = 200
+# A `$(` the reader can't close is usually invalid shell, but not always: an apostrophe in a comment inside one looks like a quote
+# that never closes. So one isn't enough to stop matching, and a few bound the rescans.
+UNCLOSED_TRIES = 8
 MAX_GIT_CHARS = 4_000
-MAX_PYTHON_CHARS = 100_000  # Python 3.9's parser segfaults on deep expressions from about 210,000 characters, and no `except` catches that.
 OPERATORS = frozenset(";<>|&")
 SPACES = frozenset(" \t\r\n\f")
 BEFORE_A_COMMENT = frozenset(" \t;&|()\n")
@@ -36,17 +38,6 @@ DASH_C = re.compile(r"-[A-Za-z]*c")
 DASH_M = re.compile(r"-[A-Za-z]*m")
 ASSIGNMENT = re.compile(r"""(?:^|[\s;&|(])([A-Za-z_]\w*)=(?:"([^"'`()]*)"|'([^"']*)'|([^\s;&|()`"']+))(?=$|[\s;&|)])""")
 MAY_NOT_STAY_PUT = re.compile(r"[\s;&|<>()]")
-LOOKS_LIKE_A_WRITE = re.compile(r"\bopen\(|\.write_(?:text|bytes)\(|\b(?:remove|unlink|rmtree|rename|move)\(")
-MODE = re.compile(r"[rwaxbtU+]+")
-WRITE_MODE = frozenset("wax+")
-PATH_ONLY_METHODS = {"write_text", "write_bytes", "unlink", "rmdir", "touch"}
-# Which arguments name something this changes.
-FILE_FUNCTIONS = {"os.remove": (0,), "os.unlink": (0,), "os.rename": (0, 1), "os.replace": (0, 1), "os.rmdir": (0,), "os.removedirs": (0,), "os.truncate": (0,),
-                  "shutil.rmtree": (0,), "shutil.move": (0, 1), "shutil.copy": (1,), "shutil.copy2": (1,), "shutil.copyfile": (1,), "shutil.copytree": (1,)}
-MODULE_OPENERS = {"gzip", "bz2", "lzma", "io", "codecs", "tarfile", "builtins"}
-RUNS_A_COMMAND = {"os.system", "subprocess.run", "subprocess.call", "subprocess.check_call", "subprocess.check_output", "subprocess.Popen"}
-COMMANDS_THAT_CHANGE_FILES = {"rm", "mv", "cp", "sed", "tee", "truncate", "unlink", "touch", "rmdir", "dd", "ln", "install", "perl"}
-TEMP_MAKERS = {"mkdtemp", "mkstemp", "gettempdir", "TemporaryDirectory", "NamedTemporaryFile", "TemporaryFile"}
 
 
 # ---------------------------------------------------------------- quotes and substitutions, the one place that reads them
@@ -101,6 +92,7 @@ def substitution_end(text: str, start: int, depth: int = 0) -> int:
 def substitutions(word: str) -> list[str]:
     """What this word runs when the shell expands it: `$(...)` and backticks, not inside single quotes and not escaped."""
     found: list[str] = []
+    last_close = word.rfind("))")  # a search for `))` from past it finds nothing, so it isn't repeated at every `$((`
     index = 0
     while index < len(word):
         char = word[index]
@@ -116,7 +108,7 @@ def substitutions(word: str) -> list[str]:
             found.append(word[index + 1:end])
             index = end + 1
         elif word.startswith("$((", index):  # arithmetic
-            end = word.find("))", index)
+            end = word.find("))", index) if last_close >= index else -1
             index = end + 2 if end >= 0 else index + 3
         elif word.startswith("$(", index):
             end = substitution_end(word, index + 2)
@@ -143,6 +135,7 @@ def split_heredocs(text: str) -> tuple[str, dict[str, deque]]:
     kept: list[str] = []
     bodies: dict[str, deque] = defaultdict(deque)
     missing: set[str] = set()  # searching again for one that wasn't there would be quadratic
+    last_close = text.rfind("))")  # and so would searching for `))` from past the last one, at every `$((`
     pending: list[tuple[str, bool, bool]] = []
     previous = "\n"
     reading_quotes = True
@@ -181,7 +174,7 @@ def split_heredocs(text: str) -> tuple[str, dict[str, deque]]:
         elif char == "#" and previous in BEFORE_A_COMMENT:
             newline = text.find("\n", index)
             index = newline if newline >= 0 else len(text)
-        elif text.startswith("$((", index) and text.find("))", index) >= 0:  # `1<<4` isn't a heredoc
+        elif text.startswith("$((", index) and last_close >= index:  # `1<<4` isn't a heredoc
             index = text.find("))", index) + 2
             previous = "x"
         elif text.startswith("<<<", index):  # a here-string, whose word isn't a delimiter
@@ -235,12 +228,15 @@ def logical_lines(text: str) -> list[str]:
 
     Splitting at each newline hid `pytest` in `pytest -q && git commit -m "a<newline>b"`. Comments go, because an apostrophe in one isn't
     a quote, and `# clean; rm -rf /` isn't a command. A quote that never closes isn't valid shell, so from that command on this falls back
-    to every newline. PowerShell's backslash isn't an escape, so a line ending in one there reads as joined, a known gap.
+    to every newline. Each `$(` that doesn't close rescans to the end, so after UNCLOSED_TRIES of them no later `$(` is matched, which
+    keeps this linear. PowerShell's backslash isn't an escape, so a line ending in one there reads as joined, a known gap.
     """
     lines: list[str] = []
     current: list[str] = []
     previous = "\n"
     start = index = 0
+    unclosed = 0
+    last_brace = text.rfind("}")  # a search for `}` from past it finds nothing, so it isn't repeated at every `${`
     while index < len(text):
         char = text[index]
         if char == "\\":
@@ -256,7 +252,11 @@ def logical_lines(text: str) -> list[str]:
             previous = "x"
             index = end + 1
         elif char == "$" and text[index + 1:index + 2] in ("(", "{"):
-            end = substitution_end(text, index + 2) if text[index + 1] == "(" else text.find("}", index)
+            if text[index + 1] == "(":
+                end = substitution_end(text, index + 2) if unclosed < UNCLOSED_TRIES else -1
+                unclosed += end < 0
+            else:
+                end = text.find("}", index) if last_brace >= index else -1
             if end < 0:
                 current.append(char)
                 previous = char
@@ -284,11 +284,14 @@ def logical_lines(text: str) -> list[str]:
 def shell_tokens(line: str) -> list[str]:
     """Words, operators and parentheses. A word keeps its quotes and substitutions whole, even mid-word as in `--message="a; b"`.
 
-    A stray quote is an ordinary character. A parenthesis is always its own token, so `(>a` and `)>a` read as what they are.
+    A stray quote is an ordinary character, and so is each `$(` after UNCLOSED_TRIES that don't close, as in `logical_lines`.
+    A parenthesis is always its own token, so `(>a` and `)>a` read as what they are.
     """
     tokens: list[str] = []
     word: list[str] = []
     reading_quotes = True
+    unclosed = 0
+    last_close, last_brace = line.rfind("))"), line.rfind("}")  # as in `substitutions` and `logical_lines`
     index = 0
 
     def finish_word() -> None:
@@ -303,7 +306,7 @@ def shell_tokens(line: str) -> list[str]:
             index += 1
         elif char in "()":
             finish_word()
-            arithmetic = line.find("))", index) if line.startswith("((", index) else -1
+            arithmetic = line.find("))", index) if last_close >= index and line.startswith("((", index) else -1
             if arithmetic >= 0:  # `((a>b))` compares, and doesn't redirect
                 tokens.append(line[index:arithmetic + 2])
                 index = arithmetic + 2
@@ -330,7 +333,11 @@ def shell_tokens(line: str) -> list[str]:
                 word.append(line[index:end + 1])
                 index = end + 1
         elif char == "$" and line[index + 1:index + 2] in ("(", "{"):
-            end = substitution_end(line, index + 2) if line[index + 1] == "(" else line.find("}", index)
+            if line[index + 1] == "(":
+                end = substitution_end(line, index + 2) if unclosed < UNCLOSED_TRIES else -1
+                unclosed += end < 0
+            else:
+                end = line.find("}", index) if last_brace >= index else -1
             word.append(line[index:end + 1] if end >= 0 else char)
             index = end + 1 if end >= 0 else index + 1
         else:
@@ -514,6 +521,7 @@ class _Reader:
 
     def _move(self, place: str) -> None:
         elsewhere, folder = self.places[-1]
+        place = home_expanded(place)
         if not place:
             return
         if place == "-":  # can lead straight back, so nothing after it can be ruled out
@@ -550,14 +558,119 @@ class _Reader:
             self.steps += _Reader(self.leaves, elsewhere, folder, self.depth + 1).read(inner.replace('\\"', '"'))
 
 
-def read_steps(command: str, leaves: Callable[[str], bool] = lambda _: False) -> list[Step]:
-    return _Reader(leaves, False, "", 0).read(command)
+def home_expanded(word: str) -> str:
+    """`$HOME` as the folder it names. A project usually lives inside it, so a path under it is judged by where it is, not taken as scratch."""
+    return re.sub(r"^\$(?:HOME(?!\w)|\{HOME\})", lambda _: os.path.expanduser("~"), word)
+
+
+def _stays(_: str) -> bool:
+    return False
+
+
+_READ: dict[str, list[Step]] = {}  # one hook reads the same command several ways, and a read can take a second on a huge one
+MAX_REMEMBERED = 4
+
+
+def read_steps(command: str, leaves: Callable[[str], bool] = _stays) -> list[Step]:
+    """The steps, remembered for the few commands one hook call reads, when no `cd` needs judging. Callers only read the list."""
+    if leaves is not _stays:
+        return _Reader(leaves, False, "", 0).read(command)
+    if command not in _READ:
+        if len(_READ) >= MAX_REMEMBERED:
+            _READ.clear()
+        _READ[command] = _Reader(leaves, False, "", 0).read(command)
+    return _READ[command]
 
 
 def parse_shell(command: str) -> tuple[list[list[str]], list[str]]:
     """Split a command line into its simple commands and its redirect targets. Best-effort."""
     steps = read_steps(command)
     return [step.words for step in steps if step.words], [target for step in steps for target in step.targets]
+
+
+class Stage(NamedTuple):
+    """One command in a pipeline, with its words as written, so a word holding `$(...)` keeps it."""
+    words: list[str]
+    fed: str | None  # the word a here-string `<<<` feeds it
+    saved: bool  # its output goes to a file, not on to the next stage or the terminal
+
+
+PIPE_SEPARATORS = {"|", "|&"}
+
+
+def pipelines(command: str) -> list[list[Stage]]:
+    """The pipelines at the top level, stage by stage, so what reaches the terminal can be told from what is piped on, saved or captured.
+
+    A subshell's parentheses end a pipeline here, and what a substitution runs is left in its word for the caller to read.
+    """
+    found: list[list[Stage]] = []
+    text, _ = split_heredocs(command)
+    for line in logical_lines(expand_variables(text)):
+        found += _line_pipelines(shell_tokens(line))
+    return found
+
+
+def _line_pipelines(tokens: list[str]) -> list[list[Stage]]:
+    found: list[list[Stage]] = []
+    stages: list[Stage] = []
+    for segment, separator in _segments(tokens):
+        stage = _stage(segment)
+        if stage is not None:
+            stages.append(stage)
+        if separator not in PIPE_SEPARATORS and stages:  # the end of the line ends a pipeline too
+            found.append(stages)
+            stages = []
+    return found
+
+
+def _segments(tokens: list[str]) -> Iterator[tuple[list[str], str]]:
+    """The tokens of each stage, and the operator that ends it, or "" at the end. A redirect keeps the word after it, whatever that is."""
+    segment: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if is_operator(token) and _ends_a_stage(token):
+            yield segment, token
+            segment, index = [], index + 1
+        elif is_operator(token):
+            segment += tokens[index:index + 2]
+            index += 2
+        else:
+            segment.append(token)
+            index += 1
+    yield segment, ""
+
+
+def _ends_a_stage(operator: str) -> bool:
+    return operator != "<<<" and not (">" in operator and operator not in ("(", ")")) and "<" not in operator
+
+
+def _stage(segment: list[str]) -> Stage | None:
+    """A stage from its tokens: its words, what a here-string feeds it, and whether its output is saved. None when it has neither."""
+    words: list[str] = []
+    fed: str | None = None
+    saved = False
+    index = 0
+    while index < len(segment):
+        token = segment[index]
+        following = segment[index + 1] if index + 1 < len(segment) else ""
+        if not is_operator(token):
+            words.append(token)
+            index += 1
+            continue
+        if token == "<<<":
+            fed = following
+        elif ">" in token and _saves_output(token, following, words):
+            saved = True
+        index += 2
+    return Stage(words, fed, saved) if words or fed is not None else None
+
+
+def _saves_output(operator: str, following: str, words: list[str]) -> bool:
+    """Does this redirect send the output to a file? `2>` sends only errors, and `>&2` sends output to them. Takes the descriptor before it,
+    as `2` in `2>`, off `words`."""
+    descriptor = words.pop() if words and words[-1].isdigit() else "1"
+    return operator.startswith("&") or (descriptor == "1" and not (operator.endswith("&") and following.isdigit()))
 
 
 def git_commands(command: str) -> list[str]:
@@ -570,195 +683,3 @@ def git_commands(command: str) -> list[str]:
                 found.append("git " + " ".join(arguments)[:MAX_GIT_CHARS])
                 break
     return found
-
-
-# ---------------------------------------------------------------- what inline Python writes
-
-def _dotted(node: ast.AST) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        inner = _dotted(node.value)
-        return f"{inner}.{node.attr}" if inner else ""
-    return ""
-
-
-class _PythonPaths:
-    """Resolves an expression to the paths it can only be, from constants, single assignments and a helper's literal arguments."""
-
-    def __init__(self, tree: ast.AST) -> None:
-        self.assigned: dict[str, list] = defaultdict(list)
-        self.parameters: dict[str, list[tuple[str, int]]] = defaultdict(list)
-        self.calls: dict[str, list[ast.Call]] = defaultdict(list)
-        self.aliases: dict[str, str] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    self._bind(target, node.value)
-            elif isinstance(node, (ast.AugAssign, ast.For, ast.comprehension, ast.NamedExpr)):
-                self._bind(node.target, None)
-            elif isinstance(node, ast.withitem) and node.optional_vars:
-                self._bind(node.optional_vars, node.context_expr)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for position, argument in enumerate(node.args.args):
-                    self.parameters[argument.arg].append((node.name, position))
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                self.calls[node.func.id].append(node)
-            elif isinstance(node, ast.Import):
-                self.aliases.update({alias.asname: alias.name for alias in node.names if alias.asname})
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                self.aliases.update({alias.asname or alias.name: f"{node.module}.{alias.name}" for alias in node.names})
-
-    def _bind(self, target: ast.AST, value: ast.AST | None) -> None:
-        if isinstance(target, ast.Name):
-            self.assigned[target.id].append(value)
-        elif isinstance(target, (ast.Tuple, ast.List)):
-            for item in target.elts:
-                self._bind(item, None)
-
-    def name_of(self, node: ast.AST) -> str:
-        """The dotted name, past `import os as o` and `from os import remove`."""
-        name = _dotted(node)
-        first, _, rest = name.partition(".")
-        real = self.aliases.get(first, first)
-        return f"{real}.{rest}" if rest else real
-
-    def resolve(self, node: ast.AST | None, depth: int = 0) -> list[str] | None:
-        if node is None or depth > 8:
-            return None
-        if isinstance(node, ast.Constant):
-            return [node.value] if isinstance(node.value, str) else None
-        if isinstance(node, ast.Name):
-            return self._resolve_name(node.id, depth)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            return self._joined([node.left, node.right], depth)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left = self.resolve(node.left, depth + 1)
-            right = self.resolve(node.right, depth + 1)
-            return [one + two for one in left for two in right] if left and right else left if left and os.path.isabs(left[0]) else None
-        if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant) and os.path.isabs(str(node.values[0].value)):
-            return [str(node.values[0].value)]  # only where it starts, which settles whether it's the project's
-        if isinstance(node, ast.Call):
-            name = self.name_of(node.func)
-            last = name.rsplit(".", 1)[-1]
-            if last in TEMP_MAKERS:
-                return ["$TMPDIR/x"]
-            if last in ("Path", "PurePath") and node.args:
-                return self._joined(node.args, depth)
-            if last in ("str", "fspath", "abspath", "realpath") and node.args:
-                return self.resolve(node.args[0], depth + 1)
-            if name in ("os.path.join", "path.join", "join") and node.args:
-                return self._joined(node.args, depth)
-        return None
-
-    def _resolve_name(self, name: str, depth: int) -> list[str] | None:
-        if name in self.parameters:
-            if name in self.assigned or len(self.parameters[name]) > 1:
-                return None  # the same name in several scopes, which this doesn't track
-            function, position = self.parameters[name][0]
-            found: list[str] = []
-            for call in self.calls.get(function, []):
-                paths = self.resolve(call.args[position], depth + 1) if position < len(call.args) else None
-                if paths is None:
-                    return None
-                found += paths
-            return found or None
-        values = self.assigned.get(name, [])
-        return self.resolve(values[0], depth + 1) if len(values) == 1 else None
-
-    def _joined(self, parts: list[ast.AST], depth: int) -> list[str] | None:
-        joined = [""]
-        for part in parts:
-            paths = self.resolve(part, depth + 1)
-            if paths is None:
-                return None
-            joined = [os.path.join(left, right) for left in joined for right in paths]
-        return joined
-
-
-def _is_a_write_mode(mode: ast.AST | None, unknown_counts: bool) -> bool:
-    """A file name isn't a mode, which matters because `Image.open('data.png')` has an `a` in it."""
-    if mode is None:
-        return False
-    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
-        return bool(MODE.fullmatch(mode.value)) and bool(WRITE_MODE & set(mode.value))
-    return unknown_counts
-
-
-def _keyword(call: ast.Call, name: str) -> ast.AST | None:
-    return next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
-
-
-def _path_object(node: ast.AST, paths: _PythonPaths) -> bool:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        return True
-    return isinstance(node, ast.Call) and paths.name_of(node.func).rsplit(".", 1)[-1] in ("Path", "PurePath")
-
-
-def _changed_by(call: ast.Call, paths: _PythonPaths) -> list[ast.AST | None]:
-    """The expressions naming what this call changes. A `None` means it writes something this can't name."""
-    name = paths.name_of(call.func)
-    method = call.func.attr if isinstance(call.func, ast.Attribute) else ""
-    if name in FILE_FUNCTIONS:
-        return [call.args[position] if position < len(call.args) else None for position in FILE_FUNCTIONS[name]]
-    if name in ("open", "zipfile.ZipFile") or (method == "open" and name.split(".")[0] in MODULE_OPENERS):
-        mode = call.args[1] if len(call.args) > 1 else _keyword(call, "mode")
-        return [call.args[0] if call.args else None] if _is_a_write_mode(mode, name == "open") else []
-    if method == "open":  # Path.open, where the mode comes first
-        return [call.func.value] if _is_a_write_mode(call.args[0] if call.args else _keyword(call, "mode"), False) else []
-    if method in PATH_ONLY_METHODS:
-        return [call.func.value]
-    if method == "rename" and call.args and (_path_object(call.func.value, paths) or isinstance(call.args[0], ast.Constant) or _path_object(call.args[0], paths)):
-        return [call.func.value, call.args[0]]
-    if method == "replace" and _path_object(call.func.value, paths):
-        return [call.func.value, *call.args[:1]]
-    return []
-
-
-def _runs_something_that_writes(call: ast.Call, paths: _PythonPaths) -> bool:
-    """Only a literal command can be judged. A variable one is usually a check, and treating it as an edit would hold every test run."""
-    if paths.name_of(call.func) not in RUNS_A_COMMAND or not call.args:
-        return False
-    command = call.args[0]
-    if isinstance(command, (ast.List, ast.Tuple)) and command.elts and isinstance(command.elts[0], ast.Constant):
-        program = str(command.elts[0].value)
-    elif isinstance(command, ast.Constant) and isinstance(command.value, str) and command.value.split():
-        program = command.value.split()[0]
-    else:
-        return False
-    return os.path.basename(program) in COMMANDS_THAT_CHANGE_FILES
-
-
-def python_writes(code: str | None) -> list[str]:
-    """Files this Python changes, with "" where it can't say which. Read from its syntax, so a string that mentions `open` isn't a write.
-
-    It can't follow `exec` of a variable, `__import__`, a renamed `open`, or a library's own writer. docs/failure-modes.md says so.
-    """
-    if not code:
-        return []
-    if code.lstrip().startswith("$"):  # `python3 -c "$CODE"`, which can't be read from here
-        return [""]
-    try:
-        if len(code) > MAX_PYTHON_CHARS:
-            raise ValueError
-        tree = _parsed(code)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return [""] if LOOKS_LIKE_A_WRITE.search(code[:MAX_PYTHON_CHARS]) else []
-    paths = _PythonPaths(tree)
-    found: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            for changed in _changed_by(node, paths):
-                found += paths.resolve(changed) or [""]
-            if _runs_something_that_writes(node, paths):
-                found.append("")
-            if paths.name_of(node.func) in ("exec", "eval") and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                found += python_writes(node.args[0].value)
-    return found
-
-
-def _parsed(code: str) -> ast.AST:
-    try:
-        return ast.parse(code)
-    except SyntaxError:
-        return ast.parse(code.replace('\\"', '"').replace("\\$", "$"))  # double-quoted `python3 -c "open(\"a\")"`

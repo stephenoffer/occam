@@ -32,7 +32,9 @@ TEST_PATH = re.compile(r"(^|/)(tests?|spec|specs|__tests__|testdata|test_support
 LIGHTER_CHECKS_PATH = re.compile(r"(^|/)(tests?|spec|specs|__tests__|testdata|test_support|e2e)/|(^|/)(test_[^/]+|[^/]+_test\.\w+|conftest\.py|(?:jest|vitest)\.setup\.\w+|setupTests\.\w+)$|\.(test|spec)\.\w+$|Tests?\.(java|kt|cs|swift)$")
 SCRIPT_PATH = re.compile(r"(^|/)(scripts?|bin|tools?|examples?|docs?|benchmarks?|demos?|samples?|notebooks?|migrations?|fixtures?)/")
 # Not code, so the rules don't read these, but a credential pasted into one is just as real. Only credential shapes run on them.
-SECRETS_ONLY_FILE = re.compile(r"(^|/)(\.env(\.[^/]+)?|Dockerfile(\.[^/]+)?|[^/]+\.dockerfile|[^/]+\.(ya?ml|json|toml|tfvars|code-workspace)|requirements[^/]*\.(txt|in)|pip\.conf|CLAUDE\.md|AGENTS\.md|GEMINI\.md|SKILL\.md|\.cursorrules|\.windsurfrules|\.clinerules|copilot-instructions\.md|\.cursor/rules/[^/]+)$", re.I)
+# config team, 2026-11-08: web server configs, Makefiles, Spring properties and slash commands decide what runs too.
+SECRETS_ONLY_FILE = re.compile(r"(^|/)(\.env(\.[^/]+)?|Dockerfile(\.[^/]+)?|[^/]+\.dockerfile|[^/]+\.(ya?ml|json|toml|tfvars|code-workspace)|requirements[^/]*\.(txt|in)|pip\.conf|CLAUDE\.md|AGENTS\.md|GEMINI\.md|SKILL\.md|\.cursorrules|\.windsurfrules|\.clinerules|copilot-instructions\.md|\.cursor/rules/[^/]+"
+                               r"|[^/]+\.conf|\.htaccess|sites-(?:available|enabled)/[^/]+|GNUmakefile|Makefile|[^/]+\.mk|(?:application|bootstrap)[^/]*\.properties|\.claude/(?:commands|agents)/(?:[^/]+/){0,4}[^/]+\.md)$", re.I)
 DOCKERFILE = re.compile(r"(^|/)(Dockerfile(\.[^/]+)?|[^/]+\.dockerfile)$", re.I)
 _FIXTURE_PATH = re.compile(r"(^|/)(fixtures?|examples?|samples?|mocks?|__mocks__|__snapshots__|snapshots?|stubs?|testdata|test_data|docs?)/|\.(example|sample|template|tmpl|dist)(\.[^/]*)?$", re.I)
 

@@ -30,7 +30,7 @@ It is a separate, optional install.
 - **Register:** a README or API reference is `technical`, a how-to is `tutorial`, a changelog is `release_notes`. `occam docs --register NAME` passes the same choice to its linter. Older versions don't have the last two and report a failure, which means updating it, not dropping the flag and calling it checked.
 - **Structure that carries information stays.** An API reference keeps a heading per entry, a runbook keeps numbered steps and a comparison keeps its table.
 - **The score is a floor.** A low one doesn't show the prose reads well, a high one in a reference table may mean nothing, and scales differ between versions. Don't write to the number, and never use evasion tricks such as odd characters or injected typos.
-- **It stays on.** Once loaded it shapes everything you write for the rest of the session, including replies and commit messages. It doesn't change what a report has to say: keep verified, failed, blocked and not run in those words, and don't soften a failure for rhythm. A style guide this repository enforces beats it.
+- **It stays on.** Once loaded it shapes everything you write for the rest of the session, including replies and commit messages. It doesn't change what a report has to say: keep what passed, failed, was blocked or didn't run exact, and don't soften a failure for rhythm. A style guide this repository enforces beats it.
 - **Keep the copy out of the way.** It makes a `.bak` beside a file that version control doesn't track. Remove that once the pass is accepted, unless the user wants it.
 
 ## Docstrings and comments

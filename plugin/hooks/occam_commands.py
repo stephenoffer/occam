@@ -30,7 +30,11 @@ PYTHON_VALUE_FLAGS = {"-X", "-W"}
 CHECK_TOOLS = {"pytest", "py.test", "tox", "nox", "mypy", "pyright", "ty", "ruff", "flake8", "pylint", "bandit", "pip-audit",
                "vulture", "deptry", "lint-imports", "papermill", "sphinx-build", "cosmic-ray", "stubtest", "eslint", "tsc", "jest", "vitest",
                "mocha", "ava", "playwright", "cypress", "ctest", "cmake", "ninja", "bazel", "make", "mvn", "gradle", "gradlew",
-               "rspec", "phpunit", "sqlite3", "psql", "shellcheck", "bats", "golangci-lint", "clang-tidy", "hyperfine"}
+               "rspec", "phpunit", "sqlite3", "psql", "shellcheck", "bats", "golangci-lint", "clang-tidy", "hyperfine",
+               "semgrep", "codeql", "gosec", "brakeman", "trivy"}
+# Security scanners whose first word asks about the tool, not the code: `trivy version`, `semgrep login`, `codeql resolve languages`.
+SCANNERS = {"semgrep", "codeql", "gosec", "brakeman", "trivy"}
+SCANNER_INFO = {"version", "login", "logout", "help", "completion", "resolve", "install", "update"}
 # Running one of these runs the code, or builds it, unless all it was asked for is what it is. Its own arguments decide that, since `pytest -v` runs tests and `ruby -v` doesn't.
 RUNTIMES = {"ruby", "php", "perl", "lua", "java", "javac", "kotlin", "kotlinc", "scala", "swift", "swiftc", "gcc", "g++", "cc", "c++", "clang", "clang++", "rustc", "elixir", "dart", "ghc",
             "runghc", "Rscript", "julia", "rake", "tsx", "ts-node", "racket", "ocaml", "clojure", "escript", "groovy", "mono", "R"}
@@ -78,12 +82,37 @@ FAILED_SUMMARY = re.compile(r"\b[1-9]\d* (failed|errors?)\b[^=\n]{0,80} in \d"  
                             r"|^[1-9]\d* errors?, \d+ warnings?"  # pyright
                             r"|^\S+\.py:\d+:\d+: [A-Z]+\d+\b"  # findings from flake8, pylint and ruff
                             r"|\bFAIL code \d|\bevaluation failed\b"  # tox
+                            r"|\berror TS\d{4,5}:|^error\[E\d{4}\]|^error: could not compile\b|^\S+\.(?:go|java|kt|swift|c|cc|cpp):\d+(?::\d+)?: (?:error: )?(?:undefined|cannot|expected|syntax error|error\b)"  # compilers
+                            r"|^\[ERROR\] BUILD FAILURE|^BUILD FAILED\b|^FAILURE: Build failed|^npm (?:ERR!|error) |^make(?:\[\d+\])?: \*\*\* "  # build tools
+                            r"|\bELIFECYCLE\b|^error Command failed|^error during build:|✘ \[ERROR\]|^ERROR in |^Failed to compile\.|^e: \S|^FAILED: |^ninja: build stopped"
                             r"|^Traceback \(most recent call last\):\n(?:[ \t][^\n]*\n)+[\w.]+(?:Error|Exception|Interrupt|Exit)\b[^\n]*\s*\Z",  # a script that died
                             re.M)
 
 
 def unquote(word: str) -> str:
     return word[1:-1] if len(word) >= 2 and word[0] == word[-1] and word[0] in "'\"" else word
+
+
+def settings_of(words: list[str]) -> list[str]:
+    """`NAME=value` words a step sets for itself or exports, as written, so a value holding `$(...)` keeps it."""
+    found = []
+    for word in words:
+        if re.match(r"^\w+=", word):
+            found.append(word)
+        elif word not in ("export", "declare", "local", "readonly", "-x"):
+            break
+    return found
+
+
+def option_value(args: list[str], flags: tuple[str, ...]) -> str:
+    """The value given to the first of these options: the next word, or after `=` for a long one."""
+    for index, arg in enumerate(args):
+        if arg in flags and index + 1 < len(args):
+            return args[index + 1]
+        for flag in flags:
+            if flag.startswith("--") and arg.startswith(flag + "="):
+                return arg.split("=", 1)[1]
+    return ""
 
 
 def _program(word: str) -> str:
@@ -146,6 +175,168 @@ def run_by(words: list[str]) -> tuple[str, list[str]]:
         if not handed:
             return name, args
         name, args = re.split(r"[@=<>!~\[]", os.path.basename(handed[0]))[0], handed[1:]  # `uvx black@latest`, `uvx black==26.1`
+
+
+_CARGO_VALUE_OPTIONS = {"--features", "-F", "--jobs", "-j", "--target", "--target-dir", "--manifest-path", "--profile", "--color", "--message-format", "--config", "-Z"}
+
+
+# Each runner's own filters: `make -k` keeps going and `mocha -t` sets a timeout, so neither narrows a run.
+_FILTERS = {"pytest": {"-k", "-m", "--deselect", "--ignore", "--lf", "--last-failed"},
+            "jest": {"-t", "--testNamePattern", "--testPathPattern", "--testPathIgnorePatterns", "--onlyChanged", "-o"}, "vitest": {"-t", "--testNamePattern"},
+            "mocha": {"--grep", "-g", "--fgrep"}, "go": {"-run"}, "rspec": {"-e", "--example", "--tag"}, "gradle": {"--tests"}, "gradlew": {"--tests"},
+            "dotnet": {"--filter"}, "phpunit": {"--filter"}, "cargo": {"--lib", "--bin", "--test", "--doc", "--example", "--bench", "-p", "--package"}}
+_GO_VALUE_FLAGS = {"-run", "-timeout", "-count", "-p", "-tags", "-parallel", "-shuffle", "-coverprofile", "-covermode", "-coverpkg", "-bench", "-benchtime", "-cpu",
+                   "-o", "-exec", "-vet", "-ldflags", "-gcflags", "-cpuprofile", "-memprofile", "-blockprofile", "-outputdir"}
+_TEST_FILE = re.compile(r"::|(?:^|/)(?:test_[\w-]*|[\w-]+[_.-](?:test|spec))\.\w+$")
+
+
+def narrowed_run(words: list[str]) -> bool:
+    """Part of a suite: a runner's own filter, a test id or test file, a single Go package, or a name after `cargo test`."""
+    program, args = run_by(words)
+    if program in ("npx", "bunx") and args:
+        program, args = os.path.basename(args[0]), args[1:]
+    if _filtered(program, args) or any(_TEST_FILE.search(arg) for arg in args if not arg.startswith("-")):
+        return True
+    if program == "go" and args[:1] == ["test"]:
+        values = _option_values(args, *_GO_VALUE_FLAGS)
+        return any(not arg.startswith("-") and arg not in (".", "./...", "...") and arg not in values for arg in args[1:])
+    return program == "cargo" and args[:1] == ["test"] and _cargo_names_a_test(args)
+
+
+def _filtered(program: str, args: list[str]) -> bool:
+    """A filter option of this runner, including one handed on after `npm test --`, an attached `-kpricing`, or Maven's `-Dtest=`."""
+    passed_on = args[args.index("--") + 1:] if program in ("npm", "yarn", "pnpm", "bun") and "--" in args else []  # `npm test -- -t new`
+    filters = _FILTERS.get(program, set()) | ({"-t", "--testNamePattern", "--grep", "-k"} if passed_on else set())
+    if any(arg.split("=", 1)[0] in filters for arg in args + passed_on):
+        return True
+    if program == "pytest" and any(arg.startswith(("-k", "-m")) and len(arg) > 2 and not arg.startswith("--") for arg in args):
+        return True
+    return program in ("mvn", "mvnw") and any(arg.startswith(("-Dtest=", "-Dit.test=")) for arg in args)
+
+
+def _cargo_names_a_test(args: list[str]) -> bool:
+    skip = False
+    for arg in args[1:args.index("--") if "--" in args else None]:
+        if skip or arg in _CARGO_VALUE_OPTIONS:
+            skip = not skip and arg in _CARGO_VALUE_OPTIONS
+            continue
+        if not arg.startswith("-"):
+            return True
+    return False
+
+
+def _option_values(args: list[str], *options: str) -> set[str]:
+    return {args[index + 1] for index, arg in enumerate(args[:-1]) if arg in options}
+
+
+# F463, the owner's call on 2026-11-08 (DESIGN `session-recall-owner-calls`): a release over a failed check is confirmed by a person.
+# Ship what's built to others: merge a pull request, publish a package, push a tag, or deploy. Dry runs, drafts and non-production targets don't.
+PUBLISHERS = {
+    ("npm", "publish"), ("pnpm", "publish"), ("yarn", "publish"), ("bun", "publish"), ("cargo", "publish"), ("gem", "push"), ("twine", "upload"),
+    ("uv", "publish"), ("poetry", "publish"), ("flit", "publish"), ("hatch", "publish"), ("mvn", "deploy"), ("gradle", "publish"), ("gradlew", "publish"),
+    ("dotnet", "nuget"), ("helm", "push"), ("goreleaser", "release"), ("fly", "deploy"), ("flyctl", "deploy"), ("firebase", "deploy"), ("kamal", "deploy"),
+    ("serverless", "deploy"), ("sls", "deploy"), ("wrangler", "deploy"),
+}
+NOT_A_RELEASE = {"--dry-run", "-n", "--draft", "--auto", "--preview", "--help", "-h"}  # `gh pr merge --auto` waits for the checks itself
+NOT_PRODUCTION = re.compile(r"(?:^|[/_.:\-])(?:preview|staging|stage|dev|development|test|qa|sandbox|local|check|notes?|dry|draft)(?:[/_.:\-]|$)", re.I)
+DEPLOY_NAME = re.compile(r"^(?:deploy|release|publish|ship)(?:$|[/_.:\-])", re.I)  # the name leads with it: deploy.sh, release-prod, deploy:prod
+DEPLOY_REMOTES = {"heroku", "dokku", "production", "prod", "live"}
+TAG_REF = re.compile(r"^(?:refs/tags/)?v?\d+(?:\.\d+){1,3}(?:[-+][\w.]+)?$")
+INTERPRETERS = {"bash", "sh", "zsh", "python", "python3", "ruby", "node", "perl"}
+GLOBAL_VALUE_OPTIONS = {"git": {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}, "gh": {"-R", "--repo"}}
+
+
+def _positional(program: str, args: list[str]) -> list[str]:
+    """Arguments past the options, skipping the value of a global option such as `git -C dir` or `gh -R owner/repo`."""
+    found, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg in GLOBAL_VALUE_OPTIONS.get(program, ()):
+            skip = True
+        elif not arg.startswith("-"):
+            found.append(arg)
+    return found
+
+
+def release_of(words: list[str]) -> str | None:
+    """The release one step makes, named for the person asked, or None."""
+    if not words:
+        return None
+    program, args, rest, script = _what_runs(words)
+    if NOT_A_RELEASE & set(args) or any(NOT_PRODUCTION.fullmatch(name) or DEPLOY_NAME.search(name) and NOT_PRODUCTION.search(name) for name in [program, *rest]):
+        return None
+    return _vcs_release(program, args, rest) or _package_release(program, args, rest) or _deploy_release(program, rest, script)
+
+
+def _what_runs(words: list[str]) -> tuple[str, list[str], list[str], bool]:
+    """The program past `bundle exec`, `npx` and an interpreter running a script, its arguments, those past the options, and whether it's a script."""
+    program, args = run_by(words)
+    if program in ("npx", "bunx") and args:
+        program, args = os.path.basename(args[0]), args[1:]
+    rest = _positional(program, args)
+    if program in INTERPRETERS and rest and ("/" in rest[0] or rest[0].endswith((".sh", ".py", ".rb", ".js"))):  # `bash scripts/deploy.sh`
+        program, args = rest[0], args[args.index(rest[0]) + 1:]
+        rest = _positional(program, args)
+    path = words[0] if os.path.basename(words[0]) == os.path.basename(program) else program  # `bin/deploy`, which run_by gave back by name
+    return os.path.basename(program), args, rest, "/" in path or program.endswith((".sh", ".py", ".rb", ".js"))
+
+
+def _vcs_release(program: str, args: list[str], rest: list[str]) -> str | None:
+    if program == "gh" and rest[:2] in (["pr", "merge"], ["release", "create"]):
+        return f"gh {' '.join(rest[:2])}" + (" --admin" if "--admin" in args else "")
+    if program != "git" or rest[:1] != ["push"]:
+        return None
+    if "--tags" in args or "--follow-tags" in args or any(TAG_REF.match(word) for word in rest[2:]):
+        return "git push of a tag"
+    return f"git push {rest[1]}" if rest[1:2] and rest[1] in DEPLOY_REMOTES else None
+
+
+def _package_release(program: str, args: list[str], rest: list[str]) -> str | None:
+    first = rest[0] if rest else ""
+    if program == "python" and args[:2] == ["-m", "twine"] and "upload" in args:
+        return "twine upload"
+    if program == "yarn" and rest[:2] == ["npm", "publish"]:
+        return "yarn npm publish"
+    if (program, first) in PUBLISHERS:
+        return f"{program} {first}"
+    if program in ("vercel", "netlify") and "--prod" in args:
+        return f"{program} --prod"
+    return "gcloud " + " ".join(rest[:rest.index("deploy") + 1]) if program == "gcloud" and "deploy" in rest[:3] else None
+
+
+def _deploy_release(program: str, rest: list[str], script: bool) -> str | None:
+    first = rest[0] if rest else ""
+    if program == "cap" and len(rest) >= 2 and rest[1] == "deploy":
+        return f"cap {rest[0]} deploy"
+    if program in ("make", "just", "rake", "task") and DEPLOY_NAME.search(first):
+        return f"{program} {first}"
+    if program in ("npm", "pnpm", "yarn", "bun") and first == "run" and len(rest) > 1 and DEPLOY_NAME.search(rest[1]):
+        return f"{program} run {rest[1]}"
+    return program if script and DEPLOY_NAME.search(program) else None
+
+
+# A status that a release over a red one ignores: a CI query, or a script named for a smoke, health, e2e or verify run.
+# `gh run list` lists history, so a red row there is an old run, not the current state.
+CI_STATUS = {("gh", "pr", "checks"), ("gh", "run", "view"), ("gh", "run", "watch")}
+GATE_SCRIPT = re.compile(r"(?:^|[/_.-])(?:smoke|health(?:check)?|e2e|verify)(?:[/_.-]|$)", re.I)
+GH_RED = re.compile(r"\tfail(?:ure)?\t|\"(?:bucket|conclusion|state)\"\s*:\s*\"(?:fail|failure)\"|(?m:^(?:X|✗) )")
+
+
+def ci_status_of(words: list[str]) -> str | None:
+    """Which status query this is, so the latest run of each one decides, or None."""
+    program, args = (os.path.basename(words[0]), words[1:]) if words else ("", [])
+    rest = _positional(program, args)
+    if program == "gh" and tuple(rest[:2]) in {pair[1:] for pair in CI_STATUS}:
+        return " ".join(["gh", *rest[:3]])
+    return " ".join([program, *rest[:1]]) if GATE_SCRIPT.search(program) else None
+
+
+def ci_status_failed(words: list[str], exit_code: int, output: str) -> bool:
+    """gh exits 1 on a failed check, 8 on pending, and 1 with "no checks reported"; a script fails by its exit code alone."""
+    if words and os.path.basename(words[0]) == "gh":
+        return bool(GH_RED.search(output)) or (exit_code == 1 and "no checks reported" not in output)
+    return exit_code != 0
 
 
 def is_info_only(args: list[str]) -> bool:
@@ -244,6 +435,8 @@ def is_check(words: list[str]) -> bool:
         return False
     if PYTHON.fullmatch(program) and program_args in PYTHON_INFO_ARGS:
         return False
+    if program in SCANNERS and program_args[:1] and program_args[0].lstrip("-") in SCANNER_INFO:
+        return False
     if program in RUNTIMES:
         return _runs_a_program(program, program_args)
     if program == "ruff" and _past_options(program_args)[:1] and _past_options(program_args)[0] in RUFF_NOT_CHECKS:
@@ -329,3 +522,28 @@ def golden_command(args: list[str]) -> list[str]:
             named = True
             index += 1
     return []
+
+
+# ---------------------------------------------------------------- what kubectl and helm run, and programs that run a file
+
+# The subcommand is the first of these, so a flag's value is skipped whether or not the flag is known to take one.
+_SUBCOMMANDS = {"kubectl": {"annotate", "api-resources", "api-versions", "apply", "attach", "auth", "autoscale", "certificate", "cluster-info", "completion", "config", "cordon", "cp",
+                            "create", "debug", "delete", "describe", "diff", "drain", "edit", "events", "exec", "explain", "expose", "get", "help", "kustomize", "label", "logs", "patch",
+                            "plugin", "port-forward", "proxy", "replace", "rollout", "run", "scale", "set", "taint", "top", "uncordon", "version", "wait"},
+                "helm": {"completion", "create", "del", "delete", "dependency", "env", "get", "help", "history", "install", "lint", "list", "ls", "package", "plugin", "pull", "push",
+                         "registry", "repo", "rollback", "search", "show", "status", "template", "test", "un", "uninstall", "upgrade", "verify", "version"}}
+_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context", "--as", "--as-group", "--token", "-v", "--username", "--password", "--request-timeout", "--cache-dir", "--tls-server-name",
+                  "--kube-as-user", "--kube-as-group", "--kube-token", "--kube-apiserver", "--kube-ca-file", "--kube-tls-server-name", "--registry-config", "--repository-config", "--repository-cache"}
+# Programs that run a file they're given, as `bash x.sh` or `python3 x.py`.
+RUNS_A_FILE = {"sh", "bash", "zsh", "dash", "ksh", "source", ".", "python", "python3", "node", "perl", "ruby", "php"}
+
+
+def subcommand(program: str, args: list[str]) -> str | None:
+    """The subcommand a kubectl or helm command runs, past its options and their values."""
+    words = iter(args)
+    for word in words:
+        if word in _TAKES_A_VALUE:
+            next(words, None)
+        elif word in _SUBCOMMANDS[program]:
+            return word
+    return None

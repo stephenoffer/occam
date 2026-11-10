@@ -19,7 +19,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from . import change_checks, design, docs, files as filesystem, report, reuse, scan as scanner, surgical
+from . import change_checks, design, docs, files as filesystem, manifests, report, reuse, scan as scanner, surgical
 from .source import is_test_path, language_of
 from .workflow import NEEDS_A_SHELL, active_claims, claim_holder, database, needs_a_shell, new_dependencies, scope_problems
 from .zero_tests import ran_no_tests
@@ -33,6 +33,9 @@ _CONCERNS = [
     ("dead-code", "No dead code left"), ("bloat", "No bloat"), ("comments", "Comments"), ("naming", "Naming"), ("performance", "Performance"),
     ("scalability", "Scalability"), ("architecture", "Architecture"), ("usability", "Usability"), ("reinvention", "Didn't reinvent"), ("language-practice", "Language practice"), ("notebook", "Notebooks"), ("docs", "Documents match the code"),
 ]
+# The paths that need a fresh reviewer: hooks/classify.py SECURITY_CRITICAL and MONEY, which the tools can't import. A test keeps them the same.
+_SECURITY_OR_MONEY = re.compile(r"(^|[/_.\-])(auth|authn|authz|oauth|login|sessions?|tokens?|passwords?|secrets?|credentials?|permissions?|acl|rbac|tenants?|tenancy|crypto|signatures?"
+                                r"|billing|payments?|invoices?|checkout|refunds?|ledgers?)([/_.\-]|$)", re.I)
 _INSTRUCTION_FILES = ("CLAUDE.md", "AGENTS.md", "GEMINI.md", "CONTRIBUTING.md", ".cursorrules", ".github/copilot-instructions.md")
 _JUDGMENT = [
     "Reread the original request. Is every part of it done, connected and reachable through the real entry point?",
@@ -582,8 +585,8 @@ def _test_shape(text: str) -> dict | None:
     return {"tests": tests, "lines": lines, "skips": skips}
 
 
-def _new_definitions(root: Path, base: str | None, changed: dict[str, set[int]]) -> list[tuple[str, str, int]]:
-    """Top-level functions and classes that this change adds, in Python files."""
+def _new_definitions(root: Path, base: str | None, changed: dict[str, set[int]], renamed: dict[str, str]) -> list[tuple[str, str, int]]:
+    """Top-level functions and classes that this change adds, in Python files. A moved file is compared with where it was."""
     revision = base or "HEAD"
     added = []
     for path in changed:
@@ -592,7 +595,7 @@ def _new_definitions(root: Path, base: str | None, changed: dict[str, set[int]])
         text = filesystem.read_text(root / path)
         if text is None:
             continue
-        before = filesystem.file_at(root, revision, path) or ""
+        before = filesystem.file_at(root, revision, renamed.get(path, path)) or ""
         try:
             new_tree, old_tree = ast.parse(text), ast.parse(before)
         except SyntaxError:
@@ -759,7 +762,7 @@ def _gate_findings(root: Path, base, changed, deleted, renamed, paths, result) -
         findings.append({**extra, "severity": "high", "confidence": "high", "category": "testing", "tier": "C", "score": 8.0, "layer": "test", "fix": "", "evidence": "", "id": ""})
     findings += _breakage_elsewhere(root, base, visible, changed, [*deleted, *renamed.values()])
     # It decides what this gate reads, so a change can't clear itself with it, whether or not git shows the edit or the paths named include it.
-    if filesystem.in_git(root) and (filesystem.file_at(root, base or "HEAD", ".occam.json") or "") != (filesystem.read_text(root / ".occam.json") or ""):
+    if filesystem.in_git(root) and filesystem.parse_config(filesystem.file_at(root, base or "HEAD", filesystem.CONFIG_NAME)) != filesystem.load_config(root):
         findings.append({"rule": "gate-config-changed", "path": ".occam.json", "line": 1, "message": "This change edits .occam.json, which decides what the scanner and this gate read, so their result here can't be taken at face value. A person should see this.",
                          "severity": "high", "confidence": "high", "category": "testing", "tier": "C", "score": 8.0, "layer": "test", "fix": "", "evidence": "", "id": ""})
     if not paths:
@@ -816,9 +819,10 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
     budget = float("inf") if seconds is None else max(0.0, min(change_checks.RUNTIME_LIMIT, seconds + 10 - (time.monotonic() - started)))
     change_notes, change_not_run = ([], []) if paths else change_checks.notes(root, base, changed, deleted, renamed, whole, budget=budget)
     blockers, warnings = _sort_gate_findings(findings)
-    extras = _gate_extras(root, base, changed, result.project, gone, for_design, whole=whole)
+    extras = _gate_extras(root, base, changed, renamed, result.project, gone, for_design, whole=whole)
     warnings += change_notes
-    warnings += extras["warnings"]
+    blockers += [w for w in extras["warnings"] if w.get("blocks")]
+    warnings += [w for w in extras["warnings"] if not w.get("blocks")]
     scope = None if paths else surgical.review(root, base, changed, result)
     if scope:
         orphaned = {(note["path"], note["line"]) for note in scope["notes"] if note["rule"] == "orphaned-by-change"}
@@ -843,10 +847,10 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
     return "\n".join(lines), 1 if failed else 0
 
 
-def _gate_extras(root: Path, base, changed, project, gone: tuple[str, ...], for_design: dict, whole: bool = True) -> dict:
+def _gate_extras(root: Path, base, changed, renamed: dict[str, str], project, gone: tuple[str, ...], for_design: dict, whole: bool = True) -> dict:
     warnings: list[dict] = []
     counts = project.identifier_counts
-    for name, path, line, unread in _new_definitions(root, base, changed):
+    for name, path, line, unread in _new_definitions(root, base, changed, renamed):
         if whole and counts.get(name, 0) <= 1 and not name.startswith("_") and not re.search(r"^(main|cli)$", name):
             warnings.append({"rule": "unreferenced-def", "path": path, "line": line, "message": f"New {name} has no callers. A function nothing calls isn't a feature.", "category": "dead-code"})
         if unread:
@@ -858,11 +862,8 @@ def _gate_extras(root: Path, base, changed, project, gone: tuple[str, ...], for_
     documents = [p for p in changed if docs.is_markdown(p) and p not in design.FILE_NAMES]  # design.gate_notes knows which of its parts needn't match the code
     if documents:
         warnings += docs.fact_findings(root, documents)
-    source_changed = [p for p in changed if language_of(p) in ("python", "javascript", "typescript", "go", "rust", "java", "kotlin") and not is_test_path(p)]
-    tests_changed = [p for p in changed if is_test_path(p)]
-    if source_changed and not tests_changed:
-        warnings.append({"rule": "module-untested", "path": source_changed[0], "line": 1, "message": f"{len(source_changed)} source files changed and no test did. Say why that's fine, or add one.", "category": "testing"})
-    manifest_changes = [p for p in changed if re.search(r"(^|/)(pyproject\.toml|requirements[^/]*\.txt|package\.json|Cargo\.toml|go\.mod|setup\.py)$", p)]
+    warnings += _untested_change(changed)
+    manifest_changes = [p for p in changed if manifests.DEPENDENCY_FILE.search(p)]
     if manifest_changes:
         added = _added_dependencies(root, base, changed, gone)
         said = f"This adds {', '.join(added[:6])}{' and more' if len(added) > 6 else ''}." if added else "Manifest changed."
@@ -871,8 +872,22 @@ def _gate_extras(root: Path, base, changed, project, gone: tuple[str, ...], for_
     active = active_claims(root)
     claims = {path: claim_holder(active, path) for path in changed if claim_holder(active, path)}
     if claims:
-        others = "Other agents hold claims on files in this diff: " + ", ".join(f"{p} ({o})" for p, o in sorted(claims.items())[:8])
+        # gate doesn't know who runs it, so it names each holder rather than calling every claim another agent's
+        others = ("Claimed files in this diff: " + ", ".join(f"{p} (by {o})" for p, o in sorted(claims.items())[:8])
+                  + ". A claim that isn't yours means its holder may be editing that file, so check with them first.")
     return {"warnings": warnings, "others": others}
+
+
+def _untested_change(changed) -> list[dict]:
+    """Source changed and no test did. On a security or money path it blocks, the owner's call on 2026-11-08; elsewhere it warns."""
+    source = [p for p in changed if language_of(p) in ("python", "javascript", "typescript", "go", "rust", "java", "kotlin") and not is_test_path(p)]
+    if not source or any(is_test_path(p) for p in changed):
+        return []
+    risky = [p for p in source if _SECURITY_OR_MONEY.search(p)]
+    if not risky:
+        return [{"rule": "module-untested", "path": source[0], "line": 1, "message": f"{len(source)} source files changed and no test did. Say why that's fine, or add one.", "category": "testing"}]
+    return [{"rule": "module-untested", "path": risky[0], "line": 1, "blocks": True, "category": "testing",
+             "message": f"{', '.join(risky[:3])} handle{'s' if len(risky) == 1 else ''} security or money, changed, and no test did. Add a test that fails without the change, or escalate with a reason."}]
 
 
 def _added_dependencies(root: Path, base: str | None, changed: dict, gone: tuple[str, ...]) -> list[str]:

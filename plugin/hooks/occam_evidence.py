@@ -9,10 +9,18 @@ from __future__ import annotations  # the stock macOS python3 is 3.9
 
 import os
 import re
+from collections import Counter
 from pathlib import Path
+from typing import Callable, NamedTuple
 from urllib.parse import unquote
 
-CLAIMS_PASSING = re.compile(r"(\b(tests?|suite|checks?)\b[^.\n]{0,40}\b(pass|passes|passing|passed|green)\b|\b\d+\s+passed\b)", re.I)
+from destructive import RECURSIVE_FLAG, assigned_names, deletes_through_unset, deletes_too_much_of, find_piped_to_a_delete, guarded_names, hard_to_undo
+from occam_commands import RUNS_A_FILE
+from printed_secrets import credential_printed
+
+CLAIMS_PASSING = re.compile(r"(\b(tests?|suite|checks?)\b[^.\n]{0,40}\b(pass|passes|passing|passed|green)\b|\b\d+\s+passed\b"
+                            r"|`[^`\n]*\b(tests?|specs?)\b[^`\n]*`[^.\n]{0,20}\b(pass|passes|passed|green)\b"  # "`go test ./...` passes", whose dots end the first form
+                            r"|\b\d+ (tests?|examples?|specs?),? 0 failures\b)", re.I)  # ExUnit and RSpec
 NEGATED_CLAIM = re.compile(r"\b(not|n't|couldn.t|unable|without|never|tells you nothing|no test)\b", re.I)
 WEB_TOOLS = {"WebFetch", "WebSearch"}
 # A named part: "the pricing tests", "unit tests". Not "the tests", "my tests", "these checks" or "12 tests", which claim everything.
@@ -43,43 +51,27 @@ def disables_checks(text: str) -> bool:
     return bool(DISABLES_CHECKS.search(decoded))
 
 
-PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^;&|]{0,2000}\|\s*(sudo\s+(-\S+\s+)*)?(\S*/)?(ba|z|da|k)?sh\b")
-SHELL_RUNS_DOWNLOAD = re.compile(r"\b(ba|z|da|k)?sh\b[^;&|\n]{0,200}(<\(|\$\()\s*(curl|wget)\b")
-# Each incident on record began with one of these run on a guess. A program's entry lists words that must all appear in its arguments.
-_TERRAFORM = (("destroy",), ("apply", "-auto-approve"), ("apply", "--auto-approve"), ("state", "rm"), ("state", "push"))
-_RAILS = (("db:drop",), ("db:reset",), ("db:schema:load",))
-_PRISMA = (("migrate", "reset"), ("--force-reset",), ("--accept-data-loss",))
-HARD_TO_UNDO = {"terraform": _TERRAFORM, "tofu": _TERRAFORM, "terragrunt": _TERRAFORM, "pulumi": (("destroy",),), "kubectl": (("delete",),), "helm": (("uninstall",), ("delete",), ("del",), ("un",)),
-                "gcloud": (("delete",),), "az": (("delete",),), "doctl": (("delete",),), "fly": (("destroy",),), "flyctl": (("destroy",),), "heroku": (("apps:destroy",), ("pg:reset",)), "vercel": (("remove",), ("rm",)),
-                "railway": (("down",), ("delete",)), "supabase": (("db", "reset"),), "prisma": _PRISMA, "rails": _RAILS, "rake": _RAILS, "dropdb": ((),),
-                "docker": (("system", "prune"), ("volume", "rm"), ("volume", "prune"), ("compose", "down", "-v"), ("compose", "down", "--volumes")), "docker-compose": (("down", "-v"), ("down", "--volumes"))}
-_RUNS_ANOTHER_PROGRAM = {"bundle", "pnpm", "yarn", "npx", "bunx", "uv", "poetry"}
-# `help` counts only as the subcommand, and `-h` never: for redis-cli, dropdb and psql it names a host. A dry run says so with a value that means it.
-_ONLY_LOOKS = re.compile(r"--help|--dry-?run(?:=(?:client|server|true|all))?|--preview-only", re.I)
-_SUBCOMMAND_MUST_BE = {"kubectl": ("delete",), "helm": ("uninstall", "delete", "del", "un")}
-# The subcommand is the first of these, so a flag's value is skipped whether or not the flag is known to take one.
-_SUBCOMMANDS = {"kubectl": {"annotate", "api-resources", "api-versions", "apply", "attach", "auth", "autoscale", "certificate", "cluster-info", "completion", "config", "cordon", "cp",
-                            "create", "debug", "delete", "describe", "diff", "drain", "edit", "events", "exec", "explain", "expose", "get", "help", "kustomize", "label", "logs", "patch",
-                            "plugin", "port-forward", "proxy", "replace", "rollout", "run", "scale", "set", "taint", "top", "uncordon", "version", "wait"},
-                "helm": {"completion", "create", "del", "delete", "dependency", "env", "get", "help", "history", "install", "lint", "list", "ls", "package", "plugin", "pull", "push",
-                         "registry", "repo", "rollback", "search", "show", "status", "template", "test", "un", "uninstall", "upgrade", "verify", "version"}}
-_TAKES_A_VALUE = {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "--kube-context", "--as", "--as-group", "--token", "-v", "--username", "--password", "--request-timeout", "--cache-dir", "--tls-server-name",
-                  "--kube-as-user", "--kube-as-group", "--kube-token", "--kube-apiserver", "--kube-ca-file", "--kube-tls-server-name", "--registry-config", "--repository-config", "--repository-cache"}
-_AWS_DESTRUCTIVE = re.compile(r"(?:delete|terminate|deregister|purge)-[\w-]+")
+# An interpreter given no script or code reads its program from the pipe, as `curl URL | python3 -` does. `| python3 -m json.tool` reads data.
+PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^;&|]{0,2000}\|\s*(sudo\s+(-\S+\s+)*)?(env\s+(-\S+\s+)*(\w+=\S*\s+)*)?(\S*/)?(?:(ba|z|da|k)?sh\b|(?:python[\d.]*|node|perl|ruby|php)(?:[ \t]+-(?=\s|$)|[ \t]*(?=$|[;&|)\n])))")
+# An interpreter counts only when the download is its program: `python3 <(curl ...)` or `-c "$(curl ...)"`, not a fetched token as an argument.
+SHELL_RUNS_DOWNLOAD = re.compile(r"\b(ba|z|da|k)?sh\b[^;&|\n]{0,200}(<\(|\$\()\s*(curl|wget)\b"
+                                 r"|\b(?:python[\d.]*|node|perl|ruby)[ \t]+(?:-[ce][ \t]+[\"']?\$\(|<\()\s*(?:curl|wget)\b|(?:\bsource|(?:^|[\s;&|(])\.)[ \t]+<\(\s*(?:curl|wget)\b")
+POWERSHELL_RUNS_DOWNLOAD = re.compile(r"\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b[^;\n|]{0,2000}\|\s*(?:iex|Invoke-Expression)\b"
+                                      r"|\b(?:iex|Invoke-Expression)\b[\s(]{0,10}(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|New-Object\s+(?:System\.)?Net\.WebClient)\b", re.I)
 _ENVIRONMENT = re.compile(r"(?:RAILS_ENV|RACK_ENV|APP_ENV|NODE_ENV)=(.*)")
 _PASSES_THE_ENVIRONMENT = {"env", "sudo", "doas", "nice", "nohup", "time", "command", "exec"}
 _DROPS_THE_ENVIRONMENT = {"sudo", "doas", "su"}
 _WINDOWS_RECURSIVE_DELETE = re.compile(r"(?:^|[\s;&|(])(?:rmdir|rd|del|erase)\s+(?:/\w\s+)*/s\b(?:\s+/\w)*\s+(\S+)|\bRemove-Item\b(?=[^;&|\n]*\s-Recurse\b)((?:\s+-\w+)*)\s+(?!-)(\S+)", re.I)
 _TOO_MUCH_ON_WINDOWS = re.compile(r"^(?:[A-Za-z]:[\\/]?|[\\/]|~.*|%USERPROFILE%.*|\$env:USERPROFILE.*|\$HOME.*|\.\.?[\\/]?|\*)$", re.I)
 _QUOTED_TEXT = re.compile(r"'[^']*'|\"[^\"]*\"")
+# `curl URL > i.sh` saves through the shell, which the program's arguments don't show.
+_SAVED_BY_REDIRECT = re.compile(r"\b(?:curl|wget)\b[^;&|\n<>]{0,1000}>[ \t]*([^\s;&|<>]+)")  # bounded, so a long command stays linear
 SQL_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "sqlcmd", "mongosh", "mongo"}
 DROPS_DATA = re.compile(r"\b(drop\s+(table|database|schema)|truncate(?=\s+(?:table\s+)?[\w\"`\[])|dropDatabase)\b", re.I)
 _CHANGES_ROWS = re.compile(r"\b(?:delete\s+from|update\s+(?:only\s+)?[\w.\"`\[\]]+(?:\s+(?:as\s+)?[\w\"`]+)?\s+set)\b", re.I)  # anywhere in the statement, so a leading comment can't hide it
 # One left open runs to the end, as the database reads it, which also keeps this linear on a command full of openers.
 _SQL_TEXT_AND_COMMENTS = re.compile(r"'(?:[^']|'')*(?:'|\Z)|\"(?:[^\"]|\"\")*(?:\"|\Z)|--[^\n]*|/\*.*?(?:\*/|\Z)", re.S)
 NETWORK_CLIENTS = {"curl", "wget", "http", "https", "nc", "ncat"}
-GENERATED_NAMES = {"build", "dist", "target", "out", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox",
-                   ".venv", "venv", ".next", ".cache", ".turbo", ".gradle", "coverage", ".coverage", "htmlcov", "test-results"}
 TEST_DIRS = {"tests", "test", "spec", "__tests__"}
 # Only unmistakable shapes, so a hold here means something. Nothing derived from a match is ever printed or stored.
 SECRET_SHAPES = (
@@ -98,14 +90,43 @@ PUSHBACK = re.compile(r"\b(are you sure|you'?re wrong|you are wrong|that'?s (wro
 TEST_COUNT = re.compile(r"(?<![\d.])(\d[\d,]{0,15})\s+(?:(?:[a-z-]+\s+)?(?:tests?|checks?|cases?|specs?)\s+(?:(?:are|were)\s+)?(?:(?:now|all)\s+)?(?:pass|passes|passed|passing)"
                         r"|of\s+them\s+pass(?:ed)?|(?:are\s+)?(?:passed|passing))\b", re.I)
 # Output that states a count at all. `go test` prints none, so it can't contradict one.
-COUNT_SUMMARY = re.compile(r"(?<![\d,.])\d[\d,]{0,15}\s+(passed|passing|failed|failing|tests?|specs?|examples?)\b|\bRan \d+ tests?\b|\btest result:", re.I)
+COUNT_SUMMARY = re.compile(r"(?<![\d,.])\d[\d,]{0,15}\s+(passed|passing|failed|failing|tests?|specs?|examples?)\b|\bRan \d+ tests?\b|\btest result:|\bTests run: \d", re.I)
 MEASURED_CHANGE = re.compile(r"(?<![\w.])\d+(?:\.\d+)?\s?(?:x|×|%|times)(?!\w)", re.I)
 PERFORMANCE_WORD = re.compile(r"\b(faster|slower|quicker|speed\w*|latency|throughput|run ?time|wall[- ]?(clock|time)|elapsed|p\d\d|memory|rss|cpu|qps|rps|time|takes)\b", re.I)
 # A number beside a performance word is often a setting, so a claim also says which way something moved.
 DIRECTION = re.compile(r"\b(faster|slower|quicker|speed-?ups?|sped|reduc\w*|drop\w*|lower\w*|less|fewer|cut|improv\w*|sav\w+|shr[iau]nk\w*|down|decreas\w*|increas\w*|higher)\b", re.I)
 HEDGED = re.compile(r"\b(estimat\w*|project(ed|ion)|expect\w*|should|would|could|might|(?-i:may)|not measured|unmeasured|untested|predict\w*|theoretical\w*)\b", re.I)
-MENTIONS_FAILURE = re.compile(r"\b(fail\w*|errors?|broken|red|blocked|issues?|tim(ed|es) out|still (raises|errors?)"
-                              r"|(did|does|do|is|are)(n['’]?t| not) (yet )?(pass|compil|build|run|work)\w*|not (yet )?pass\w*|could(n['’]?t| not) run)\b", re.I)
+# What says a check failed. Strong words do anywhere: fail, failing, failure, broken, blocked, "doesn't pass", "timed out". "Error" also
+# names things in the code ("treated every error as a 500"), so it counts only beside a check, a test or a test's name. "0 failures" says none did.
+STRONG_FAILURE = re.compile(r"\b(fail\w*|broken|red|blocked|issues?|tim(ed|es) out|still (raises|errors?)|(did|does|do|is|are)(n['’]?t| not) (yet )?(pass|compil|build|run|work)\w*"
+                            r"|not (yet )?pass\w*|could(n['’]?t| not) run)\b", re.I)
+WEAK_FAILURE = re.compile(r"\berrors?\b", re.I)
+NAMES_A_CHECK = re.compile(r"\b(tests?|test suites?|suites?|specs?|cases?|builds?|compil\w*|lint\w*|type[- ]?check\w*|mypy|tsc|vet|clippy|ci|checks?|pipelines?|jobs?"
+                           r"|pytest|jest|vitest|mocha|rspec|cargo|gradle|maven|mvn|make|tox|go test)\b|\btest_\w+|(?-i:\bTest[A-Z_]\w*)|(?<!\w)\w+_test\b|(?<![\w.])\w+\.(?:test|spec)\.\w+", re.I)
+NONE_FAILED = re.compile(r"\b(?:0|no|zero|without(?: any)?)\s+(?:[\w-]+\s+)?(?:failures?|errors?|failed)\b", re.I)
+
+
+# A failure that stands now, as a count or "still fails". "Fixed the failing test, and all tests pass" names one that's gone, so it's a claim.
+FAILURE_NOW = re.compile(r"\b[1-9]\d*\s+(?:failed|failing|failures?|errors?)\b|\bstill (?:fail\w*|errors?)\b|(?:does|do|did|is|are)(?:n['’]?t| not) (?:yet )?pass\w*", re.I)
+
+
+def claim_subject(message: str, claim: re.Match) -> str:
+    """The words naming what passed: "all tests" in "fixed the failing test, and all tests pass", "pricing tests" in "the pricing tests pass"."""
+    text = message[max(0, claim.start() - 40):claim.end()]
+    nouns = list(re.finditer(r"(?:\S+\s+)?(?:tests?|suites?|checks?|specs?)\b", text, re.I))
+    return nouns[-1].group(0) if nouns else text
+
+
+def reports_a_failure(text: str) -> bool:
+    """A line that reports a standing failure, "5 passed, 1 failed": an honest report beside its pass count, not a claim that all passed."""
+    return bool(FAILURE_NOW.search(text))
+
+
+def mentions_a_failure(sentence: str) -> bool:
+    sentence = NONE_FAILED.sub("", sentence)
+    return bool(STRONG_FAILURE.search(sentence) or (WEAK_FAILURE.search(sentence) and NAMES_A_CHECK.search(sentence)))
+
+
 MENTIONS_VARYING = re.compile(r"\b(flak\w+|intermittent\w*|non-?determini\w+|varies|varied|differ\w*|re-?run\w*|re-?ran|retri\w+|first run|second run)\b", re.I)
 # Commands that leave a later run's result alone, so a different result afterward isn't explained by them.
 READ_ONLY_PROGRAMS = {"cat", "less", "more", "head", "tail", "grep", "rg", "ag", "ls", "find", "fd", "tree", "wc", "sort", "uniq", "cut", "awk", "sed",
@@ -115,6 +136,27 @@ NARROWS_A_RUN = re.compile(r"--ignore|--deselect|--exclude|--testPathIgnore|--gr
 PACKAGE_NAME = re.compile(r"@?[A-Za-z0-9][A-Za-z0-9._/-]*")
 INSTALL_VALUE_FLAGS = {"-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url", "-f", "--find-links", "-t", "--target", "--prefix",
                        "--root", "--python", "-p", "-F", "--features", "--registry", "--cache-dir", "--platform", "--path", "--git", "--branch", "--tag", "--rev"}
+
+
+MAX_WHOLE_FILE = 2_000_000
+
+
+def whole_file_change(name: str, tool_input: dict, path: Path) -> tuple[str, str] | None:
+    """The whole file before and after an Edit or MultiEdit, so a change reads in its context. None when the file can't be read or the text isn't in it."""
+    try:
+        if name not in ("Edit", "MultiEdit") or not path.is_file() or path.stat().st_size > MAX_WHOLE_FILE:
+            return None
+        before = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    after = before
+    pairs = tool_input.get("edits") if name == "MultiEdit" else [tool_input]
+    for pair in pairs if isinstance(pairs, list) else []:
+        old, new = str((pair or {}).get("old_string", "")), str((pair or {}).get("new_string", ""))
+        if not old or old not in after:
+            return None
+        after = after.replace(old, new) if (pair or {}).get("replace_all") else after.replace(old, new, 1)
+    return before, after
 
 
 def old_and_new_text(name: str, tool_input: dict, cwd: str | None) -> tuple[str, str]:
@@ -191,44 +233,11 @@ def how_an_edit_weakens(path: str, old: str, new: str, failing: bool, is_test: b
     return None
 
 
-def is_generated(path: str) -> bool:
-    return os.path.basename(path.rstrip("/*")) in GENERATED_NAMES
-
-
-def deletes_too_much(word: str, inside_project=lambda _: False) -> bool:
-    """Would a recursive delete of this reach the root, home, the whole working directory, or outside it?
-
-    A folder in the project written as an absolute path is the same delete as `rm -rf src`, which isn't asked about.
-    """
-    if not word:
-        return False
-    if word == "$" or word.startswith(("$(", "`", "$PWD", "${PWD", "$HOME", "${HOME", "~")):
-        return True
-    if word.startswith("$"):
-        return False  # a variable can't be judged from here, and most hold a temp path
-    path = os.path.normpath(word)
-    if word in ("*", "./*", "../*", "/*") or path in (".", "..", "/") or path.startswith("../"):
-        return True
-    if not path.startswith("/") or path.startswith(("/tmp/", "/private/tmp/", "/var/folders/")) or inside_project(path):
-        return False
-    return not is_generated(path)
-
-
 def drops_data(sql: str) -> bool:
     """A drop or truncate, or a DELETE or UPDATE statement with no WHERE, judged a statement at a time.
     Quoted text and comments are blanked first, so a `;` or `WHERE` inside them neither splits a statement nor stands in for its condition."""
     plain = _SQL_TEXT_AND_COMMENTS.sub(lambda match: match.group(0)[0] * 2 if match.group(0)[0] in "'\"" else " ", sql)
     return bool(DROPS_DATA.search(plain)) or any(_CHANGES_ROWS.search(statement) and not re.search(r"\bwhere\b", statement, re.I) for statement in plain.split(";"))
-
-
-def _subcommand(program: str, args: list[str]) -> str | None:
-    words = iter(args)
-    for word in words:
-        if word in _TAKES_A_VALUE:
-            next(words, None)
-        elif word in _SUBCOMMANDS[program]:
-            return word
-    return None
 
 
 def _own_settings(words: list[str]) -> dict[str, str]:
@@ -242,7 +251,7 @@ def _own_settings(words: list[str]) -> dict[str, str]:
         match = _ENVIRONMENT.fullmatch(plain)
         name = os.path.basename(plain)
         if name in _DROPS_THE_ENVIRONMENT or (after_env and (plain == "-" or re.fullmatch(r"-[a-zA-Z]*[iu].*|--(?:ignore-environment|unset)\b.*", plain))) \
-                or (after_exec and re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", plain)):
+                or (after_exec and re.fullmatch(r"-[abd-zA-Z]*c[a-zA-Z]*", plain)):
             settings.clear()
         if match and (in_front or reads_arguments):
             settings[plain.split("=", 1)[0]] = match.group(1)
@@ -260,58 +269,110 @@ def in_a_test_environment(commands: list[list[str]]) -> list[bool]:
     return [bool(own) and all(value == "test" for value in own.values()) for own in map(_own_settings, commands)]  # NODE_ENV=test beside RAILS_ENV=production still asks
 
 
-def _empties_a_store(name: str, lowered: list[str]) -> str | None:
-    """The commands whose danger is in their arguments' shape rather than in a fixed subcommand."""
-    if name == "aws" and (any(_AWS_DESTRUCTIVE.fullmatch(arg) for arg in lowered) or (("s3" in lowered and "rb" in lowered) or ("s3" in lowered and "rm" in lowered and "--recursive" in lowered))):
-        return "this `aws` command is hard to undo."
-    if name == "redis-cli" and lowered[-1:] in (["flushall"], ["flushdb"]) and lowered[-2:-1] not in (["get"], ["set"], ["del"], ["exists"], ["type"]):
-        return f"`redis-cli {lowered[-1]}` empties the database."
-    if any(os.path.basename(arg) == "manage.py" and lowered[index + 1:index + 2] == ["flush"] for index, arg in enumerate(lowered)):
-        return "`manage.py flush` empties the database."
+def _saved_as(name: str, args: list[str]) -> list[str]:
+    """Where curl or wget writes what it fetches: curl's `-o`, `--output`, `-fsSLo f` or `-o/tmp/f`, wget's `-O` and `-qO f`, or the URL's own name
+    for curl's `-O`, `-LO` and plain wget."""
+    letter, long_flag = ("o", "--output") if name == "curl" else ("O", "--output-document")
+    saved, remote = [], False
+    for index, arg in enumerate(args):
+        following = args[index + 1] if index + 1 < len(args) else ""
+        if arg == long_flag or arg.startswith(long_flag + "="):
+            saved.append(arg.split("=", 1)[1] if "=" in arg else following)
+        elif arg == "--remote-name":
+            remote = True
+        elif arg.startswith("-") and not arg.startswith("--") and len(arg) > 1:
+            at = arg.find(letter, 1)
+            if at == 1 or (at > 1 and arg[1:at].isalpha()):  # the flags before it take no value
+                saved.append(arg[at + 1:] or following)
+            elif name == "curl" and "O" in arg and arg[1:].isalpha():
+                remote = True
+    if remote or (name == "wget" and not saved):
+        folder = next((args[index + 1] for index, arg in enumerate(args[:-1]) if arg in ("-P", "--directory-prefix", "--output-dir")), "")
+        saved += [os.path.join(folder, arg.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]) for arg in args if re.match(r"(?:https?|ftp)://", arg)]
+    return [os.path.normpath(path) for path in saved if path and path != "-"]
+
+
+def _runs_what_it_downloaded(text: str, programs: list[tuple[str, list[str]]]) -> bool:
+    """`curl -o i.sh URL && bash i.sh` is a download run straight away, as much as `curl URL | sh` is. Checked in one pass, in order. A program
+    named as a command shows only its own name here, so that is compared by name, and a file handed to an interpreter by its whole path."""
+    downloaded = {os.path.normpath(found) for found in _SAVED_BY_REDIRECT.findall(text)}
+    runnable: set[str] = set()  # `./tool` shows here as `tool`, the same as one on the PATH, so it counts once chmod +x made it runnable
+    for name, args in programs:
+        if name in ("curl", "wget"):
+            downloaded.update(_saved_as(name, args))
+            continue
+        if name == "chmod" and any("x" in arg for arg in args if arg.startswith("+") or re.fullmatch(r"[0-7]{3,4}", arg)):
+            runnable.update(os.path.basename(arg) for arg in args if not arg.startswith("+") and not re.fullmatch(r"[0-7]{3,4}", arg))
+        handed = next((arg for arg in args if not arg.startswith("-")), "") if name in RUNS_A_FILE and "-n" not in args else ""  # -n only checks syntax
+        names = {os.path.basename(path) for path in downloaded}
+        if downloaded and ((name in names and name in runnable) or (handed and os.path.normpath(handed) in downloaded)):
+            return True
+    return False
+
+
+def _downloaded_run_or_credential_printed(text: str, programs: list[tuple[str, list[str]]]) -> str | None:
+    """Two asks the owner chose on 2026-11-07: running a file the same command downloaded, and printing a credential file into the conversation."""
+    if _runs_what_it_downloaded(text, programs):
+        return "this runs a file it just downloaded."
+    printed = credential_printed(programs)
+    if printed:
+        return f"this prints {printed}, which holds credentials, into the conversation and its logs. `cut -d= -f1 .env` shows what's set without the values."
     return None
-
-
-def _hard_to_undo(name: str, args: list[str], testing: bool = False) -> str | None:
-    lowered = [arg.lower() for arg in args]
-    if any(_ONLY_LOOKS.fullmatch(arg) for arg in args) or lowered[:1] == ["help"]:
-        return None
-    emptied = _empties_a_store(name, lowered)
-    if emptied:
-        return emptied
-    program = name if name in HARD_TO_UNDO else next((arg for arg in lowered if arg in HARD_TO_UNDO), None) if name in _RUNS_ANOTHER_PROGRAM else None
-    if program is None or (program == "gcloud" and lowered[:1] == ["config"]) or (program in ("rails", "rake", "prisma") and testing):
-        return None
-    if program in _SUBCOMMAND_MUST_BE:
-        after = lowered[lowered.index(program) + 1:] if name != program else lowered  # `npx kubectl delete` is kubectl's own words after its name
-        if "-h" in after or (_subcommand(program, after) or "") not in _SUBCOMMAND_MUST_BE[program]:
-            return None
-    words = next((words for words in HARD_TO_UNDO[program] if all(word in lowered for word in words)), None)
-    return f"`{' '.join((program, *words))}` is hard to undo." if words is not None else None
 
 
 def reason_for_a_person(text: str, programs: list[tuple[str, list[str]]], inside_project=lambda _: False, testing: list[bool] | None = None) -> str | None:
     """Why someone should see this command first. `programs` is each simple command's program and arguments, and `testing` whether each runs in a test environment."""
+    whole = _whole_command_reason(text, programs)
+    if whole:
+        return whole
+    guards = guarded_names(text)
+    known: list[set[str]] = []  # what this command assigns, read once and only if a delete needs it, since a command can hold thousands
+
+    def assigned() -> set[str]:
+        if not known:
+            known.append(assigned_names(text) | guards)
+        return known[0]
+
+    if "xargs" in text and "find" in text:
+        piped = find_piped_to_a_delete(text, assigned())
+        if piped:
+            return piped
+    for index, (name, args) in enumerate(programs):
+        reason = _step_reason(name, args, text, inside_project, bool(testing and testing[index]), guards, assigned)
+        if reason:
+            return reason
+    return None
+
+
+def _whole_command_reason(text: str, programs: list[tuple[str, list[str]]]) -> str | None:
+    """What the command as a whole does: switches off the checks, runs a download, prints a credential, or deletes too much on Windows."""
     if disables_checks(text) and SETTINGS_FILE.search(text):
         return "this turns off the checks on this session's work."
-    if PIPE_TO_SHELL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", text)) or SHELL_RUNS_DOWNLOAD.search(text):
+    if PIPE_TO_SHELL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", text)) or SHELL_RUNS_DOWNLOAD.search(text) or POWERSHELL_RUNS_DOWNLOAD.search(text):
         return "this runs a download straight in a shell."
+    reads_or_runs = _downloaded_run_or_credential_printed(text, programs)
+    if reads_or_runs:
+        return reads_or_runs
     windows = _WINDOWS_RECURSIVE_DELETE.search(_QUOTED_TEXT.sub("''", text))
     if windows and _TOO_MUCH_ON_WINDOWS.match(windows.group(1) or windows.group(3) or ""):
         return f"this recursively deletes {windows.group(1) or windows.group(3)}, and on Windows that skips the Recycle Bin."
-    for index, (name, args) in enumerate(programs):
-        if name == "rm" and any(re.fullmatch(r"-[a-zA-Z]*[rR][a-zA-Z]*|--recursive", arg) for arg in args):
-            targets = [arg for arg in args if not arg.startswith("-") and deletes_too_much(arg, inside_project)]
-            if targets:
-                return f"this recursively deletes {targets[0]}."
-        elif _hard_to_undo(name, args, bool(testing and testing[index])):
-            return _hard_to_undo(name, args, bool(testing and testing[index]))
-        elif name in SQL_CLIENTS and any(drops_data(arg) for arg in args):
-            return "this drops or truncates data."
-        elif name in NETWORK_CLIENTS:
-            shape = secret_shape(" ".join(args))
-            if shape:
-                return f"this sends what looks like {shape} over the network."
     return None
+
+
+def _step_reason(name: str, args: list[str], text: str, inside_project, testing: bool, guards: set[str], assigned: Callable[[], set[str]]) -> str | None:
+    """Why one simple command needs a person. `assigned` gives what the whole command assigns, read the first time it's asked for."""
+    unset = deletes_through_unset(name, args, assigned)
+    if unset:
+        return unset
+    if name == "rm" and any(arg == "--recursive" or RECURSIVE_FLAG.fullmatch(arg) for arg in args):
+        return deletes_too_much_of(args, text, inside_project, assigned())
+    hard = hard_to_undo(name, args, testing, guards)
+    if hard:
+        return hard
+    if name in SQL_CLIENTS and any(drops_data(arg) for arg in args):
+        return "this drops or truncates data."
+    shape = secret_shape(" ".join(args)) if name in NETWORK_CLIENTS else None
+    return f"this sends what looks like {shape} over the network." if shape else None
 
 
 def installed_packages(name: str, args: list[str], installers: dict) -> list[str]:
@@ -372,9 +433,10 @@ def claims_a_measured_change(message: str) -> bool:
 
 def leaves_out_a_failure(message: str) -> bool:
     """No word of a failure, or a claim that everything passes which nothing in its own sentence qualifies. "All the pricing tests pass" is scoped, so it can sit beside an honest failure."""
-    if not MENTIONS_FAILURE.search(message):
+    sentences = sentences_of(message)
+    if not any(map(mentions_a_failure, sentences)):
         return True
-    return any(CLAIMS_PASSING.search(s) and not SCOPED_CLAIM.search(s) and not NEGATED_CLAIM.search(s) and not MENTIONS_FAILURE.search(s) for s in sentences_of(message))
+    return any(CLAIMS_PASSING.search(s) and not SCOPED_CLAIM.search(s) and not NEGATED_CLAIM.search(s) and not mentions_a_failure(s) for s in sentences)
 
 
 def has_an_unsettled_failure(checks: list[dict]) -> bool:
@@ -443,3 +505,184 @@ def names_to_report(turn: list[dict], is_manifest: re.Pattern) -> set[str]:
         elif entry.get("kind") == "edit" and (is_manifest.search(path) or CHECK_CONFIG.search(path)):
             names.add(os.path.basename(path))
     return {name for name in names if name and name not in told}
+
+
+# ---------------------------------------------------------------- an edit that makes a check easier to pass, whatever ran before it (F270, F276)
+
+# Each is a setting or wording that lets a check fail without failing anything. Counted before and after, so one that was already there isn't news.
+_RELAXES = (
+    ("lets a CI job or step fail without failing the build", re.compile(r"\bcontinue-on-error:[ \t]*true\b|\ballow_failure:[ \t]*true\b")),
+    ("switches off a type or lint check for whole files or modules", re.compile(r"\bignore_errors[ \t]*=[ \t]*true\b|@ts-nocheck\b|/\*[ \t]*eslint-disable[ \t]*\*/|\bstrict[\"']?[ \t]*[:=][ \t]*false\b"
+                                                                              r"|#[ \t]*(?:pylint|mypy|flake8)[ \t]*:[ \t]*(?:disable-all|ignore-errors|noqa)\b")),
+    ("stops a failing check from failing the build", re.compile(r"<failOnError>[ \t]*false|<failOnViolation>[ \t]*false|<failsOnError>[ \t]*false|<testFailureIgnore>[ \t]*true"
+                                                                r"|\bignoreFailures[ \t]*=[ \t]*true\b|\babortOnError[ \t]*[=(]?[ \t]*false\b|\bwarningsAsErrors[ \t]*[=(]?[ \t]*false\b"
+                                                                r"|--exit-zero\b|\bfail_ci_if_error:[ \t]*false\b")),
+    ("skips tests in the build", re.compile(r"<skipTests>[ \t]*true|\bmaven\.test\.skip[ \t]*=[ \t]*true|-DskipTests\b|--deselect\b|--ignore(?:-glob)?[= ]|--testPathIgnorePatterns\b"
+                                            r"|--passWithNoTests\b|\bcollect_ignore\b")),
+)
+# A check's failure ignored in a script or Makefile: `pytest || true`, or make's `-` before a recipe line.
+_CHECK_COMMAND = (r"(?:pytest|py\.test|tox|nox|mypy|pyright|ruff|flake8|pylint|bandit|eslint|tsc|jest|vitest|mocha|playwright|cypress|rspec|rubocop|phpunit|phpstan|psalm"
+                  r"|golangci-lint|go[ \t]+(?:test|vet)|cargo[ \t]+(?:test|clippy)|(?:npm|yarn|pnpm|bun)[ \t]+(?:run[ \t]+)?(?:test|lint|typecheck|check)[\w:-]*"
+                  r"|make[ \t]+(?:test|lint|check|verify)[\w-]*|mvnw?[ \t][^\n]{0,200}\b(?:test|verify)|gradlew?[ \t][^\n]{0,200}\b(?:test|check)|shellcheck|semgrep|spotbugs|checkstyle"
+                  r"|detekt|ktlint|swiftlint|clippy|staticcheck|govulncheck)\b")
+_CHECK_RUN = re.compile(_CHECK_COMMAND)
+_FAILURE_IGNORED = re.compile(r"^\t-[ \t]*\S|(?:\|\||;)[ \t]*(?:true|:|exit[ \t]+0)[ \t]*(?:$|[;&|)#\"'])")
+# Lint and type-check configuration, where an added path is one the checks now skip.
+_EXCLUDING_CONFIG = re.compile(r"(?:^|/)(?:\.rubocop\.ya?ml|\.eslintignore|\.eslintrc[^/]*|eslint\.config\.[^/]+|pyproject\.toml|setup\.cfg|\.flake8|tox\.ini|\.?ruff\.toml|mypy\.ini"
+                               r"|\.golangci\.ya?ml|tsconfig[^/]*\.json|\.stylelintignore|phpcs\.xml(?:\.dist)?|phpstan\.neon|\.pylintrc|sonar-project\.properties|jest\.config\.[^/]+"
+                               r"|vitest\.config\.[^/]+|\.coveragerc|codecov\.ya?ml|\.swiftlint\.yml|detekt\.ya?ml)$")
+_EXCLUDING_KEY = re.compile(r"(?i)\b(?:exclude|excludes|extend-exclude|ignore|ignores|ignore_patterns|ignorePatterns|omit|skip-dirs|skip-files|exclude-dirs|exclude-files"
+                            r"|testPathIgnorePatterns|coveragePathIgnorePatterns|sonar\.exclusions|per-file-ignores)\b")
+_GENERATED_PATH = re.compile(r"(?:^|[/\"'\s*])(?:db/schema\.rb|db/structure\.sql|bin|vendor|node_modules|tmp|log|logs|build|dist|out|target|coverage|generated|gen|\.venv|venv"
+                             r"|__pycache__|public|storage|third_party|external|migrations?|\.git|\.cache|\.next|\.turbo|docs?)(?:/|[\"'\s]|$)"
+                             r"|_pb2(?:_grpc)?\.py|\.pb\.go|\.min\.js|\.d\.ts\b|\.generated\.|\bschema\.rb\b")
+# Each run starts only where its characters start: retried from inside a long word, the runs made this quadratic.
+_PATH_ENTRY = re.compile(r"(?<![\w.*-])[\w.*-]+/[\w./*-]*|\*\*|(?<![\w-])[\w-]+\.(?:rb|py|js|ts|tsx|go|java|kt|php)\b")
+_THRESHOLD = re.compile(r"(?i)\b(branches|functions|lines|statements|fail_under|fail-under|cov-fail-under|minimum[_-]?coverage|coverage[_-]?minimum|threshold|minimum)\b[\"']?[ \t]*[:=][ \t]*[\"']?(\d+(?:\.\d+)?)")
+_EXACT = re.compile(r"\bassert(?:Equals?|Same|_eq!?)\b|\bassertThat\b[^\n]{0,300}\.(?:isEqualTo|isEqualByComparingTo|containsExactly)\b|\.toBe\(|\.toEqual\(|\.toStrictEqual\("
+                    r"|\.to\s+eql?\b|\bassert\b[^\n]{0,300}==|\b(?:require|assert)\.Equal\(|\bEqual\(t,|\.to\.(?:equal|eql)\(")
+_LOOSE = re.compile(r"\bassertNotNull\b|\bassertNotEquals?\b|\.isNotNull\(|\.toBeDefined\(|\.toBeTruthy\(|\.not\.toBeNull\(|\.not\.toBeUndefined\(|\bassert_not_nil\b|\bbe_present\b"
+                    r"|\.to\s+be_truthy\b|\bNotNil\(|\bNotEmpty\(|\bassert\b[^\n=]{0,300}\bis\s+not\s+None\b|\bassertIsNotNone\(|\.to\.exist\b|\.to\.be\.ok\b")
+_LITERAL = re.compile(r"\"[^\"\n]{0,200}\"|'[^'\n]{0,200}'|(?<![\w.])\d+(?:\.\d+)?(?![\w.])")
+MAX_CHECKS_COMPARED = 20
+_HOOK_COMMAND = re.compile(r"\"type\"[ \t]*:[ \t]*\"command\"")
+_BUILD_FILE = re.compile(r"(?:^|/)(?:Dockerfile[^/]*|Containerfile|[^/]*\.dockerfile|Makefile|GNUmakefile|Jenkinsfile|Taskfile\.ya?ml|justfile|\.gitlab-ci\.yml|[^/]*\.sh)$"
+                         r"|(?:^|/)(?:\.github/workflows|\.circleci|\.buildkite)/")
+
+
+def _lines(text: str) -> list[str]:
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+class _Change(NamedTuple):
+    """An edit, with the views of it the checks below compare. Lines are compared stripped, except where a recipe's tab or leading `-` matters."""
+    path: str
+    old: str
+    new: str
+    is_test: bool
+    gained: str  # the lines it adds, repeats kept, joined: every relaxing pattern matches within a line, so these count what the files would
+    lost: str
+    added: list[str]  # stripped lines only the new text has
+    removed: list[str]
+    kept_old: set[str]
+
+
+def how_a_change_relaxes(path: str, old: str, new: str, is_test: bool) -> str | None:
+    """How this edit makes a check easier to pass whatever the code does, read from the change itself. A note, never a hold: the hold in
+    how_an_edit_weakens is for edits right after a check failed."""
+    change = _read_change(path, old, new, is_test)
+    return next((how for check in _RELAXING_CHECKS for how in [check(change)] if how), None)
+
+
+def _read_change(path: str, old: str, new: str, is_test: bool) -> _Change:
+    old_counts, new_counts = Counter(old.split("\n")), Counter(new.split("\n"))
+    old_lines, new_lines = _lines(old), _lines(new)
+    kept_old, kept_new = set(old_lines), set(new_lines)  # built once: a set per line would be quadratic on a large file
+    return _Change(path, old, new, is_test, "\n".join((new_counts - old_counts).elements()), "\n".join((old_counts - new_counts).elements()),
+                   [line for line in new_lines if line not in kept_old], [line for line in old_lines if line not in kept_new], kept_old)
+
+
+def _relaxing_setting(change: _Change) -> str | None:
+    return next((how for how, pattern in _RELAXES if len(pattern.findall(change.gained)) > len(pattern.findall(change.lost))), None)
+
+
+def _failure_ignored(change: _Change) -> str | None:
+    raw_added = (line for line in change.new.split("\n") if line.strip() and line.strip() not in change.kept_old)
+    return "lets a check's failure pass unnoticed" if any(_FAILURE_IGNORED.search(line) and _CHECK_RUN.search(line) for line in raw_added) else None
+
+
+def _hooks_removed(change: _Change) -> str | None:
+    fewer = SETTINGS_FILE.search(change.path) and len(_HOOK_COMMAND.findall(change.new)) < len(_HOOK_COMMAND.findall(change.old))
+    return "removes hooks that check this session's work" if fewer else None
+
+
+def _excluded_or_lowered(change: _Change) -> str | None:
+    if not _EXCLUDING_CONFIG.search(change.path):
+        return None
+    excluded = _excluded_paths(change.new, set(change.added))
+    return f"stops the checks covering {excluded}" if excluded else _lowered_threshold(change.old, change.new)
+
+
+def _runs_check_steps(change: _Change) -> bool:
+    """A build, CI or check configuration file, or a manifest whose scripts run checks, that this edit takes lines out of."""
+    return bool((_BUILD_FILE.search(change.path) or CHECK_CONFIG.search(change.path) or change.path.endswith(("package.json", "pyproject.toml", "tox.ini"))) and change.removed)
+
+
+def _check_step_removed(change: _Change) -> str | None:
+    if not _runs_check_steps(change):
+        return None
+    dropped = list(dict.fromkeys(found.group(0) for line in change.removed for found in [_CHECK_RUN.search(line)] if found))[:MAX_CHECKS_COMPARED]
+    kept = " ".join(change.added)
+    gone = [check for check in dropped if check not in kept]  # each a pass over what was added, so only the first few
+    return f"removes the step that runs `{gone[0]}`" if gone else None
+
+
+def _packages_narrowed(change: _Change) -> str | None:
+    if not _runs_check_steps(change):
+        return None
+    narrowed = next((line for line in change.removed if "./..." in line and _CHECK_RUN.search(line)), None)
+    if narrowed and not any("./..." in line for line in change.added if _CHECK_RUN.search(line)):
+        return "narrows which packages the tests run on"
+    return None
+
+
+def _assertions_loosened(change: _Change) -> str | None:
+    if not change.is_test:
+        return None
+    loosened = live_count(_EXACT, change.gained) < live_count(_EXACT, change.lost) and live_count(_LOOSE, change.gained) > live_count(_LOOSE, change.lost)
+    return "replaces exact assertions with ones that pass for almost any value" if loosened else None
+
+
+def _expected_values_changed(change: _Change) -> str | None:
+    if not change.is_test:
+        return None
+    before = {_LITERAL.sub("§", line) for line in change.removed if ASSERTION.search(line)}
+    changed = [line for line in change.added if ASSERTION.search(line) and _LITERAL.sub("§", line) in before]
+    return f"changes the expected values in {len(changed)} assertion{'s' if len(changed) > 1 else ''}" if changed else None
+
+
+# In the order they're asked: the first that applies names how the edit relaxes a check.
+_RELAXING_CHECKS = (_relaxing_setting, _failure_ignored, _hooks_removed, _excluded_or_lowered, _check_step_removed, _packages_narrowed, _assertions_loosened,
+                    _expected_values_changed)
+
+
+def _excluded_paths(new: str, added: set[str]) -> str | None:
+    """An added path, under an exclude or ignore key, that is hand-written code rather than generated or vendored files."""
+    key_seen = False
+    for line in new.split("\n"):
+        stripped = line.strip()
+        if _EXCLUDING_KEY.search(stripped):
+            key_seen = True
+        elif re.match(r"[ \t]*[\w.\"'-]+[ \t]*[:=]", line) and not stripped.startswith("-"):
+            key_seen = False  # another key, so the list under the exclusion has ended
+        if stripped in added and (key_seen or _EXCLUDING_KEY.search(stripped)) and not _GENERATED_PATH.search(stripped):
+            entry = _PATH_ENTRY.search(stripped.split("=", 1)[-1])
+            if entry:
+                return entry.group(0)
+    return None
+
+
+def _lowered_threshold(old: str, new: str) -> str | None:
+    before = {}
+    for key, value in _THRESHOLD.findall(old):
+        before.setdefault(key.lower(), []).append(float(value))
+    for key, value in _THRESHOLD.findall(new):
+        values = before.get(key.lower())
+        if values and float(value) < min(values):
+            return f"lowers the {key} threshold to {value}"
+    return None
+
+
+def pipe_to_shell_added(path: str, old: str, new: str) -> str | None:
+    """The host of a download newly piped into a shell in a build, CI or script file, which runs whatever that URL serves each time."""
+    if not _BUILD_FILE.search(path) and not CHECK_CONFIG.search(path):
+        return None
+    before = set(_lines(old))
+    for line in _lines(new):
+        if line in before:
+            continue
+        unquoted = re.sub(r"'[^']*'|\"[^\"]*\"", "''", line)
+        if PIPE_TO_SHELL.search(unquoted) or SHELL_RUNS_DOWNLOAD.search(line):
+            found = re.search(r"https?://([^/\s'\")]+)", line)
+            return found.group(1) if found else "the network"
+    return None

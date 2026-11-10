@@ -24,6 +24,7 @@ from occam_tools.catalog import BY_ID  # noqa: E402
 from rule_cases_quality import QUALITY_CASES, SEVERITY, STDLIB_NEAR_MISSES  # noqa: E402
 from rule_cases_resources import CONFIG_CASES, RESOURCE_CASES, SECRET_CASES  # noqa: E402
 from rule_cases_js import JS_CASES  # noqa: E402
+from rule_cases_py import PY_LEADS, PY_TEST_FILE_CASES  # noqa: E402
 from scan_notes import _is_serious  # noqa: E402
 from test_change_checks import notes_on, repository, write  # noqa: E402
 
@@ -136,6 +137,7 @@ def test_the_new_rules_are_in_the_catalog_and_have_cases():
 
 
 ADDED_CASES = [*QUALITY_CASES, *RESOURCE_CASES, *JS_CASES, *CONFIG_CASES, *SECRET_CASES]
+ADDED_CASES = [*ADDED_CASES, *PY_LEADS, *PY_TEST_FILE_CASES]  # team py
 
 
 @pytest.mark.parametrize("rule, path, positive, negative", ADDED_CASES, ids=[f"{case[0]}-{index}" for index, case in enumerate(ADDED_CASES)])
@@ -225,7 +227,7 @@ def test_each_new_gate_note_speaks_on_the_bad_change_and_not_its_near_miss(rule,
 def test_an_eslint_rule_name_full_of_slashes_stays_fast():
     """review3: the pattern once had nested repeats that went cubic on a long run of slashes."""
     started = time.monotonic()
-    change_checks._exemptions(".eslintrc.json", '{"' + "a/" * 3000 + '": "warn"}\n')
+    change_checks._exemptions(".eslintrc.json", '{"' + "a/" * 12000 + '": "warn"}\n')  # quadratic took about 30 s here, linear 2 ms
     assert time.monotonic() - started < 1
 
 

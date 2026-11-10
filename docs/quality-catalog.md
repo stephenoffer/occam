@@ -12,36 +12,36 @@ Each row counts once, under the firmest thing it has.
 
 | Level | All | P0 | What it means |
 |---|---|---|---|
-| Stops it or sends it back | 29 | 15 | A hook denies it, asks a person, holds it once, or sends the agent back. |
+| Stops it or sends it back | 31 | 17 | A hook denies it, asks a person, holds it once, or sends the agent back. |
 | Forces a step that can catch it | 25 | 11 | The agent is sent back until a check, scan or review has run, which may or may not catch this. |
-| Finds it | 211 | 30 | `occam scan` or `occam gate` can report an instance from the code. Leads, not proof. |
-| Says it at the moment | 43 | 4 | A hook adds one note when it applies, or `gate` asks the question. |
+| Finds it | 215 | 34 | `occam scan` or `occam gate` can report an instance from the code. Leads, not proof. |
+| Says it at the moment | 43 | 3 | A hook adds one note when it applies, or `gate` asks the question. |
 | A tool answers it, if run | 48 | 0 | An `occam` command answers it, if an agent or a person runs it and judges the result. |
-| Guidance and tracking only | 143 | 5 | Text the agent may ignore, plus at most a record such as `goal`. |
-| Nothing | 1 | 0 | No mechanism listed. |
+| Guidance and tracking only | 138 | 0 | Text the agent may ignore, plus at most a record such as `goal`. |
+| Nothing | 0 | 0 | No mechanism listed. |
 | **Total** | **500** | **65** | |
 
-**Fit** is the mapper's judgment of the row as a whole: 488 strong, 11 partial, 1 none. Strong means occam has something aimed at this failure itself, and for many rows that something is only a guidance sentence, which agents were measured opening in 1 of 21 and 1 of 15 runs. Partial means occam has only general advice, or covers some forms. 215 rows gained a mechanism in this work. 7 P0 rows are still partial or none: [Still open](#still-open) says what each would need.
+**Fit** is designed coverage, not measured: the mapper's judgment of the row as a whole: 500 strong, 0 partial, 0 none. [Measured recall (P0)](#measured-recall-p0) below shows how much of each P0 failure the mechanisms caught on cases written blind to them. Strong means occam has something aimed at this failure itself, and for many rows that something is only a guidance sentence, which agents were measured opening in 1 of 21 and 1 of 15 runs. Partial means occam has only general advice, or covers some forms. 215 rows gained a mechanism in a first pass. A second pass gave the remaining 71 a rule, a gate or goal check, a hook note, an ask or a Stop rider, or a guidance sentence, and the owner decided which of those may ask or send the agent back. Nine rows no static check can reach count as done with their guidance, by the owner's decision. No P0 row is still open.
 
 
 | Area | IDs | Rows | Strong | Partial | None |
 |---|---|---|---|---|---|
 | [Goals, scope and acceptance](#goal-goals-scope-and-acceptance) | F001–F020 | 20 | 20 | 0 | 0 |
 | [Repository discovery and context](#disc-repository-discovery-and-context) | F021–F040 | 20 | 20 | 0 | 0 |
-| [Planning and completing implementation](#plan-planning-and-completing-implementation) | F041–F060 | 20 | 19 | 1 | 0 |
-| [Reuse, dependencies and integrations](#reuse-reuse-dependencies-and-integrations) | F061–F080 | 20 | 19 | 1 | 0 |
+| [Planning and completing implementation](#plan-planning-and-completing-implementation) | F041–F060 | 20 | 20 | 0 | 0 |
+| [Reuse, dependencies and integrations](#reuse-reuse-dependencies-and-integrations) | F061–F080 | 20 | 20 | 0 | 0 |
 | [Simplicity, abstraction and structure](#simple-simplicity-abstraction-and-structure) | F081–F100 | 20 | 20 | 0 | 0 |
 | [API design, naming and types](#api-api-design-naming-and-types) | F101–F120 | 20 | 20 | 0 | 0 |
 | [Python semantics and idioms](#pysem-python-semantics-and-idioms) | F121–F140 | 20 | 20 | 0 | 0 |
 | [Python environments, packaging and tooling](#pyenv-python-environments-packaging-and-tooling) | F141–F160 | 20 | 20 | 0 | 0 |
 | [Domain correctness and algorithms](#domain-domain-correctness-and-algorithms) | F161–F180 | 20 | 20 | 0 | 0 |
 | [Test objectives, oracles and coverage](#oracle-test-objectives-oracles-and-coverage) | F181–F200 | 20 | 20 | 0 | 0 |
-| [Test realism, isolation and reliability](#real-test-realism-isolation-and-reliability) | F201–F220 | 20 | 18 | 2 | 0 |
-| [Debugging, review and truthful verification](#verify-debugging-review-and-truthful-verification) | F221–F240 | 20 | 18 | 2 | 0 |
+| [Test realism, isolation and reliability](#real-test-realism-isolation-and-reliability) | F201–F220 | 20 | 20 | 0 | 0 |
+| [Debugging, review and truthful verification](#verify-debugging-review-and-truthful-verification) | F221–F240 | 20 | 20 | 0 | 0 |
 | [Application security and trust boundaries](#appsec-application-security-and-trust-boundaries) | F241–F260 | 20 | 20 | 0 | 0 |
-| [Agent tools, supply chain and privacy](#agent-agent-tools-supply-chain-and-privacy) | F261–F280 | 20 | 15 | 4 | 1 |
+| [Agent tools, supply chain and privacy](#agent-agent-tools-supply-chain-and-privacy) | F261–F280 | 20 | 20 | 0 | 0 |
 | [Persistence, SQL and data migrations](#data-persistence-sql-and-data-migrations) | F281–F300 | 20 | 20 | 0 | 0 |
-| [Asynchronous execution and concurrency](#async-asynchronous-execution-and-concurrency) | F301–F320 | 20 | 19 | 1 | 0 |
+| [Asynchronous execution and concurrency](#async-asynchronous-execution-and-concurrency) | F301–F320 | 20 | 20 | 0 | 0 |
 | [Distributed systems and resilience](#dist-distributed-systems-and-resilience) | F321–F340 | 20 | 20 | 0 | 0 |
 | [Performance, algorithms and measurement](#perf-performance-algorithms-and-measurement) | F341–F360 | 20 | 20 | 0 | 0 |
 | [Memory, streaming and large datasets](#mem-memory-streaming-and-large-datasets) | F361–F380 | 20 | 20 | 0 | 0 |
@@ -51,6 +51,84 @@ Each row counts once, under the firmest thing it has.
 | [Multi-agent coordination and shared work](#team-multi-agent-coordination-and-shared-work) | F441–F460 | 20 | 20 | 0 | 0 |
 | [CI, delivery, deployment and operations](#ship-ci-delivery-deployment-and-operations) | F461–F480 | 20 | 20 | 0 | 0 |
 | [Documentation, maintenance and agent quality controls](#docs-documentation-maintenance-and-agent-quality-controls) | F481–F500 | 20 | 20 | 0 | 0 |
+
+## Measured recall (P0)
+
+Static recall, 2026-11-08: how much of each P0 failure occam's scan, gate and hooks caught on cases written by agents who never saw occam. These cases put code or tool calls through the hooks, scan and gate in a fresh repository, and never run commands. A positive counts as caught only if a mechanism listed on its row stopped it (an ask, a deny, a Stop send-back or a gate FAIL naming the rule) or found it (a scan or gate lead). It measures detection, not whether an agent then fixes the code, and the case authors worked from the same failure list. The plan was fixed in `evals/PREREGISTRATION.md` before the held-out run. Six P0 rows that only a whole session shows (F001, F002, F181, F221, F222, F463) aren't in it.
+
+| Set | Positives | Caught | Stopped | Found | Forced review | Note only | Missed | Near misses flagged |
+|---|---|---|---|---|---|---|---|---|
+| **Held-out, after** (306 cases, never read while fixing) | 188 | 88 | 34 | 54 | 17 | 11 | 72 | 31 of 118 |
+| Held-out, before | 188 | 52 | 28 | 24 | 18 | 4 | 114 | 32 of 118 |
+| Development, after (564 cases, the fixes were made against these) | 376 | 285 | 81 | 204 | 9 | 50 | 32 | 33 of 188 |
+| Development, before | 376 | 90 | 46 | 44 | 33 | 8 | 245 | 42 of 188 |
+
+Most flagged near misses are the Stop hook requiring a fresh review of a high-consequence file, which is a cost and not a claim of a defect: 14 of the 31 held-out ones. Of the rest, one is new since the fixes, a memory-safety reminder in `gate` on Go `unsafe`, and two earlier ones are gone. Rows that one file can't show, such as authorization decided in another file, revocation and durability, stay mostly guidance and review.
+
+Held-out, by row (positives caught of written, near misses flagged of written):
+
+| Row | Caught | Forced review | Note only | Near misses flagged |
+|---|---|---|---|---|
+| F066 | 1 of 3 | 0 | 0 | 1 of 2 |
+| F130 | 2 of 3 | 0 | 0 | 1 of 2 |
+| F210 | 1 of 4 | 0 | 2 | 0 of 2 |
+| F241 | 0 of 3 | 0 | 0 | 1 of 2 |
+| F242 | 1 of 3 | 0 | 0 | 1 of 2 |
+| F243 | 0 of 3 | 2 | 0 | 0 of 2 |
+| F244 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F245 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F246 | 3 of 3 | 0 | 0 | 0 of 2 |
+| F247 | 0 of 3 | 0 | 0 | 0 of 2 |
+| F248 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F249 | 2 of 3 | 0 | 0 | 1 of 2 |
+| F250 | 3 of 3 | 0 | 0 | 1 of 2 |
+| F251 | 1 of 3 | 0 | 0 | 0 of 2 |
+| F252 | 1 of 3 | 2 | 0 | 1 of 2 |
+| F253 | 2 of 3 | 1 | 0 | 1 of 2 |
+| F254 | 3 of 3 | 0 | 0 | 1 of 2 |
+| F255 | 1 of 3 | 0 | 0 | 0 of 2 |
+| F257 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F258 | 0 of 3 | 2 | 0 | 1 of 2 |
+| F259 | 1 of 3 | 1 | 0 | 2 of 2 |
+| F260 | 0 of 3 | 3 | 0 | 2 of 2 |
+| F261 | 0 of 3 | 0 | 0 | 0 of 2 |
+| F262 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F263 | 2 of 4 | 0 | 0 | 0 of 2 |
+| F264 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F265 | 4 of 4 | 0 | 0 | 1 of 2 |
+| F266 | 2 of 4 | 0 | 0 | 0 of 2 |
+| F267 | 3 of 3 | 0 | 0 | 0 of 2 |
+| F268 | 1 of 3 | 0 | 0 | 1 of 2 |
+| F269 | 1 of 3 | 0 | 0 | 0 of 2 |
+| F270 | 0 of 4 | 0 | 2 | 0 of 2 |
+| F271 | 2 of 3 | 1 | 0 | 0 of 2 |
+| F273 | 0 of 4 | 0 | 3 | 0 of 2 |
+| F274 | 0 of 3 | 0 | 0 | 0 of 2 |
+| F275 | 1 of 4 | 0 | 0 | 0 of 2 |
+| F276 | 1 of 4 | 0 | 2 | 0 of 2 |
+| F278 | 3 of 4 | 0 | 0 | 2 of 2 |
+| F280 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F281 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F282 | 0 of 3 | 2 | 0 | 1 of 2 |
+| F283 | 1 of 3 | 0 | 0 | 0 of 2 |
+| F291 | 3 of 3 | 0 | 0 | 1 of 2 |
+| F294 | 0 of 3 | 0 | 0 | 0 of 2 |
+| F295 | 0 of 3 | 1 | 0 | 0 of 2 |
+| F299 | 3 of 4 | 0 | 0 | 1 of 2 |
+| F305 | 1 of 3 | 0 | 0 | 0 of 2 |
+| F324 | 1 of 3 | 1 | 0 | 2 of 2 |
+| F329 | 1 of 3 | 1 | 0 | 1 of 2 |
+| F336 | 0 of 3 | 0 | 0 | 0 of 2 |
+| F386 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F387 | 3 of 3 | 0 | 0 | 2 of 2 |
+| F388 | 2 of 3 | 0 | 0 | 2 of 2 |
+| F426 | 3 of 3 | 0 | 0 | 0 of 2 |
+| F429 | 3 of 3 | 0 | 0 | 2 of 2 |
+| F435 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F436 | 1 of 3 | 0 | 0 | 1 of 2 |
+| F437 | 2 of 3 | 0 | 0 | 0 of 2 |
+| F447 | 2 of 4 | 0 | 2 | 0 of 2 |
+
 
 ## Reading a row
 
@@ -121,7 +199,7 @@ Each row counts once, under the firmest thing it has.
 | F048 | P1 | Implementing the core but omitting integration | guide:real-entry-point gate:new-unused gate:unregistered-file gate:judgment | scan:unreferenced-def scan:orphan-module query:entry | strong | XF-15 XF-16 TEAM-23 | - |
 | F049 | P1 | Leaving callers on old signatures | gate:caller-not-updated guide:everywhere-it-reaches | gate:caller-not-updated scan:wrong-arg-count query:api query:find tool:tools | strong | XF-01 XF-04 XF-05 XF-26 | - |
 | F050 | P1 | Forgetting fixtures and example migrations | guide:everywhere-it-reaches gate:model-no-migration gate:removed-still-named guide:including-strings-config-templates guide:examples-public-documentation-should guide:stored-data | gate:removed-still-named gate:model-no-migration tool:docs | strong | XF-24 XF-48 DATA-22 | - |
-| F051 | P1 | Abandoning difficult requirements silently | guide:no-silent-narrowing hook:stop-short tool:goal gate:judgment | tool:goal | partial | SCOPE-29 SCOPE-36 LOGIC-14 XF-44 | A silent omission gets past hook:stop-short, which needs the message to admit it, and `goal` catches only what the agent recorded. Out of reach for scan and gate, which never see the request; the cheapest real check would be a Stop-hook note naming items of an enumerated request that the report never mentions. |
+| F051 | P1 | Abandoning difficult requirements silently | guide:no-silent-narrowing hook:stop-short tool:goal gate:judgment note:listed-item-left-out | tool:goal | strong | SCOPE-29 SCOPE-36 LOGIC-14 XF-44 | - |
 | F052 | P1 | Expanding a bug fix into a rewrite | note:rewrite guide:surgical guide:correctness-beats guide:targeted-edits gate:size gate:scope | gate:size gate:scope | strong | SCOPE-05 SCOPE-06 SCOPE-09 | - |
 | F053 | P1 | Mixing unrelated formatting and semantic edits | gate:format-churn guide:surgical guide:diff-moves-code-changes | gate:format-churn | strong | SCOPE-07 XF-51 | - |
 | F054 | P1 | Patching symptoms repeatedly | guide:cause-established guide:three-fails guide:layer-owns-it note:failed-streak | query:history scan:swallowed-exception | strong | LOGIC-47 LOOP-01 SCOPE-37 SEC-07 LOC-06 | - |
@@ -141,7 +219,7 @@ Each row counts once, under the firmest thing it has.
 | F063 | P1 | Ignoring already-installed dependencies | guide:capabilities-compared note:dependency-facts gate:manifest-note guide:what-exists-before-adding | scan:competing-dependencies tool:deps | strong | REUSE-17 REUSE-18 ARCH-15 | - |
 | F064 | P1 | Skipping a third-party solution assessment | guide:capabilities-compared guide:established-libraries guide:substantial-choices-record-options | scan:homemade-crypto scan:handrolled-csv scan:handrolled-html-parse scan:handrolled-retry | strong | REUSE-17 | - |
 | F065 | P1 | Adding a dependency for trivial behavior | guide:capabilities-compared guide:vet-dependency gate:manifest-note note:dependency-facts guide:need-genuinely-trivial | none | strong | - | - |
-| F066 | P0 | Installing hallucinated packages | guide:real-apis guide:vet-dependency note:dependency-facts gate:manifest-note | scan:phantom-import tool:deps | partial | BUILD-14 BUILD-15 | Nothing stands between a shell install of a guessed name and the registry: the dependency note fires on manifest edits and dependency prompts, and the registry check is opt-in. Gate check: run the registry lookup on names a diff adds to a manifest when online use is allowed; the install command itself is out of reach for scan and gate (only a hook sees it). |
+| F066 | P0 | Installing hallucinated packages | guide:real-apis guide:vet-dependency note:dependency-facts gate:manifest-note note:undeclared-install gate:added-dependencies | scan:phantom-import tool:deps gate:added-dependencies | strong | BUILD-14 BUILD-15 | - |
 | F067 | P1 | Choosing a library only from popularity | guide:vet-dependency guide:capabilities-compared guide:compare-candidates-fitness-total | tool:deps | strong | - | - |
 | F068 | P1 | Ignoring transitive dependency impact | guide:vet-dependency note:dependency-facts guide:dep-lockfile-diff | none | strong | BUILD-20 BUILD-21 | - |
 | F069 | P1 | Copying an example without adapting its lifecycle | guide:pattern-preconditions guide:one-way-deps guide:lang-resources guide:context-managers-files-sockets guide:example-shows-the-call | scan:resource-no-context scan:effect-no-cleanup scan:client-per-call | strong | API-13 ERR-14 | - |
@@ -320,8 +398,8 @@ Each row counts once, under the firmest thing it has.
 | F207 | P1 | Using real time sleeps for synchronization | guide:honest-checks guide:poll-deadline-rather-than | scan:test-sleep | strong | PERF-24 | - |
 | F208 | P1 | Using randomness without preserving failing inputs | guide:seed-randomness guide:property-based-tests guide:py-seeded | scan:test-nondeterministic scan:unseeded-random-test | strong | - | - |
 | F209 | P1 | Mocking authorization to always allow access | guide:edge-inputs guide:mocks-limit guide:sec-second-tenant | tool:mutate | strong | - | - |
-| F210 | P0 | Running tests against production services or data | guide:synthetic-data-tests-unless guide:before-destructive | none | partial | - | note:production-target skips test runners (repo_notes _RUNS_TESTS): `RAILS_ENV=production pytest` and a prod DATABASE_URL gave no note when probed; extend that note to test commands whose environment or arguments name production (hook) |
-| F211 | P1 | Leaking background tasks between tests | guide:keep-references-tasks-create note:python-facts | scan:dropped-task tool:mutate | partial | - | Code-level guidance only; a testing.md async sentence that a test cancels and awaits what it starts, and a hook note when a passing check prints "Task was destroyed but it is pending" (objective) |
+| F210 | P0 | Running tests against production services or data | guide:synthetic-data-tests-unless guide:before-destructive note:tests-on-production note:load-test-live | none | strong | - | - |
+| F211 | P1 | Leaking background tasks between tests | guide:keep-references-tasks-create note:python-facts note:leaked-work guide:a-test-cancels-and-awaits | scan:dropped-task tool:mutate | strong | - | - |
 | F212 | P1 | Failing to await asynchronous assertions or work | note:scan-on-edit guide:coroutine-was-never-awaited | scan:missing-await scan:async-foreach | strong | PERF-12 | - |
 | F213 | P1 | Reusing fixed ports or filenames in parallel tests | guide:each-worker-gets-own guide:worktrees-isolate-files-databases | scan:fixed-test-resource | strong | - | - |
 | F214 | P1 | Leaving network calls uncontrolled in unit tests | guide:mock-at-outer-boundary | scan:network-in-unit-test | strong | - | - |
@@ -350,10 +428,10 @@ Each row counts once, under the firmest thing it has.
 | F232 | P1 | Accepting review findings without verification | guide:suggestions-tested guide:review-findings guide:verify-before-calling | tool:golden | strong | LOOP-26 | - |
 | F233 | P1 | Using the implementer's summary as the review input | guide:reviewer-brief hook:review-required guide:treat-author-claims | none | strong | LOOP-28 | - |
 | F234 | P1 | Claiming a performance gain from intuition | hook:speedup-claim guide:numbers-from-run | tool:bench | strong | PERF-10 | - |
-| F235 | P1 | Claiming security from a functional green suite | note:security-facts hook:review-required guide:appear-only-their-scope | tool:scan tool:tools | partial | SEC-01 | Nothing compares a "secure" claim with the record; a Stop check could send back a message calling the change secure, safe or production ready when no scan or review ran this turn (stop_checks.py, objective wording) |
+| F235 | P1 | Claiming security from a functional green suite | note:security-facts hook:review-required guide:appear-only-their-scope note:security-claim-unchecked | tool:scan tool:tools | strong | SEC-01 | - |
 | F236 | P1 | Failing to inspect accidental changes | hook:side-effects-named gate:format-churn gate:scope guide:surgical | tool:gate scan:debug-leftover scan:scratch-file | strong | SCOPE-07 BUILD-11 BUILD-22 | - |
 | F237 | P1 | Ignoring warnings that change correctness | guide:passing-suites guide:formatter-ran guide:turns-collection-warnings-into guide:warnings-matter | tool:tools | strong | TEST-32 | - |
-| F238 | P1 | Reporting partial implementation as complete | hook:stop-short guide:no-silent-narrowing note:scan-on-edit hook:scan-at-stop | tool:goal scan:stub-body scan:placeholder-comment gate:judgment | partial | LOGIC-14 SCOPE-29 REPORT-02 | stop-short fires only when the message admits it, and only stubs are detected; a Stop check could send back a done claim while a recorded goal has requirements not verified since the last edit (scale_notes already reads the ledger) |
+| F238 | P1 | Reporting partial implementation as complete | hook:stop-short guide:no-silent-narrowing note:scan-on-edit hook:scan-at-stop note:done-with-goal-unverified | tool:goal scan:stub-body scan:placeholder-comment gate:judgment | strong | LOGIC-14 SCOPE-29 REPORT-02 | - |
 | F239 | P1 | Failing to critique simplification opportunities | guide:maintainer-read guide:quarter-size guide:simpler-design gate:judgment | gate:complexity-rose scan:single-impl-abstraction scan:pass-through scan:pattern-one-product | strong | TEAM-26 | - |
 | F240 | P1 | Not checking the actual user-visible workflow | guide:real-entry-point guide:passing-not-requirement gate:judgment | query:entry | strong | BUILD-04 TEAM-38 | - |
 
@@ -361,26 +439,26 @@ Each row counts once, under the firmest thing it has.
 
 | ID | Tier | What goes wrong | Prevent | Find and fix | Fit | Same as | What's missing |
 |---|---|---|---|---|---|---|---|
-| F241 | P0 | Omitting authorization on protected operations | note:security-facts hook:review-required guide:same-access-path | scan:missing-auth query:boundaries | strong | SEC-19 SEC-23 | - |
-| F242 | P0 | Trusting client-supplied object ownership | note:security-facts hook:review-required guide:same-access-path scan:mass-assignment guide:sec-second-tenant | query:boundaries scan:mass-assignment | strong | SEC-21 SEC-26 | - |
-| F243 | P0 | Applying tenant filters inconsistently | guide:same-access-path hook:review-required note:security-facts guide:sec-second-tenant | query:boundaries | strong | SEC-20 SEC-22 SEC-24 | - |
+| F241 | P0 | Omitting authorization on protected operations | note:security-facts hook:review-required guide:same-access-path | scan:missing-auth query:boundaries scan:mass-assignment | strong | SEC-19 SEC-23 | - |
+| F242 | P0 | Trusting client-supplied object ownership | note:security-facts hook:review-required guide:same-access-path scan:mass-assignment guide:sec-second-tenant | query:boundaries scan:mass-assignment scan:owner-from-request scan:object-not-scoped scan:unscoped-lookup | strong | SEC-21 SEC-26 | - |
+| F243 | P0 | Applying tenant filters inconsistently | guide:same-access-path hook:review-required note:security-facts guide:sec-second-tenant | query:boundaries scan:object-not-scoped scan:cache-reads-user scan:unscoped-lookup | strong | SEC-20 SEC-22 SEC-24 | - |
 | F244 | P0 | Interpolating untrusted values into SQL | note:scan-on-edit hook:scan-at-stop guide:dynamic-identifiers-need-allow | scan:sql-injection | strong | DATA-01 DATA-02 | - |
-| F245 | P0 | Passing untrusted strings into a shell | note:scan-on-edit hook:scan-at-stop guide:conditional-security | scan:shell-injection | strong | SEC-04 SEC-08 | - |
+| F245 | P0 | Passing untrusted strings into a shell | note:scan-on-edit hook:scan-at-stop guide:conditional-security | scan:shell-injection scan:ci-script-injection | strong | SEC-04 SEC-08 | - |
 | F246 | P0 | Deserializing untrusted executable formats | note:scan-on-edit hook:scan-at-stop guide:conditional-security | scan:unsafe-deserialize query:boundaries | strong | - | - |
 | F247 | P0 | Fetching arbitrary user-provided URLs | guide:conditional-security | scan:ssrf | strong | SEC-12 | - |
 | F248 | P0 | Joining untrusted paths without containment checks | guide:conditional-security guide:resolve-relative | scan:path-traversal scan:weak-path-check scan:unsafe-extract | strong | SEC-05 SEC-06 | - |
 | F249 | P0 | Rendering untrusted content as executable markup | guide:conditional-security guide:escape-context | scan:xss-sink | strong | SEC-02 | - |
-| F250 | P0 | Omitting CSRF protection where browser credentials are automatic | guide:conditional-security guide:sec-csrf | scan:disabled-control tool:tools | strong | SEC-34 | - |
+| F250 | P0 | Omitting CSRF protection where browser credentials are automatic | guide:conditional-security guide:sec-csrf | scan:disabled-control tool:tools scan:state-change-on-get | strong | SEC-34 | - |
 | F251 | P0 | Using permissive credentialed CORS settings | scan:permissive-cors guide:sec-cors-credentials | scan:permissive-cors | strong | SEC-39 | - |
-| F252 | P0 | Storing passwords or signing secrets insecurely | hook:secret-edit guide:established-libraries guide:argon2-scrypt-bcrypt | scan:weak-password-hash scan:hardcoded-secret scan:secret-in-client-bundle query:leaks | strong | SEC-14 SEC-46 SEC-50 | - |
+| F252 | P0 | Storing passwords or signing secrets insecurely | hook:secret-edit guide:established-libraries guide:argon2-scrypt-bcrypt | scan:weak-password-hash scan:hardcoded-secret scan:secret-in-client-bundle query:leaks scan:key-in-source | strong | SEC-14 SEC-46 SEC-50 | - |
 | F253 | P0 | Disabling TLS certificate verification | note:scan-on-edit hook:scan-at-stop | scan:tls-disabled | strong | SEC-17 | - |
 | F254 | P0 | Accepting unsigned or replayable webhooks | hook:review-required note:security-facts guide:retries guide:sec-webhooks | scan:secret-compare query:boundaries scan:webhook-unverified | strong | - | - |
-| F255 | P0 | Treating file extensions as sufficient upload validation | guide:conditional-security guide:sec-uploads | none | strong | - | - |
+| F255 | P0 | Treating file extensions as sufficient upload validation | guide:conditional-security guide:sec-uploads | scan:unbounded-upload scan:upload-no-limit scan:upload-in-webroot scan:upload-extension-only | strong | - | - |
 | F256 | P1 | Omitting abuse limits on expensive or sensitive endpoints | guide:resource-use scan:login-no-rate-limit guide:sec-paid-routes | scan:login-no-rate-limit query:boundaries | strong | SEC-32 SEC-33 | - |
 | F257 | P0 | Returning debug details and secrets in errors | guide:logs-errors guide:errors-should-actionable-without | scan:debug-exposed scan:error-details-exposed | strong | - | - |
 | F258 | P0 | Failing open when authorization infrastructure errors | note:scan-on-edit hook:scan-at-stop guide:fail-closed | scan:fail-open | strong | - | - |
 | F259 | P0 | Using predictable tokens for security decisions | guide:established-libraries | scan:insecure-random | strong | SEC-16 | - |
-| F260 | P0 | Leaving session revocation and privilege changes ineffective | hook:review-required guide:sec-revocation | query:boundaries | strong | SEC-37 | - |
+| F260 | P0 | Leaving session revocation and privilege changes ineffective | hook:review-required guide:sec-revocation | query:boundaries scan:disabled-control | strong | SEC-37 | - |
 
 ## AGENT: Agent tools, supply chain and privacy
 
@@ -388,24 +466,24 @@ Each row counts once, under the firmest thing it has.
 |---|---|---|---|---|---|---|---|
 | F261 | P0 | Executing instructions embedded in retrieved files or logs | note:addressed-to-agent guide:data-not-instruction guide:untrusted-content guide:relayed-task | scan:instruction-injection scan:hidden-unicode | strong | SAFE-37 SAFE-39 SAFE-45 SAFE-46 | - |
 | F262 | P0 | Giving an agent broader credentials than its task requires | guide:credential-mismatch scan:agent-permission-widened guide:sec-least-access | scan:agent-permission-widened scan:ci-write-all scan:iac-wildcard-permission | strong | SCOPE-15 PIPE-28 | - |
-| F263 | P0 | Reading secrets unnecessarily into model context | note:secret-read guide:secrets-kept-out | none | partial | SEC-57 | The note follows a Read (PostToolUse), when the value is already in context, and only notes a cat; a PreToolUse note or ask before reading secret-file paths, or suggesting the permissions.deny rule at session start (hook) |
-| F264 | P0 | Including secrets in commands logs or generated examples | hook:secret-edit hook:secret-web hook:secret-net guide:secrets-kept-out | scan:hardcoded-secret scan:sensitive-log query:leaks | strong | SEC-48 SEC-55 SEC-59 | - |
-| F265 | P0 | Running destructive commands with unchecked paths | hook:hard-to-undo guide:before-destructive | scan:shell-rm-unguarded scan:shell-unquoted-rm scan:shell-masked-failure | partial | SAFE-09 SAFE-10 SAFE-11 SAFE-12 | The hook passes any rm -r whose target starts with a variable, by design; probed, `rm -rf $DIR/` and even `DIR=; rm -rf $DIR/*` (empty assignment not expanded) aren't asked. Ask when a non-temp variable is followed by / (hook) |
-| F266 | P0 | Executing downloaded installers without provenance checks | hook:hard-to-undo guide:read-before-run | scan:curl-pipe-shell | partial | PIPE-31 | curl piped to a shell is asked, but the two-step `curl -o i.sh URL && bash i.sh` wasn't when probed; ask when a command runs a file the same command downloaded (hook, objective) |
+| F263 | P0 | Reading secrets unnecessarily into model context | note:secret-read guide:secrets-kept-out hook:credential-read hook:secret-printed | none | strong | SEC-57 | - |
+| F264 | P0 | Including secrets in commands logs or generated examples | hook:secret-edit hook:secret-web hook:secret-net guide:secrets-kept-out | scan:hardcoded-secret scan:sensitive-log query:leaks scan:container-secret-arg | strong | SEC-48 SEC-55 SEC-59 | - |
+| F265 | P0 | Running destructive commands with unchecked paths | hook:hard-to-undo guide:before-destructive hook:variable-delete hook:unchecked-path-delete hook:make-delete-unset hook:bucket-reach | scan:shell-rm-unguarded scan:shell-unquoted-rm scan:shell-masked-failure | strong | SAFE-09 SAFE-10 SAFE-11 SAFE-12 | - |
+| F266 | P0 | Executing downloaded installers without provenance checks | hook:hard-to-undo guide:read-before-run hook:download-then-run hook:download-run-later hook:download-in-build hook:wrapper-moved note:pipe-added note:install-source | scan:curl-pipe-shell scan:unverified-download-exec | strong | PIPE-31 | - |
 | F267 | P0 | Trusting mutable dependency or action references indefinitely | scan:ci-unpinned-action scan:dep-unpinned scan:container-unpinned-image guide:vet-dependency | scan:ci-unpinned-action scan:container-unpinned-image scan:dep-unpinned scan:nb-unpinned-install | strong | PIPE-16 PIPE-25 BUILD-18 | - |
-| F268 | P0 | Treating third-party skills and hooks as harmless text | guide:read-before-run guide:vet-dependency gate:agent-config-changed guide:sec-skills-are-code | scan:instruction-injection scan:hidden-unicode scan:agent-permission-widened gate:agent-config-changed | strong | BUILD-25 SAFE-47 | - |
+| F268 | P0 | Treating third-party skills and hooks as harmless text | guide:read-before-run guide:vet-dependency gate:agent-config-changed guide:sec-skills-are-code | scan:instruction-injection scan:hidden-unicode scan:agent-permission-widened gate:agent-config-changed scan:sends-credentials scan:unverified-download-exec | strong | BUILD-25 SAFE-47 | - |
 | F269 | P0 | Letting untrusted pull requests run with privileged secrets | scan:ci-untrusted-checkout scan:ci-script-injection | scan:ci-untrusted-checkout scan:ci-script-injection | strong | PIPE-26 | - |
-| F270 | P0 | Disabling checks to make the agent finish | hook:settings-guard hook:weakened-check note:skips-checks guide:honest-checks | scan:ci-check-disabled scan:checks-hidden-by-config scan:suppression-comment gate:config-changed gate:agent-config-changed query:markers gate:checks-relaxed | strong | GAME-31 GAME-08 PIPE-29 SAFE-23 | - |
-| F271 | P0 | Using production credentials in generated test fixtures | hook:secret-edit guide:secrets-kept-out guide:synthetic-data-tests-unless | scan:live-credential-in-test | strong | SEC-54 | - |
+| F270 | P0 | Disabling checks to make the agent finish | hook:settings-guard hook:weakened-check note:skips-checks guide:honest-checks note:relaxes-check note:writes-suppression | scan:ci-check-disabled scan:checks-hidden-by-config scan:suppression-comment gate:config-changed gate:agent-config-changed query:markers gate:checks-relaxed | strong | GAME-31 GAME-08 PIPE-29 SAFE-23 | - |
+| F271 | P0 | Using production credentials in generated test fixtures | hook:secret-edit guide:secrets-kept-out guide:synthetic-data-tests-unless | scan:live-credential-in-test scan:vcr-unfiltered scan:tests-use-production | strong | SEC-54 | - |
 | F272 | P1 | Retaining sensitive data in caches or temporary artifacts | guide:secrets-kept-out guide:sec-temp-copies | scan:committed-secret-file scan:nb-sensitive-output | strong | - | - |
-| F273 | P0 | Sending proprietary code to an unapproved external tool | guide:upload-proprietary-code-analysis guide:outbound-counts | none | partial | - | Approval can't be judged; a hook note when curl or wget uploads a project file (`-d @file`, `-F x=@file`, `--upload-file`, `-T`) is objective |
-| F274 | P0 | Accepting tool results without validating their structure | guide:untrusted-content guide:validates-nothing-at-runtime guide:annotation-input-validation guide:sec-tool-output | scan:ts-double-cast scan:ts-any query:boundaries | strong | GAME-30 LOGIC-25 | - |
-| F275 | P0 | Confusing suggested commands with authorized actions | guide:authorization guide:data-not-instruction guide:read-before-run guide:publish-authorized hook:hard-to-undo | none | strong | - | - |
-| F276 | P0 | Allowing generated code to redefine its own success gate | hook:settings-guard hook:weakened-check gate:config-changed gate:agent-config-changed | scan:test-harness-tampered scan:checks-hidden-by-config scan:ci-check-disabled gate:config-changed gate:checks-relaxed | strong | GAME-31 GAME-32 GAME-17 GAME-22 | - |
+| F273 | P0 | Sending proprietary code to an unapproved external tool | guide:upload-proprietary-code-analysis guide:outbound-counts note:uploads-a-file note:publishes-public note:pushes-elsewhere | none | strong | - | - |
+| F274 | P0 | Accepting tool results without validating their structure | guide:untrusted-content guide:validates-nothing-at-runtime guide:annotation-input-validation guide:sec-tool-output | scan:ts-double-cast scan:ts-any query:boundaries scan:tool-call-unchecked | strong | GAME-30 LOGIC-25 | - |
+| F275 | P0 | Confusing suggested commands with authorized actions | guide:authorization guide:data-not-instruction guide:read-before-run guide:publish-authorized hook:hard-to-undo note:suggested-command | none | strong | - | - |
+| F276 | P0 | Allowing generated code to redefine its own success gate | hook:settings-guard hook:weakened-check gate:config-changed gate:agent-config-changed note:relaxes-check | scan:test-harness-tampered scan:checks-hidden-by-config scan:ci-check-disabled gate:config-changed gate:checks-relaxed | strong | GAME-31 GAME-32 GAME-17 GAME-22 | - |
 | F277 | P1 | Ignoring dependency licenses and provenance obligations | guide:vet-dependency note:dependency-facts gate:manifest-note guide:dep-health-eol | tool:deps | strong | - | - |
-| F278 | P0 | Trusting cached credentials after environment switching | guide:before-destructive guide:staging-task-hold-production note:production-target hook:hard-to-undo guide:sec-least-access | none | strong | SAFE-03 SAFE-08 | - |
-| F279 | P1 | Leaving spawned processes or tunnels running | none | none | none | - | Nothing covers the agent's own processes; a Stop note naming background processes still running (servers, tunnels, port-forwards) that the report doesn't mention, since the stop hook already reads background_tasks, plus a collaboration.md sentence |
-| F280 | P0 | Retrying ambiguous external mutations blindly | guide:retries note:security-facts guide:dist-timeout-unknown | scan:handrolled-retry | strong | ERR-13 | - |
+| F278 | P0 | Trusting cached credentials after environment switching | guide:before-destructive guide:staging-task-hold-production note:production-target hook:hard-to-undo guide:sec-least-access note:switches-identity note:ambient-target note:env-file-switch note:switched-and-changed | none | strong | SAFE-03 SAFE-08 | - |
+| F279 | P1 | Leaving spawned processes or tunnels running | note:left-running | none | strong | - | - |
+| F280 | P0 | Retrying ambiguous external mutations blindly | guide:retries note:security-facts guide:dist-timeout-unknown | scan:handrolled-retry scan:retry-not-idempotent | strong | ERR-13 | - |
 
 ## DATA: Persistence, SQL and data migrations
 
@@ -425,11 +503,11 @@ Each row counts once, under the firmest thing it has.
 | F292 | P1 | Assuming migrations are instant on large tables | scan:migration-locks-table guide:lang-sql-transactions | scan:migration-locks-table | strong | DATA-23 DATA-24 DATA-28 | - |
 | F293 | P1 | Changing schema and application versions incompatibly | guide:coexist guide:compat-deliberate guide:contracts-between guide:ship-schema-code-changes guide:sql-renames-time | scan:migration-destroys-data gate:model-no-migration | strong | DATA-25 | - |
 | F294 | P0 | Writing files nonatomically when partial files are invalid | guide:write-temporary-file-rename guide:reliability | scan:nonatomic-state-write | strong | - | - |
-| F295 | P0 | Acknowledging durable writes before durability is established | guide:reliability guide:failure-visible guide:rel-ack-durable | none | strong | - | - |
+| F295 | P0 | Acknowledging durable writes before durability is established | guide:reliability guide:failure-visible guide:rel-ack-durable | scan:unacknowledged-write scan:ack-before-durable scan:durability-disabled | strong | - | - |
 | F296 | P1 | Ignoring connection-pool limits and lifecycle | guide:lang-resources guide:connection-pools | scan:resource-no-context scan:go-defer-in-loop scan:client-per-call | strong | ERR-14 | - |
 | F297 | P1 | Using floating or inconsistent timestamp precision in storage | guide:edge-inputs guide:sql-renames-time | none | strong | - | - |
 | F298 | P1 | Failing to handle serialization or deadlock retries | guide:sql-concurrent-writers | none | strong | - | - |
-| F299 | P0 | Restoring backups without testing restoration | guide:before-destructive note:production-target guide:rel-backup-restore | none | strong | - | - |
+| F299 | P0 | Restoring backups without testing restoration | guide:before-destructive note:production-target guide:rel-backup-restore hook:restore-over-production note:backups-unrestored | none | strong | - | - |
 | F300 | P1 | Ignoring schema evolution in serialized persistent objects | guide:compat-deliberate guide:contracts-between guide:stored-data | query:find | strong | DATA-30 | - |
 
 ## ASYNC: Asynchronous execution and concurrency
@@ -440,7 +518,7 @@ Each row counts once, under the firmest thing it has.
 | F302 | P1 | Launching unbounded concurrent tasks | guide:bound-it guide:semaphore-bounds-work-flight guide:mapping-large-list-promises guide:unbounded-goroutine-creation-leak | scan:unbounded-concurrency | strong | PERF-15 | - |
 | F303 | P1 | Swallowing cancellation | note:python-facts guide:must-propagate-catching-log guide:also-intercepts-cancellation-interpreter guide:restore-interrupt-status guide:rethrow guide:dropping-future-cancellation guide:test-cancellation-directly | scan:swallowed-cancellation scan:bare-except scan:swallowed-exception | strong | - | - |
 | F304 | P1 | Spawning tasks without lifecycle ownership | note:python-facts guide:keep-references-tasks-create-2 guide:every-goroutine-needs-way guide:structured-concurrency-avoid | scan:dropped-task scan:structured-concurrency-escape scan:effect-no-cleanup | strong | PERF-14 PERF-21 | - |
-| F305 | P0 | Updating shared state without synchronization | note:language-skill gate:judgment guide:lang-race guide:mutable-state-shared-across guide:tsan-concurrent-code guide:py-compound-race | scan:lost-update scan:process-local-state | partial | PERF-16 PERF-18 PERF-19 | In-memory races are found only as ORM read-modify-save and module-level stores. Cheapest: a Stop-hook note when Go or C/C++ code with goroutines, sync or threads changed and no `go test -race` or `-fsanitize=thread` run is in the session; Python thread races stay with reading. |
+| F305 | P0 | Updating shared state without synchronization | note:language-skill gate:judgment guide:lang-race guide:mutable-state-shared-across guide:tsan-concurrent-code guide:py-compound-race note:race-detector-not-run | scan:lost-update scan:process-local-state scan:unsynchronized-state scan:rebuilt-while-shared | strong | PERF-16 PERF-18 PERF-19 | - |
 | F306 | P1 | Acquiring locks in inconsistent order | guide:tsan-concurrent-code | scan:lock-order | strong | PERF-20 | - |
 | F307 | P1 | Awaiting unknown work while holding a lock | guide:guard-held-across guide:dont-await-while-holding | tool:tools scan:await-under-thread-lock | strong | PERF-20 | - |
 | F308 | P1 | Assuming the GIL makes compound operations safe | guide:state-universal-gil-rules guide:mutable-state-shared-across guide:py-compound-race | none | strong | PERF-18 | - |
@@ -469,14 +547,14 @@ Each row counts once, under the firmest thing it has.
 | F326 | P1 | Ignoring overload and admission control | guide:bound-it guide:resource-use guide:load-tests-against-stated | none | strong | - | - |
 | F327 | P1 | Assuming messages arrive exactly once | guide:assume-messages-arrive-more guide:duplicate-out-order-delivery note:security-facts | none | strong | - | - |
 | F328 | P1 | Assuming messages arrive in order | guide:assume-messages-arrive-more guide:duplicate-out-order-delivery note:security-facts | none | strong | - | - |
-| F329 | P0 | Using distributed locks without fencing | guide:worker-loss guide:dist-fencing | none | strong | - | - |
+| F329 | P0 | Using distributed locks without fencing | guide:worker-loss guide:dist-fencing | scan:lock-without-fencing | strong | - | - |
 | F330 | P1 | Treating network partitions as ordinary exceptions | guide:reliability guide:idempotency-partial-failure guide:dist-timeout-unknown | none | strong | - | - |
 | F331 | P1 | Using wall clocks to establish distributed causality | guide:dist-clocks | none | strong | - | - |
 | F332 | P1 | Using process-randomized hashes for partition routing | guide:dist-stable-hash guide:py-salted-hash | scan:salted-hash-partition | strong | - | - |
 | F333 | P1 | Ignoring skewed partition keys | guide:examine-skew-stragglers-retry guide:find-what-binds guide:dist-skew | none | strong | - | - |
 | F334 | P1 | Creating tasks smaller than scheduling overhead | guide:coordination-overhead guide:dist-task-size | tool:bench | strong | - | - |
 | F335 | P1 | Centralizing all data or metadata at the coordinator | guide:coordination-overhead guide:dist-task-size | none | strong | - | - |
-| F336 | P0 | Checkpointing progress separately from committed side effects | guide:consider-crash-after-effect guide:retries note:security-facts guide:reliability | scan:multi-write-no-transaction | strong | PERF-17 | - |
+| F336 | P0 | Checkpointing progress separately from committed side effects | guide:consider-crash-after-effect guide:retries note:security-facts guide:reliability | scan:multi-write-no-transaction scan:checkpoint-before-effect scan:ack-before-effect scan:auto-commit-before-write | strong | PERF-17 | - |
 | F337 | P1 | Assuming every node has identical capabilities | guide:examine-skew-stragglers-retry guide:dist-nodes-differ | none | strong | - | - |
 | F338 | P1 | Confusing liveness with readiness | guide:dist-liveness | none | strong | - | - |
 | F339 | P1 | Failing to drain work during deployment | guide:reliability guide:rel-sigterm | none | strong | - | - |
@@ -541,9 +619,9 @@ Each row counts once, under the firmest thing it has.
 | F383 | P1 | Using host CPU count inside constrained containers | guide:hw-cpu-count guide:py-cpu-count | none | strong | - | - |
 | F384 | P1 | Ignoring NUMA placement for large shared state | guide:layers guide:hw-data-movement | none | strong | - | - |
 | F385 | P1 | Introducing false sharing between hot counters | guide:layers guide:hw-data-movement | none | strong | - | - |
-| F386 | P0 | Mismatching native types lengths or ABI assumptions | note:language-skill guide:change-public-header-struct guide:integer-overflow-size-calculations | scan:ctypes-untyped | strong | XF-23 | - |
-| F387 | P0 | Releasing native buffers while consumers still use them | note:language-skill guide:state-ownership-lifetimes-every guide:run-tests-under-asan guide:state-invariant-each | tool:tools gate:memory-safety-added | strong | PERF-28 PERF-30 | - |
-| F388 | P0 | Removing bounds checks without proving safety | guide:safety-beats guide:state-invariant-each guide:run-tests-under-asan | tool:tools gate:memory-safety-added | strong | PERF-29 LOGIC-21 | - |
+| F386 | P0 | Mismatching native types lengths or ABI assumptions | note:language-skill guide:change-public-header-struct guide:integer-overflow-size-calculations | scan:ctypes-untyped scan:native-type-mismatch scan:ffi-layout scan:ctypes-buffer-unchecked | strong | XF-23 | - |
+| F387 | P0 | Releasing native buffers while consumers still use them | note:language-skill guide:state-ownership-lifetimes-every guide:run-tests-under-asan guide:state-invariant-each | tool:tools gate:memory-safety-added scan:buffer-lifetime scan:ctypes-callback-collected | strong | PERF-28 PERF-30 | - |
+| F388 | P0 | Removing bounds checks without proving safety | guide:safety-beats guide:state-invariant-each guide:run-tests-under-asan | tool:tools gate:memory-safety-added scan:unchecked-bound | strong | PERF-29 LOGIC-21 | - |
 | F389 | P1 | Assuming SIMD instructions exist on all targets | guide:layers guide:hw-isa-baseline | none | strong | - | - |
 | F390 | P1 | Sending tiny workloads to a GPU | guide:layers guide:find-what-binds guide:hw-gpu-fixed-cost | tool:bench | strong | - | - |
 | F391 | P1 | Repeatedly copying data between host and device | guide:layers guide:hw-gpu-fixed-cost | scan:transfer-in-loop | strong | - | - |
@@ -591,7 +669,7 @@ Each row counts once, under the firmest thing it has.
 | F423 | P1 | Ignoring React effect cleanup and dependencies | note:language-skill guide:useeffect-missing-dependencies-cleanup | scan:effect-no-cleanup tool:tools | strong | UI-06 | - |
 | F424 | P1 | Allowing stale frontend requests to overwrite newer state | guide:abortcontroller-cancellation guide:ts-stale-response | none | strong | - | - |
 | F425 | P1 | Using JavaScript numbers for integers beyond safe precision | note:language-skill guide:json-parsing-loses-large | none | strong | - | - |
-| F426 | P0 | Merging untrusted objects into prototypes or configuration | guide:validate-at-trust-boundaries guide:ts-prototype | scan:mass-assignment | strong | - | - |
+| F426 | P0 | Merging untrusted objects into prototypes or configuration | guide:validate-at-trust-boundaries guide:ts-prototype | scan:mass-assignment scan:prototype-pollution | strong | - | - |
 | F427 | P1 | Using Rust unwrap or expect on recoverable external failures | note:language-skill guide:unwrap-expect-library-request | scan:panic-in-library | strong | - | - |
 | F428 | P1 | Cloning large Rust structures to avoid ownership design | note:language-skill guide:clone-appease-borrow-checker | none | strong | - | - |
 | F429 | P0 | Introducing Rust unsafe without documented invariants | note:language-skill guide:state-invariant-each-unsafe guide:native-unsafe-code | scan:unsafe-undocumented gate:memory-safety-added | strong | - | - |
@@ -600,8 +678,8 @@ Each row counts once, under the firmest thing it has.
 | F432 | P1 | Ignoring Go error returns | note:language-skill guide:handle-every-returned-error | scan:ignored-error tool:tools | strong | ERR-01 | - |
 | F433 | P1 | Using JVM resources without deterministic closure | guide:lang-resources note:language-skill | none | strong | ERR-14 | - |
 | F434 | P1 | Violating equality and hash contracts in JVM domain objects | guide:jvm-equals-hash | scan:equals-without-hashcode | strong | - | - |
-| F435 | P0 | Managing C++ resources with ambiguous ownership | note:language-skill guide:state-ownership-lifetimes-every | none | strong | - | - |
-| F436 | P0 | Relying on undefined C or C++ behavior for speed | note:language-skill guide:safety-beats guide:uninitialized-reads-make-test | gate:memory-safety-added | strong | PERF-29 | - |
+| F435 | P0 | Managing C++ resources with ambiguous ownership | note:language-skill guide:state-ownership-lifetimes-every | scan:raw-ownership | strong | - | - |
+| F436 | P0 | Relying on undefined C or C++ behavior for speed | note:language-skill guide:safety-beats guide:uninitialized-reads-make-test | gate:memory-safety-added scan:undefined-behavior | strong | PERF-29 | - |
 | F437 | P0 | Building shell commands through unsafe string concatenation | note:scan-on-edit hook:scan-at-stop guide:conditional-security guide:lang-shell | scan:shell-injection scan:dynamic-eval | strong | SEC-04 | - |
 | F438 | P1 | Ignoring shell pipeline failure semantics | guide:lang-shell guide:piping-also-hides-real | scan:shell-no-strict scan:shell-masked-failure scan:ignored-error | strong | SAFE-12 | - |
 | F439 | P1 | Copying syntax and conventions across incompatible languages | note:language-skill guide:translate-patterns-from-another | scan:convention-mismatch tool:tools | strong | LOGIC-37 BUILD-30 | - |
@@ -617,7 +695,7 @@ Each row counts once, under the firmest thing it has.
 | F444 | P1 | Delegating without a shared interface contract | guide:contracts-first guide:delegation-brief tool:design note:design-decision | tool:design | strong | TEAM-04 TEAM-07 | - |
 | F445 | P1 | Giving subagents vague goals | guide:delegation-brief guide:occam-delegation-guidance-at | none | strong | TEAM-14 | - |
 | F446 | P1 | Sending every agent the entire project history | guide:delegation-brief guide:pass-conclusions | none | strong | - | - |
-| F447 | P0 | Letting one agent revert another's uncommitted work | hook:git-guard guide:shared-tree guide:check-tree-first | tool:coord | strong | SAFE-17 SAFE-18 SAFE-19 TEAM-02 | - |
+| F447 | P0 | Letting one agent revert another's uncommitted work | hook:git-guard guide:shared-tree guide:check-tree-first note:discards-uncommitted note:uncommitted-overwrite | tool:coord | strong | SAFE-17 SAFE-18 SAFE-19 TEAM-02 | - |
 | F448 | P1 | Assuming separate worktrees isolate external resources | guide:worktrees-isolate-files-databases-2 guide:team-shared-machine | none | strong | - | - |
 | F449 | P1 | Failing to track base revisions | gate:stale-base guide:handoff guide:check-what-new-worktree | gate:stale-base tool:coord | strong | TEAM-20 LOC-13 | - |
 | F450 | P1 | Treating a clean textual merge as semantic correctness | guide:delegate-claims guide:combined-behavior guide:contracts-first guide:team-integrate-early | tool:design query:impact | strong | TEAM-04 | - |
@@ -688,17 +766,10 @@ No static check can reach these nine, since each needs the data model, the host,
 
 ## Still open
 
-These P0 rows need something occam doesn't have. Several need a decision from the owner, since they add holds or asks to hooks, and DESIGN.md's accepted `no-new-send-backs` keeps new checks to notes and `gate`.
+P0 rows that need something occam doesn't have go here. None does now: the last ones were settled by the owner's decisions recorded in DESIGN.md as `catalog-500-owner-calls`.
 
 | ID | What it would take | Why it isn't here |
 |---|---|---|
-| F066 | A note when a shell install names a package no manifest or lockfile declares | Hook files hold other sessions' uncommitted work |
-| F210 | `note:production-target` extended to test runners, such as `RAILS_ENV=production pytest` | The same |
-| F263 | The secret-read note before the read, not after it | Hook change |
-| F265 | Ask on `rm -rf $VAR/...` when the variable isn't a temporary folder | A new ask needs the owner's decision under `no-new-send-backs` |
-| F266 | Ask when a command runs a file it just downloaded | The same |
-| F273 | A note when curl or wget uploads a project file | Hook change |
-| F305 | A Stop note when Go, C or C++ concurrency changed and no race detector ran | A new Stop check needs the owner's decision |
 
 ## Mechanisms named here
 
@@ -706,6 +777,41 @@ The tokens in the large-codebase catalog's Mechanisms table mean the same here. 
 
 | Token | File | Must contain |
 |---|---|---|
+| note:left-running | plugin/hooks/stop_checks.py | `def left_running` |
+| hook:credential-read | plugin/hooks/occam_hook.py | `def before_read` |
+| hook:download-then-run | plugin/hooks/occam_evidence.py | `def _runs_what_it_downloaded` |
+| hook:variable-delete | plugin/hooks/destructive.py | `def unset_variable` |
+| hook:secret-printed | plugin/hooks/printed_secrets.py | `def secret_printed` |
+| hook:unchecked-path-delete | plugin/hooks/destructive.py | `def empty_path_variable` |
+| hook:make-delete-unset | plugin/hooks/destructive.py | `def make_deletes_through_unset` |
+| hook:bucket-reach | plugin/hooks/destructive.py | `def bucket_reach` |
+| hook:download-run-later | plugin/hooks/shell_writes.py | `def runs_an_earlier_download` |
+| hook:download-in-build | plugin/hooks/shell_writes.py | `def build_runs_a_new_download` |
+| hook:wrapper-moved | plugin/hooks/shell_writes.py | `def wrapper_moved` |
+| hook:restore-over-production | plugin/hooks/destructive.py | `def restore_reason` |
+| note:done-with-goal-unverified | plugin/hooks/stop_checks.py | `def done_with_goal_unverified` |
+| note:leaked-work | plugin/hooks/repo_notes.py | `def leaked_work` |
+| note:listed-item-left-out | plugin/hooks/stop_checks.py | `def listed_item_left_out` |
+| note:race-detector-not-run | plugin/hooks/stop_checks.py | `def race_detector_not_run` |
+| note:security-claim-unchecked | plugin/hooks/stop_checks.py | `def security_claim_unchecked` |
+| note:switches-identity | plugin/hooks/repo_notes.py | `_SWITCH_NOTE` |
+| note:tests-on-production | plugin/hooks/command_reach.py | `_TESTS_ON_PRODUCTION` |
+| note:undeclared-install | plugin/hooks/command_reach.py | `def _undeclared` |
+| note:uploads-a-file | plugin/hooks/command_reach.py | `def _uploaded` |
+| note:ambient-target | plugin/hooks/command_reach.py | `def _changes_through` |
+| note:env-file-switch | plugin/hooks/command_reach.py | `env-file-switch` |
+| note:load-test-live | plugin/hooks/command_reach.py | `load-test-live` |
+| note:install-source | plugin/hooks/command_reach.py | `def _install_source` |
+| note:pipe-added | plugin/hooks/repo_notes.py | `pipe-added:` |
+| note:relaxes-check | plugin/hooks/occam_evidence.py | `def how_a_change_relaxes` |
+| note:writes-suppression | plugin/hooks/repo_notes.py | `writes-suppression` |
+| note:publishes-public | plugin/hooks/command_reach.py | `publishes-public` |
+| note:pushes-elsewhere | plugin/hooks/command_reach.py | `pushes-elsewhere` |
+| note:suggested-command | plugin/hooks/repo_notes.py | `def _suggested` |
+| note:backups-unrestored | plugin/hooks/repo_notes.py | `_BACKUP_NOTE` |
+| note:discards-uncommitted | plugin/hooks/repo_notes.py | `def _discards_the_tree` |
+| note:uncommitted-overwrite | plugin/hooks/repo_notes.py | `def overwrites_uncommitted` |
+| note:switched-and-changed | plugin/hooks/command_reach.py | `switched-and-changed` |
 | gate:added-dependencies | plugin/skills/occam/scripts/occam_tools/verify.py | `def _added_dependencies` |
 | gate:goal-limits | plugin/skills/occam/scripts/occam_tools/workflow.py | `def _broken_limit` |
 | gate:instructions-covering | plugin/skills/occam/scripts/occam_tools/verify.py | `def _instructions_question` |
@@ -942,7 +1048,7 @@ The tokens in the large-codebase catalog's Mechanisms table mean the same here. 
 | guide:mock-at-outer-boundary | plugin/skills/occam-python/references/testing.md | `Mock at the outer boundary` |
 | guide:module-boundary-costs-nothing | plugin/skills/occam/references/design.md | `A module boundary costs nothing at runtime` |
 | guide:module-level-state-exists | plugin/skills/occam-python/references/structure.md | `Module-level state exists once per process` |
-| guide:must-propagate-catching-log | plugin/skills/occam-python/SKILL.md | `must propagate. Catching it to log is fine only if you re-raise` |
+| guide:must-propagate-catching-log | plugin/skills/occam-python/SKILL.md | `must propagate: re-raise it after logging` |
 | guide:mutable-default-arguments | plugin/skills/occam-python/SKILL.md | `Mutable default arguments` |
 | guide:mutable-default-arguments-accidental | plugin/skills/occam-python/SKILL.md | `Mutable default arguments and accidental aliasing` |
 | guide:mutable-state-shared-across | plugin/skills/occam-python/SKILL.md | `Mutable state shared across threads, tasks or requests` |

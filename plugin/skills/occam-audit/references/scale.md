@@ -12,7 +12,7 @@ No study gives an optimal count, so these are heuristics from cost and conflict 
 | Audit, larger | One reader per 5,000 lines of risk-ranked code, usually 2 to 6. Beyond that, read less rather than spawn more, and name what's left. |
 | Repair, tightly coupled code | One writer. Parallel writers would only conflict. |
 | Repair, independent shards | At most about 3 writers, only on shards `occam partition --mode write` marks independent. |
-| Any consequential change | One fresh reviewer who hasn't seen your reasoning. Give it the requirements and the diff, not your conclusions. |
+| A change to security or money, or a review asked for | One fresh reviewer who hasn't seen your reasoning. Give it the requirements and the diff, not your conclusions. Any other consequential change gets a labeled self-review of the whole diff. |
 
 Parallel writers are expensive even when they don't touch the same files. One study replaying agent pull requests found textual conflicts in about 20% of same-agent pairs and 42% of cross-agent pairs, and those are only the conflicts git can see. Spawning for a "better answer" doesn't help: each helper costs tokens and integration, and only a reviewer's fresh eyes add something you can't do yourself.
 
@@ -66,7 +66,7 @@ Keep each batch reviewable, roughly one concern across one area. For long runs, 
 
 A shell tool usually kills a command after two minutes, and a scan it kills returns nothing, so:
 
-- **Commands stop reading after 75 seconds** and report PARTIAL, saying how far they got. `--max-seconds` changes that, and 0 removes the limit. What was read is saved, so the next run gets further. If something else is slow, such as git, a command gives up 35 seconds after its limit and says so, rather than being killed with nothing.
+- **`scan`, `map`, `gate` and `partition` stop reading after 75 seconds** and report PARTIAL, saying how far they got. `--max-seconds` changes that, and 0 removes the limit. `query` answers whole or not at all: it gives up after 900 seconds with exit 2, and `--timeout` changes that. What was read is saved, so the next run gets further. If something else is slow, such as git, a command gives up 35 seconds after its limit and says so, rather than being killed with nothing.
 - **Past 50,000 files,** `map` gives a table of contents from file sizes and reads nothing, 6 to 13 seconds at 10 million lines of generated code on a busy laptop. `scan FOLDER`, `map FOLDER`, `partition FOLDER` and `gate` read only what they name: `gate` on a one-file change took 3 to 8 seconds and about 130 MB there, against 106 seconds and 5.2 GB when it read everything.
 - **A PARTIAL result covers only what was read.** Rules needing the rest of the repository don't run, because they would call things unused or missing on account of what wasn't read. That removes real findings too: `gate` on that one-file change showed 1 warning instead of 8. For an audit, name what wasn't read.
 - **Some answers must be complete,** so `baseline write`, `gate --strict`, and `scan` with `--fail-on`, `--new-only`, `--baseline` or `--format sarif` have no limit unless you set one. At this size, run them in the background. A killed run keeps what it finished. With a limit you set, `--fail-on` and `gate --strict` fail on files in scope they didn't reach, since what wasn't read can't be called clean.

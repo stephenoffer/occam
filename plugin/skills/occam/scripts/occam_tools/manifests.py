@@ -159,6 +159,11 @@ def looks_frozen(root: Path | None, name: str) -> bool:
     return len(lines) >= 30 and sum("==" in line for line in lines) >= 0.8 * len(lines)
 
 
+# The files read_manifests takes dependencies from, so a check that a manifest changed asks the same question it does.
+DEPENDENCY_FILE = re.compile(r"(?:^|/)(?:pyproject\.toml|setup\.(?:py|cfg)|Pipfile|environment\.ya?ml|conda\.yaml|package\.json|Cargo\.toml|go\.mod"
+                             r"|[^/]*requirements[^/]*\.(?:txt|in)|constraints[^/]*\.(?:txt|in))$|^requirements/")
+
+
 def read_manifests(root: Path, files: list[str], read: Callable[[str], str] | None = None) -> dict:
     """Everything the repository declares it depends on, by ecosystem. `read` gives a file's text by its name, from disk unless told otherwise,
     and raises OSError for one that isn't there."""

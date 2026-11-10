@@ -21,6 +21,7 @@ MAX_HITS = 200_000  # beyond this a search says it stopped, rather than hold the
 MAX_LINE = 160
 MAX_FILES_KEPT = 64
 MAX_LINE_READ = 4000  # expressions read a line in pieces of this, since one tried at every position of a long line could take minutes
+MAX_FILES_NAMED = 2000  # a filtered search names its files to git up to this many, about 120 KB of command line
 MAX_LINE_SCANNED = 1_000_000  # a minified bundle can hold a credential far along, and past this a line is data
 MAX_LEFT_OUT_FILES = 5000  # outside git, how many left-out files get searched for what an empty answer would otherwise miss
 MAX_LEFT_OUT_HITS = 200
@@ -260,17 +261,19 @@ def _is_text(path: Path) -> bool:
         return False
 
 
-def _git_hits(root: Path, patterns: list[str], targets, fixed: bool, word: bool, ignore_case: bool) -> Iterator[Hit]:
-    """-a and our own check for binaries, because a repository's `* -diff` makes -I skip every file. Settings that change the output's shape are pinned."""
+def _git_hits(root: Path, patterns: list[str], targets, fixed: bool, word: bool, ignore_case: bool, named: list[str] | None = None) -> Iterator[Hit]:
+    """-a and our own check for binaries, because a repository's `* -diff` makes -I skip every file. Settings that change the output's shape are pinned.
+    `named` is files relative to the root, already chosen, read as they are."""
     args = ["-c", "grep.column=false", "-c", "grep.fullName=false", "-c", "grep.fallbackToNoIndex=false", "grep", "-a", "-n", "--null", "--no-color", "--untracked", "-F" if fixed else "-E"]
     args += ["-w"] if word else []
     args += ["-i"] if ignore_case else []
-    args += ["--no-exclude-standard"] if targets else []  # naming a file is a request to read it. What wasn't named is filtered out below
+    args += ["--no-exclude-standard"] if targets or named else []  # naming a file is a request to read it. What wasn't named is filtered out below
     for pattern in patterns:
         args += ["-e", pattern]
+    specs = ["--", *(f":(literal){path}" for path in named)] if named else _pathspecs(root, targets)
     text_files: dict[str, bool] = {}
     pending = ""
-    for line in filesystem.stream_git(root, *args, *_pathspecs(root, targets), ok_codes=(0, 1)):
+    for line in filesystem.stream_git(root, *args, *specs, ok_codes=(0, 1)):
         if "\0" not in line:  # a newline in a file name splits its record
             pending += line + "\n"
             continue
@@ -306,8 +309,13 @@ def search(root: Path, pattern: str | list[str], targets: list[str] | None = Non
     """
     files = selected_files(root, targets)
     allowed = {path for path in files if only is None or only(path)}  # filtered before the limit, so other files' hits can't use it up
+    if only is not None and not allowed:
+        return [], False
     patterns = [pattern] if isinstance(pattern, str) else pattern
-    source = _git_hits(root, patterns, targets, fixed, word, ignore_case) if filesystem.in_git(root) else _walk_hits(root, files, patterns, fixed, word, ignore_case)
+    # Reading only what the filter keeps: 58 script names across this repository's 66 tests took 0.09 s named, and 3.8 s searched everywhere and filtered.
+    named = sorted(allowed) if only is not None and len(allowed) <= MAX_FILES_NAMED else None
+    source = (_git_hits(root, patterns, targets, fixed, word, ignore_case, named) if filesystem.in_git(root)
+              else _walk_hits(root, [path for path in files if path in allowed], patterns, fixed, word, ignore_case))
     hits = []
     stopped = False
     for hit in source:

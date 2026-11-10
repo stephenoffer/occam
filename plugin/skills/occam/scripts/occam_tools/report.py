@@ -15,6 +15,15 @@ def location(finding: dict) -> str:
     return f"{finding['path']}:{finding['line']}"
 
 
+TIER_WORDS = {"A": "tier A: a mechanical fix", "B": "tier B: fix with a check", "C": "tier C: ask first"}
+
+
+def headline(finding: dict) -> str:
+    """One finding as a person reads it: `MEDIUM  leap.py:38  swallowed-exception (high confidence, tier B: fix with a check)`."""
+    how = ", ".join(part for part in (f"{finding['confidence']} confidence" if finding.get("confidence") else "", TIER_WORDS.get(finding.get("tier"), "")) if part)
+    return f"{finding['severity'].upper():<8}  {location(finding)}  {finding['rule']}" + (f" ({how})" if how else "")
+
+
 def _summary_table(findings: list[dict]) -> list[str]:
     counts: dict[str, Counter] = defaultdict(Counter)
     for finding in findings:
@@ -45,7 +54,7 @@ def render_text(findings: list[dict], hidden: int, stats: dict, top: int, saved_
         lines.append(f"{len(findings)} findings ({hidden} more below the confidence cut). These are leads: confirm each before calling it a defect.")
         lines += ["", *_summary_table(findings), "", "Files with the most weight:", *_hotspots(findings), "", f"Top {min(top, len(findings))}:"]
         for finding in findings[:top]:
-            lines.append(f"  [{finding['severity'][:4].upper()}/{finding['confidence'][:3]}/{finding['tier']}] {finding['rule']}  {location(finding)}")
+            lines.append(f"  {headline(finding)}")
             lines.append(f"      {finding['message']}")
         if len(findings) > top:
             lines.append(f"  ... and {len(findings) - top} more.")
@@ -58,7 +67,6 @@ def render_text(findings: list[dict], hidden: int, stats: dict, top: int, saved_
     gaps += exemptions(stats) + isolated_note(stats)
     if gaps:
         lines += ["", "Limits of this scan:", *[f"  - {gap}" for gap in gaps]]
-    lines += ["", "Tier: A mechanical, B fix with a check, C ask first."]
     if saved_to:
         lines.append(f"Full results: {saved_to}")
     return "\n".join(lines)

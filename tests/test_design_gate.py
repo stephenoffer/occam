@@ -45,6 +45,8 @@ def test_accepting_a_proposal_is_not_a_rewrite(repo):
 
 def test_gate_notes_do_not_block(repo):
     repo.write("app/billing.py", "def charge(cents):\n    return cents + 1\n\n\nprint(charge(1))\n")
+    # Since 2026-11-08 an untested change to a money path blocks, by the owner's call, so the change comes with its test.
+    repo.write("tests/test_billing.py", "from app.billing import charge\n\n\ndef test_charge():\n    assert charge(1) == 2\n")
     assert repo.occam("gate").returncode == 0
 
 

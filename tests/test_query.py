@@ -256,6 +256,39 @@ def test_api_flags_a_changed_signature_in_another_language(repo):
     assert repo.query("api", "--base", "HEAD")["changed"][0]["breaking"] == ["signature text changed"]
 
 
+def test_a_filtered_search_reads_only_the_files_it_keeps(repo, monkeypatch):
+    """Searching everywhere and filtering afterwards took 3.8 s here for 58 script names that a search of the 66 tests answered in 0.09 s."""
+    from occam_tools import files as filesystem, query
+    repo.write("tests/test_cli.py", "import subprocess\nsubprocess.run(['python3', 'nightly_export.py'])\n")
+    repo.write("docs/notes.py", "x = 'nightly_export.py'\n")
+    keep = lambda path: path.startswith("tests/")  # noqa: E731
+    asked = []
+    real = filesystem.stream_git
+    monkeypatch.setattr(filesystem, "stream_git", lambda root, *args, **kwargs: (asked.append(args), real(root, *args, **kwargs))[1])
+    named = query.search(repo.path, ["nightly_export.py"], None, fixed=True, only=keep)
+    monkeypatch.setattr(query, "MAX_FILES_NAMED", 0)
+    everywhere = query.search(repo.path, ["nightly_export.py"], None, fixed=True, only=keep)
+    assert named == everywhere and [hit.path for hit in named[0]] == ["tests/test_cli.py"]
+    assert ":(literal)tests/test_cli.py" in asked[0] and not any(arg.startswith(":(literal)") for arg in asked[-1])
+    assert query.search(repo.path, ["nightly_export.py"], None, only=lambda path: False) == ([], False)
+
+
+def test_api_against_a_branch_compares_with_where_it_forked(repo):
+    """A name the base gained after this branch forked isn't one this branch removed."""
+    repo.write("lib.py", "def alpha():\n    pass\n")
+    repo.commit()
+    base = repo.git("rev-parse", "--abbrev-ref", "HEAD").strip()
+    repo.git("checkout", "-qb", "feature")
+    repo.write("lib.py", "def alpha():\n    pass\n\n\ndef beta():\n    pass\n")
+    repo.commit()
+    repo.git("checkout", "-q", base)
+    repo.write("lib.py", "def alpha():\n    pass\n\n\ndef gamma():\n    pass\n")
+    repo.commit()
+    repo.git("checkout", "-q", "feature")
+    data = repo.query("api", "--base", base)
+    assert (data["base"], data["removed"], [row["name"] for row in data["added"]]) == (base, [], ["beta"])
+
+
 def test_api_leaves_tests_and_private_modules_out(repo):
     repo.write("app/_inner.py", "def hidden():\n    pass\n")
     names = [row["where"] for row in repo.query("api", "--top", "100")["rows"]]

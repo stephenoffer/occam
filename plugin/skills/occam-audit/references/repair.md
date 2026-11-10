@@ -49,7 +49,7 @@ Cleanup is where a well-meant agent does the most quiet damage, and readability 
 - **Trace before you inline.** A private option every caller sets the same way can go once you've checked them all, and its behavior stays, unconditionally. Two similar bodies don't justify a new abstraction, and a flag that selects between them is worse than the copies.
 - **A comment explaining something surprising** usually means the code should be clearer. Fix the code, then drop the comment. If you aren't sure, keep it and flag it.
 - **One kind of smell per pass.** If a pass fails its check and the cause isn't quick to find, undo it. Code whose behavior you can't pin down gets reported, not cleaned.
-- **Don't approve your own risky cleanup.** Anything that could change behavior goes to a fresh reviewer where the host has one, and otherwise gets a labeled self-review. A second pass needs new evidence, such as a caller you hadn't seen, a counterexample or a runtime probe. Rerunning the same search adds nothing.
+- **Don't approve your own risky cleanup.** A change touching security or money goes to a fresh reviewer where the host has one. Anything else that could change behavior gets a labeled self-review of the whole diff, as does security or money where there's no reviewer. A second pass needs new evidence, such as a caller you hadn't seen, a counterexample or a runtime probe. Rerunning the same search adds nothing.
 
 Report what you read and left alone separately from what you never examined.
 

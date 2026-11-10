@@ -46,7 +46,7 @@ Choose async, threads, processes or native and vectorized execution from the mea
 For asyncio:
 
 - Anything blocking or CPU-heavy on the event loop stalls every other coroutine. Move it to a thread or process, and bound that too.
-- `CancelledError` must propagate. Catching it to log is fine only if you re-raise, and cleanup in `finally` needs care not to swallow it.
+- `CancelledError` must propagate: re-raise it after logging, unless you cancelled that task yourself and are awaiting it. Cleanup in `finally` mustn't swallow it.
 - A semaphore bounds work in flight, but not tasks created. A task per item is itself the unbounded queue at large counts, so bound creation with a fixed worker pool or a bounded queue.
 - Materializing an input with `list()` defeats a lazy source.
 - Keep references to tasks you create, and don't leave any running when the caller is cancelled. Prefer structured concurrency, such as `TaskGroup`, where the supported versions allow it.

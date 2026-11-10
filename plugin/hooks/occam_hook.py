@@ -46,6 +46,7 @@ import sys
 import time
 from pathlib import Path
 
+import command_reach
 import design_notes
 import docs_notes
 import in_place
@@ -54,18 +55,21 @@ import occam_evidence as evidence
 import repo_notes
 import rule_card
 import scale_notes
+import turn_limits
 import scan_notes
 import stop_checks
 import skill_switches
 from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
                       PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
-                      command_read_only, reads_as_read_only, visible_prompt, BUILD_REQUEST, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_SHELL_PATH)
+                      command_read_only, reads_as_read_only, visible_prompt, BUILD_REQUEST, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_PATH, names_consequential_work)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
+from printed_secrets import FIXTURE_FOLDER, SECRET_FILE
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
 from session_state import Session, record, state_file
 from shell_reading import expand_variables, parse_shell, without_heredoc_bodies
-from shell_writes import (absolute_path, project_root, check_identity, checks_elsewhere, could_lose_work, deleted_paths, destructive_git, in_project, is_diff, needs_a_person,
-                          relative_path, shell_edits, shell_steps, side_effects, step_edits)
+from shell_writes import (absolute_path, runs_unchecked_downloads, viewed_files, project_root, check_identity, checked_files, checks_elsewhere, could_lose_work, deleted_paths, destructive_git,
+                          diffs_shown, downloads, in_project, is_diff, needs_a_person, relative_path, shell_edits, shell_steps,
+                          side_effects, step_edits)
 
 REPORT_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}  # where a review or plan gets written, as data named in the request is not
 MAX_HOLDS = 2
@@ -230,12 +234,13 @@ def user_prompt(event: dict) -> dict | None:
     declined = declines(words, bool(stops and stops[-1].get("asked")))
     by_command = command_read_only(prompt)
     read_only = (reads_as_read_only(words) if by_command is None else by_command) or declined
-    record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, declined=declined, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))))
+    record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, declined=declined, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))),
+           named=bool(CONSEQUENTIAL_REQUEST.search(scale_notes.without_pasted(prompt))))  # judged whole, before storing cuts it short
     # A skill typed by name. `/occam:razor` and the other commands aren't the core skill, so the name must end there.
     typed = re.match(r"\s*/(?:occam:)?(occam[\w-]*)(?![\w:-])", prompt)
     if typed:
         record(event, kind="skill", name=typed.group(1))
-    notes = []
+    notes = turn_limits.limit_notes(event, words, read_only or level() == GUARD)
     if declined:
         notes.append("The user said no to the work you asked about, so edits to project files are held for this turn. Answer, and don't make the change.")
     elif read_only:
@@ -285,17 +290,22 @@ def expansion(event: dict) -> dict | None:
     return None
 
 
+def occam_agent(agent_type: str) -> str:
+    """The agent's name if occam or no plugin defines it, else "": another plugin's code-reviewer isn't occam's."""
+    plugin, _, name = agent_type.strip().rpartition(":")
+    return name if plugin in ("", "occam") else ""
+
+
 def subagent_stop(event: dict) -> dict | None:
-    name = skill_name(event.get("agent_type") or "")
-    if name:
+    name = occam_agent(event.get("agent_type") or "")
+    if name:  # so another plugin's code-reviewer finishing doesn't count as occam's review
         record(event, kind="agent_done", name=name)
     return None
 
 
 def subagent_start(event: dict) -> dict | None:
     """Session-start context never reaches a subagent, so it hears the rules here. Ponytail does the same through this event."""
-    plugin, _, name = (event.get("agent_type") or "").strip().rpartition(":")
-    if name in OWN_AGENTS and plugin in ("", "occam"):  # another plugin's code-reviewer isn't occam's, and hears the rules
+    if occam_agent(event.get("agent_type") or "") in OWN_AGENTS:  # another plugin's code-reviewer hears the rules
         return None
     return context("SubagentStart", rule_card.SUBAGENT_CARD)
 
@@ -383,12 +393,12 @@ def once(event: dict, session: Session, key: str) -> bool:
 
 def before_shell(event: dict, tool_input: dict, session: Session) -> dict | None:
     command = tool_input.get("command", "")
-    operation = destructive_git(command)
+    operation = destructive_git(command, viewed_files(session.entries))
     if operation:
         old_version = " `git show HEAD:<file>` into a temp folder gives the old version and leaves the working tree alone. Test that in its own command, since a failure there is expected." if operation == "stash" else ""
         return ask_a_person(event, f"occam: `git {operation}` can lose or publish uncommitted work, possibly someone else's. "
                                    f"A person should confirm.{old_version}")
-    reason = needs_a_person(command, event)
+    reason = needs_a_person(command, event) or runs_unchecked_downloads(command, event, session.entries) or turn_limits.release_over_a_failure(command, event, session)
     if reason:
         return ask_a_person(event, f"occam: {reason} A person should confirm.")
     return hold_a_shell_edit(command, event, session) or joined_context("PreToolUse", python_shell_context(event, session, command), consequential_shell_note(event, session, command))
@@ -400,7 +410,7 @@ def consequential_shell_note(event: dict, session: Session, command: str) -> dic
     if event.get("agent_id") or level() == GUARD or session.read_only or event.get("permission_mode") == "plan" or session.has("skill", CORE_SKILL):
         return None
     risky = [relative_path(path, event) for path in shell_edits(command, event) if path]
-    risky = [path for path in risky if is_code(path) and CONSEQUENTIAL_SHELL_PATH.search(path)]
+    risky = [path for path in risky if is_code(path) and CONSEQUENTIAL_PATH.search(path)]
     if not risky or not once(event, session, "shell-consequential"):
         return None
     heard = session.has("mentioned", "reference-security") or session.has("reference", "security")
@@ -439,18 +449,16 @@ def reads_as_small(event: dict, session: Session, tool_input: dict, edit_path: s
     language = LANGUAGE_SKILLS.get(Path(code[0] if code else "").suffix.lower())
     risk = LANGUAGE_RISKS[language][1] if language and language != "occam-shell" else None  # shell's matches anything, so it can't tell a small script from a risky one
     # A reference note reads everything, since a pasted spec about passwords deserves one. Whether this is small goes by what was asked.
-    return not any(applies for _, applies, _ in needed_references(code, scale_notes.asked_for(session.prompt))) and scale_notes.is_small(
+    return not any(applies for _, applies, _ in needed_references(code, scale_notes.asked_for(session.prompt))) and not names_consequential_work(code, f"{old}\n{new}", session.entries) and scale_notes.is_small(
         event.get("tool_name", ""), tool_input, os.path.join(event.get("cwd") or os.getcwd(), edit_path), code, old, new, risk, session.entries)
 
 
 def needs_the_full_skill(event: dict, session: Session, code: list[str], old: str, new: str) -> bool:
-    """Consequential by the request, the path or what the edit writes or removes, whatever its size. The rule card covers the rest."""
+    """Held for the core only on the work the owner named on 2026-11-09 (classify.names_consequential_work), whatever its size."""
     target = absolute_path(event, code[0]) if code else None  # code paths are relative to the project, not the working directory
     if event.get("tool_name") == "Write" and not old and target and target.is_file() and target.stat().st_size > 0:
         return True  # a file too large to read: what it removes can't be seen
-    language = LANGUAGE_SKILLS.get(Path(code[0] if code else "").suffix.lower())
-    risk = LANGUAGE_RISKS[language][1] if language and language != "occam-shell" else None
-    return any(applies for _, applies, _ in needed_references(code, scale_notes.asked_for(session.prompt))) or scale_notes.is_consequential(code, old, new, risk, session.entries)
+    return names_consequential_work(code, f"{old}\n{new}", session.entries)
 
 
 def notes_before_edit(event: dict, session: Session, tool_input: dict, code: list[str], small: bool) -> list[str]:
@@ -515,7 +523,7 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     code = [path for path in known if is_code(path)]
     if known and not code:
         note = instructions_note(event, session, known[0])
-        notes = [*([note] if note else []), *([] if event.get("agent_id") else repo_edit_notes(event, session, known[0]))]
+        notes = [*([note] if note else []), *([] if event.get("agent_id") else repo_edit_notes(event, session, known[0]) + change_notes(event, session, tool_input, known[0], created))]
         return context("PreToolUse", " ".join(notes)) if notes else None
     weakened = weakens_a_check(name, tool_input, event, session, code)
     if weakened:
@@ -529,20 +537,47 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
         small = reads_as_small(event, session, tool_input, edit_path, code, old, new)
         if not small and level() != GUARD and needs_the_full_skill(event, session, code, old, new):
             return hold(event, session, "skill", "the `occam:occam` skill has not been loaded in this session, and consequential code "
-                                                 "edits are held until it is.", "Call the Skill tool with `occam:occam`, then retry this edit.")
-    notes = notes_before_edit(event, session, tool_input, code, small)
+                                                 "edits are held until it is.", "Call the Skill tool with `occam:occam`, then retry this edit. This is routine, so the user needn't hear about it.")
+    notes = (change_notes(event, session, tool_input, known[0], created) if known else []) + notes_before_edit(event, session, tool_input, code, small)
     if code and sized_big and skill_switches.adds_something(created, bool(DEPENDENCY_MANIFEST.search(code[0])), old, new):  # by size alone: `small` is False once the core is loaded
         notes += module_notes(event, session, ["new-code"])
     return context("PreToolUse", " ".join(notes)) if notes else None
 
 
+def change_notes(event: dict, session: Session, tool_input: dict, relative: str, created: bool) -> list[str]:
+    """Notes on what an edit changes about the project's safeguards, and on a whole-file write over someone's uncommitted work."""
+    name = event.get("tool_name", "")
+    target = absolute_path(event, relative)
+    texts = evidence.whole_file_change(name, tool_input, target) or evidence.old_and_new_text(name, tool_input, event.get("cwd"))
+    has, mark = said_before(event, session)
+    notes = repo_notes.change_notes(relative, texts[0], texts[1], bool(TEST_PATH.search(relative)), has, mark)
+    edited_here = any(entry.get("kind") in ("edit", "created") and entry.get("path") == relative for entry in session.entries)
+    if name == "Write" and not created and not edited_here and target.is_file():
+        note = repo_notes.overwrites_uncommitted(str(project_root(event)), relative, texts[1], has, mark)
+        notes += [note] if note else []
+    return notes
+
+
 def pre_tool(event: dict) -> dict | None:
     name = event.get("tool_name", "")
+    if name == "Read":  # before reading the session's record, which a Read never needs and which grows with the session
+        return before_read(event, event.get("tool_input") or {})
     for tools, handler in ((SHELL_TOOLS, before_shell), (EDIT_TOOLS, before_edit), (evidence.WEB_TOOLS, before_web), (AGENT_TOOLS, before_agent)):
         if name in tools:
             session = Session(event)
             return with_card(event, session, handler(event, event.get("tool_input") or {}, session), "PreToolUse")
     return None
+
+
+def before_read(event: dict, tool_input: dict) -> dict | None:
+    """A credential file read into the conversation can't be taken back out, so a person confirms it first (the owner's decision of 2026-11-07).
+    A test fixture or a dependency's copy is a sample, not this project's credentials."""
+    path = str(tool_input.get("file_path") or "").replace("\\", "/") if isinstance(tool_input, dict) else ""
+    # A sample is judged inside the project only: the folders above it are someone's layout, not this project's fixtures.
+    if not SECRET_FILE.search(path) or (in_project(path, event) and FIXTURE_FOLDER.search(relative_path(path, event))):
+        return None
+    return ask_a_person(event, f"occam: this reads {os.path.basename(path)}, which holds credentials, into the conversation and its logs. A person should confirm. "
+                               "`cut -d= -f1 .env` shows what's set without the values.")
 
 
 def size_text(event: dict, file_path: str, relative: str) -> str | None:
@@ -584,7 +619,11 @@ def python_shell_context(event: dict, session: Session, command: str) -> dict | 
     cwd = event.get("cwd") or os.getcwd()
     notes = shell_notes(command, cwd, TEST_PATH, reference_path, session, mark)
     text = expand_variables(without_heredoc_bodies(command))
-    notes += repo_notes.shell_notes([head(words) for words in parse_shell(text)[0]], text, str(project_root(event)), cwd, has, mark)
+    commands = parse_shell(text)[0]
+    switched = {entry.get("tool"): (entry.get("target"), entry.get("how")) for entry in session.entries if entry.get("kind") == "switched"}
+    documents = list(dict.fromkeys(entry.get("path") for entry in session.entries if entry.get("kind") == "read_doc" and entry.get("path")))
+    notes += repo_notes.shell_notes([head(words) for words in commands], text, str(project_root(event)), cwd, has, mark, commands, switched, documents,
+                                    scale_notes.asked_for(session.prompt))
     return context("PreToolUse", " ".join(notes)) if notes else None
 
 
@@ -696,6 +735,8 @@ def after_read(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     match = re.search(r"/skills/occam/references/([\w-]+)\.md$", tool_input.get("file_path") or "")
     if match:
         record(event, kind="reference", name=match.group(1))
+    elif succeeded and repo_notes.is_a_document(tool_input.get("file_path") or ""):
+        record(event, kind="read_doc", path=os.path.join(event.get("cwd") or os.getcwd(), tool_input.get("file_path") or ""))
     return read_notes(event, tool_input.get("file_path") or "")
 
 
@@ -718,7 +759,8 @@ def shell_outcome_notes(event: dict, command: str, succeeded: bool, ran_check: b
     session = Session(event)
     agent = event.get("agent_id")
     has, mark = said_before(event, session, f"{agent}:" if agent else "")
-    notes = [repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
+    output = output_text(event.get("tool_response"))
+    notes = [repo_notes.addressed_to_an_agent(output, has, mark), repo_notes.leaked_work(output, succeeded and ran_check, has, mark)]
     if not agent:
         name = evidence.redact(command)[:300]
         if not succeeded and not ran_check:
@@ -812,10 +854,24 @@ def record_check(event: dict, command: str, steps: list, checks: list, succeeded
            numbers=evidence.numbers_in(everything), **({"agent": True} if event.get("agent_id") else {}), **check_identity([step.words for step in steps if step.words]))
     if re.search(r"\btim(ed|e)[ -]?out\b", error, re.I):  # a rerun passing says little about a run that never finished
         record(event, kind="setup")
-    after_it = [edit for step in steps[steps.index(checks[-1]) + 1:] for edit in step_edits(step, event, command)]
+    last = max(index for index, step in enumerate(steps) if step is checks[-1])  # by identity: `pytest -q && sed -i … && pytest -q` repeats an equal step
+    after_it = [edit for step in steps[last + 1:] for edit in step_edits(step, event, command)]
     if after_it:  # `pytest -q && sed -i ...`: this edit came after that check, so the check doesn't cover it
         record_shell_edit(event, after_it[0])
     return passed
+
+
+def record_reach(event: dict, command: str, commands: list, succeeded: bool) -> None:
+    """What later commands depend on: files fetched from the network and checks of them, and switches of the account, project or cluster.
+    A switch counts only from a command that succeeded, since a failed one may have left the target where it was."""
+    for path, host in downloads(command, event):
+        record(event, kind="downloaded", path=path, host=host)
+    names = checked_files(command)
+    fetched = {os.path.basename(entry.get("path", "")) for entry in Session(event).entries if entry.get("kind") == "downloaded"} if names else set()
+    if names & fetched:
+        record(event, kind="download_checked", names=sorted(names & fetched))
+    for tool, target, how in command_reach.switches(commands) if succeeded else ():
+        record(event, kind="switched", tool=tool, target=target, how=how)
 
 
 def after_shell(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
@@ -832,8 +888,10 @@ def after_shell(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
         record(event, kind="setup")
     checks = checks_that_ran(event, tool_input, command, steps)
     passed = record_check(event, command, steps, checks, succeeded) if checks else False
+    turn_limits.record_statuses(event, commands, succeeded)
     if any(is_diff(words) for words in commands):
-        record(event, kind="diff")
+        record(event, kind="diff", paths=diffs_shown(command, output_text(event.get("tool_response")), succeeded)[:50])
+    record_reach(event, command, commands, succeeded)
     mixed = copy_mixed_in_note(event, checks, command, passed) if checks else None
     return joined_context("PostToolUse" if succeeded else "PostToolUseFailure", shell_outcome_notes(event, command, succeeded, bool(checks)), failing_streak_note(event, succeeded) if checks else None, long_run_note(event) if succeeded else None, review_first_note(event), mixed,
                           check_modules(event, passed) if checks else None)
@@ -885,8 +943,12 @@ def stop(event: dict) -> dict | None:
     # Delegated work still underway will report back, and this runs again then. A dev server doesn't count.
     if level() == GUARD or event.get("agent_id") or any(task.get("type") in FOREGROUND_BLOCKING_TASKS for task in event.get("background_tasks") or []):
         return None
-    note = stop_checks.send_back(event, Session(event))
-    return context("Stop", note) if note else None
+    session = Session(event)
+    note = stop_checks.send_back(event, session)
+    if note:
+        return context("Stop", note)
+    told = stop_checks.for_the_person(event, session)
+    return {"systemMessage": told} if told else None
 
 
 HANDLERS = {"session-start": session_start, "user-prompt": user_prompt, "expansion": expansion,

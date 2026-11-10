@@ -10,7 +10,7 @@ from pathlib import Path
 from . import files as filesystem, scan as scanner
 from .manifests import NODE_BUILTINS, read_manifests
 from .project import _CONSEQUENCE, strongly_connected
-from .report import location, partial_note
+from .report import headline, partial_note
 from .source import is_test_path, language_of
 
 # Rough reading capacity. A reader holding this much code still has room to think about it.
@@ -249,7 +249,7 @@ def render_map(data: dict) -> str:
            *partial_note(data), f"Strategy: {data['strategy']}", ""]
     if data["leads"]:
         out.append(f"Worst {len(data['leads'])} of {data['lead_count']} scanner leads, unconfirmed. `occam scan` lists them all, and what it couldn't check:")
-        out += [f"  [{f['severity'][:4].upper()}/{f['tier']}] {f['rule']}  {location(f)}  {f['message'][:110]}" for f in data["leads"]]
+        out += [line for f in data["leads"] for line in (f"  {headline(f)}", f"      {f['message'][:110]}")]
         out.append("")
     out.append(f"Tests: {data['test_files']} files. CI: {', '.join(data['ci']) or 'none found'}. Tools configured here: {', '.join(data['configured_tools']) or 'none found'}.")
     manifests_shown = ", ".join(data["manifests"][:4]) + (f" and {len(data['manifests']) - 4} more" if len(data["manifests"]) > 4 else "")

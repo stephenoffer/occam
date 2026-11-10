@@ -343,8 +343,9 @@ def test_a_zero_agent_limit_is_honored_honestly(repo):
 def test_map_and_partition_agree(repo, lines):
     for index in range(4):
         repo.write(f"pkg{index}/mod.py", "x = 1\n" * (lines // 4))
-    mapped = json.loads(repo.occam("map", "--format", "json").stdout)["agents"]["readers_for_audit"]
-    assert mapped == json.loads(repo.occam("partition", "--format", "json").stdout)["agents"]
+    # No time cap: a capped map deliberately leaves out "agents", so a loaded machine would otherwise decide this test.
+    mapped = json.loads(repo.occam("map", "--format", "json", "--max-seconds", "0").stdout)["agents"]["readers_for_audit"]
+    assert mapped == json.loads(repo.occam("partition", "--format", "json", "--max-seconds", "0").stdout)["agents"]
 
 
 @pytest.mark.parametrize("files", [

@@ -6,6 +6,7 @@ import fnmatch
 import json
 import hashlib
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -15,7 +16,6 @@ from pathlib import Path
 from . import files as filesystem, manifests, query_code
 from .zero_tests import ran_no_tests
 
-_MANIFEST_SPECS = ("*pyproject.toml", "*requirements*.txt", "*requirements*.in", "*setup.py", "*setup.cfg", "*Pipfile", "*environment.yml", "*package.json", "*Cargo.toml", "*go.mod")
 # Limits `goal constrain --no` can check itself, beside a path that mustn't change.
 LIMITS = {"new-dependency": "No new dependencies", "new-file": "No new files", "api-break": "Keep the public API compatible"}
 
@@ -195,8 +195,9 @@ def _tree_state(root: Path, paths: list[str] | None = None) -> str:
         digest.update(head.encode())
         digest.update((filesystem.run_git(root, "status", "--porcelain=v1") or "").encode())
         for name in filesystem.dirty_paths(root):
-            try:
-                digest.update((root / name).read_bytes())
+            path = root / name
+            try:  # a link's own text is what git tracks, and following one to a FIFO would wait forever
+                digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes() if filesystem.is_plain_file(path) else b"")
             except OSError:
                 continue
         return digest.hexdigest()[:16]
@@ -209,23 +210,89 @@ def _tree_state(root: Path, paths: list[str] | None = None) -> str:
     return digest.hexdigest()[:16]
 
 
+def _new_goal(root: Path, text: str) -> dict:
+    # No commit yet still has a base, the empty tree, or a later commit of a forbidden file couldn't be seen.
+    head = (filesystem.run_git(root, "rev-parse", "HEAD") or "").strip() or (filesystem.empty_tree(root) if filesystem.in_git(root) else None)
+    in_git = filesystem.in_git(root)
+    return {"goal": text, "requirements": [], "constraints": [], "scope": [], "created": time.time(), "base": head,
+            "snapshot": {} if in_git else _snapshot(root), "untracked": _untracked(root) if in_git else []}
+
+
+def _add_constraint(root: Path, current: dict, constraint: dict) -> None:
+    current["constraints"].append(constraint)
+    if constraint.get("no") == "new-file" and "untracked" not in current and filesystem.in_git(root):
+        current["untracked"] = _untracked(root)  # a goal from before this was recorded: what's untracked now counts as already there
+
+
+# The three limits a goal checks itself, as a request states them: directives only. "No new dependencies, please." sets one, and so does
+# "don't add any new files". "There are no new dependencies in this PR", a quoted line, or a limit with an exception doesn't.
+_CLAUSE = r"(?:^|(?<=[.;:!?,(])\s*|\b(?:and|but|also|please|with|so)\s+)"
+_THINGS = r"(?:new\s+|extra\s+|additional\s+|third[- ]party\s+|external\s+)*(?:dependenc(?:y|ies)|deps|packages|librar(?:y|ies))\b"
+_STATED_LIMITS = {
+    "new-dependency": re.compile(_CLAUSE + r"no\s+" + _THINGS + r"|\b(?:don'?t|do not|without|avoid)\s+(?:add|adding|introduc\w*|pull\w* in|install\w*)(?:\s+any)?\s+" + _THINGS
+                                 + r"|\b(?:standard|std)[- ]?lib(?:rary)? only\b", re.I | re.M),
+    "new-file": re.compile(_CLAUSE + r"no\s+new\s+files?\b|\b(?:don'?t|do not|without)\s+(?:add|adding|create|creating)\s+(?:any\s+)?(?:new\s+)?files?\b", re.I | re.M),
+    "api-break": re.compile(r"\b(?:don'?t|do not|without)\s+(?:chang\w*|break\w*|alter\w*|modify\w*)\s+(?:the\s+|our\s+|its\s+|any\s+)?(?:public\s+|exported\s+)?(?:api|interface)s?\b"
+                            r"|\b(?:keep|preserve|maintain)\s+(?:the\s+|our\s+|its\s+)?(?:public\s+|exported\s+)?(?:api|interface)s?"
+                            r"(?=\s*(?:[.,;!?)]|$|as (?:it )?is\b|the same\b|unchanged\b|stable\b|intact\b|(?:backwards?[- ])?compatible\b))"
+                            r"|\bno\s+(?:public\s+)?api\s+changes?\b|\b(?:public\s+)?(?:api|interface)\s+(?:must|should|can)(?:n['’]?t| not)\s+(?:change|break)", re.I | re.M),
+}
+_EXCEPTED = re.compile(r"\b(?:unless|except|other than|apart from|besides|beyond|if (?:you )?(?:really )?need|if needed|if necessary|where needed)\b", re.I)
+
+
+def stated_limits(request: str) -> list[str]:
+    text = re.sub(r"(?m)^\s*>.*$", "", request)  # a quoted line is someone else's words
+    found = []
+    for limit, pattern in _STATED_LIMITS.items():
+        if any(not _EXCEPTED.search(re.split(r"[.!?\n]", text[match.end():], maxsplit=1)[0]) for match in pattern.finditer(text)):
+            found.append(limit)
+    return found
+
+
+def record_stated_limits(root: Path, request: str, session: str = "") -> list[str]:
+    """Record the limits the user's own request states, so `gate` and `goal verify` check them, the owner's call on 2026-11-08 (DESIGN
+    `session-recall-owner-calls`). A goal started this way belongs to its session, for as long as that runs: another session's request
+    replaces or clears it unless someone has added requirements to it, and a goal started by hand only gains the limits. `occam goal clear`
+    lifts them. Returns what was newly recorded."""
+    stated = stated_limits(request)
+    state = _load(root)
+    if state is not None and state.get("from_request") and state.get("session") != session and not state["requirements"]:
+        _clear_goal(root)
+        state = None
+    if not stated:
+        return []
+    if state is None:
+        _save(root, {**_new_goal(root, request.strip().split("\n")[0][:200]), "from_request": True, "session": session})
+    added: list[str] = []
+
+    def add(current: dict) -> None:
+        have = {constraint.get("no") for constraint in current["constraints"]}
+        for limit in (limit for limit in stated if limit not in have):
+            _add_constraint(root, current, {"text": f"{LIMITS[limit]}, as the request says", "forbid": None, "no": limit})
+            added.append(LIMITS[limit])
+
+    _change_goal(root, add)
+    return added
+
+
+def _clear_goal(root: Path) -> None:
+    with database(root) as db:
+        db.execute("DELETE FROM kv WHERE key = 'goal'")
+
+
 def goal(root: Path, args) -> tuple[str, int]:
     text = " ".join(args.text).strip()
     state = _load(root)
     if args.action == "init":
         if not text:
             return "State the goal: the observable outcome, not the steps.", 2
-        if state is not None:  # agents share this store, so starting over silently would throw away someone's requirements
+        kept = state["constraints"] if state is not None and state.get("from_request") and not state["requirements"] else None
+        if state is not None and kept is None:  # agents share this store, so starting over silently would throw away someone's requirements
             return f"A goal is already recorded: {state['goal']}\n`occam goal clear` first if it's really finished with.", 2
-        # No commit yet still has a base, the empty tree, or a later commit of a forbidden file couldn't be seen.
-        head = (filesystem.run_git(root, "rev-parse", "HEAD") or "").strip() or (filesystem.empty_tree(root) if filesystem.in_git(root) else None)
-        in_git = filesystem.in_git(root)
-        _save(root, {"goal": text, "requirements": [], "constraints": [], "scope": [], "created": time.time(), "base": head,
-                     "snapshot": {} if in_git else _snapshot(root), "untracked": _untracked(root) if in_git else []})
+        _save(root, {**_new_goal(root, text), **({"constraints": kept} if kept else {})})  # limits read from the request carry over
         return f"Goal set: {text}\nAdd what must be true with `occam goal add \"...\" --check \"command\"`, and limits with `occam goal constrain`.", 0
     if args.action == "clear":
-        with database(root) as db:
-            db.execute("DELETE FROM kv WHERE key = 'goal'")
+        _clear_goal(root)
         return "Goal cleared.", 0
     if state is None:
         return "No goal yet. `occam goal init \"the outcome\"` starts one.", 2
@@ -249,13 +316,7 @@ def goal(root: Path, args) -> tuple[str, int]:
         constraint = {"text": text or LIMITS.get(limit) or f"Don't change {args.forbid}", "forbid": _project_pattern(root, args.forbid or "") or args.forbid}
         if limit:
             constraint["no"] = limit
-
-        def add(current: dict) -> None:
-            current["constraints"].append(constraint)
-            if limit == "new-file" and "untracked" not in current and filesystem.in_git(root):
-                current["untracked"] = _untracked(root)  # a goal from before this was recorded: what's untracked now counts as already there
-
-        _change_goal(root, add)
+        _change_goal(root, lambda current: _add_constraint(root, current, constraint))
         checked = "Checked" if args.forbid or limit else "Reread"
         return f"Constraint recorded: {constraint['text']}. {checked} at every `goal verify`.", 0
     if args.action == "scope":
@@ -398,11 +459,23 @@ def new_dependencies(root: Path, base: str, changed: list[str], gone: list[str] 
         return text
 
     touched = {*changed, *gone, *renamed.values()}
-    listed = filesystem.run_git(root, "ls-files", "-z", "--", *_MANIFEST_SPECS) or ""  # read_manifests keeps only real manifest names
-    untouched = [path for path in listed.split("\0") if path and path not in touched]
+    listed = filesystem.run_git(root, "ls-files", "-z") or ""
+    untouched = [path for path in listed.split("\0") if path and path not in touched and manifests.DEPENDENCY_FILE.search(path)]
     before, elsewhere, now = manifests.read_manifests(root, sorted(touched), at_base), manifests.read_manifests(root, untouched), manifests.read_manifests(root, changed)
     return sorted(f"{name} ({now[ecosystem][name]})" for ecosystem in ("python", "node", "rust", "go") for name in now[ecosystem]
                   if name not in before[ecosystem] and name not in elsewhere[ecosystem])
+
+
+def _moved_here(root: Path, base: str, new: set[str]) -> set[str]:
+    """New paths holding exactly what a deleted file held at base: a rename made with `mv`, which git sees only once both sides are staged."""
+    deleted = filesystem.removed_and_renamed(root, base)[0]
+    if not deleted or not new:
+        return set()
+    listed = filesystem.run_git(root, "ls-tree", "-z", base, "--", *deleted) or ""  # one call, `mode type blob<TAB>path` per deleted file
+    gone = {entry.split("\t", 1)[0].split()[-1] for entry in listed.split("\0") if "\t" in entry}
+    candidates = sorted(path for path in new if (root / path).is_file())
+    hashed = (filesystem.run_git(root, "hash-object", "--", *candidates) or "").split()
+    return {path for path, blob in zip(candidates, hashed) if blob in gone} if len(hashed) == len(candidates) else set()
 
 
 def _untracked(root: Path) -> list[str]:
@@ -420,7 +493,8 @@ def _broken_limit(root: Path, base: str, limit: str, changed: list[str], already
         if added is None:
             raise filesystem.GitProblem(f"git couldn't list what was added since {base}")
         # A file that was there, untracked, when the goal began isn't new, whether or not it has been added to git since.
-        return sorted(({name for name in added.split("\0") if name} | set(_untracked(root))) - set(already_untracked)), []
+        new = ({name for name in added.split("\0") if name} | set(_untracked(root))) - set(already_untracked)
+        return sorted(new - _moved_here(root, base, new)), []
     if limit == "new-dependency":
         return new_dependencies(root, base, changed), []
     found = query_code.api(root, None, base, top=50)

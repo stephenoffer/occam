@@ -597,6 +597,7 @@ def api(root: Path, targets: list[str] | None, base: str | None, top: int) -> di
         raise filesystem.GitProblem("Comparing against a revision needs git")
     allowed = set(selected_files(root, targets))
     deleted, renamed = filesystem.removed_and_renamed(root, base)
+    fork = filesystem.fork_point(root, base)  # what this branch did, as the changed files above read it, not what the base gained since
     removed, signature, added = [], [], []
     asked = [relative_path(root, target).rstrip("/") for target in targets or []]
     within = lambda path: not asked or "." in asked or any(path == folder or path.startswith(folder + "/") for folder in asked)  # noqa: E731
@@ -612,7 +613,7 @@ def api(root: Path, targets: list[str] | None, base: str | None, top: int) -> di
         if language not in API_LANGUAGES:
             outside[language] += 1
             continue
-        old_text, new_text = filesystem.file_at(root, base, renamed.get(path, path)), filesystem.read_text(root / path)
+        old_text, new_text = filesystem.file_at(root, fork, renamed.get(path, path)), filesystem.read_text(root / path)
         before, after = _surface_of(path, old_text, language), _surface_of(path, new_text, language)
         if (old_text is not None and before is None) or (new_text is not None and after is None) or (new_text is None and path not in deleted and (root / path).exists()):
             unread.append(path)  # all its names would otherwise read as removed or as added

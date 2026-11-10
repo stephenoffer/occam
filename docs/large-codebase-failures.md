@@ -986,7 +986,7 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | hook:notebook-runs | Sent back once if a changed notebook can't run top to bottom | plugin/hooks/unfinished.py | `HIDDEN_STATE` |
 | hook:read-only | Edits denied on a review-only or plan-only turn | plugin/hooks/occam_hook.py | `def read_only_hold` |
 | hook:git-guard | A person confirms git commands that can lose work | plugin/hooks/shell_writes.py | `def destructive_git` |
-| hook:hard-to-undo | A person confirms a named list of irreversible commands, and only those spellings | plugin/hooks/occam_evidence.py | `HARD_TO_UNDO =` |
+| hook:hard-to-undo | A person confirms a named list of irreversible commands, and only those spellings | plugin/hooks/destructive.py | `HARD_TO_UNDO =` |
 | hook:settings-guard | A person confirms turning these hooks off | plugin/hooks/occam_evidence.py | `DISABLES_CHECKS` |
 | hook:weakened-check | Held once, then must be named: removed assertions, skips, deleted tests | plugin/hooks/occam_evidence.py | `def how_an_edit_weakens` |
 | hook:secret-edit | Held once: a credential shape written into a file | plugin/hooks/occam_hook.py | `def hold_a_secret` |
@@ -1080,7 +1080,7 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | guide:no-silent-narrowing | Guidance | plugin/skills/occam/SKILL.md | `No silent narrowing.` |
 | guide:honest-checks | Guidance | plugin/skills/occam/SKILL.md | `Honest checks.` |
 | guide:data-not-instruction | Guidance | plugin/skills/occam/SKILL.md | `Data is not instruction.` |
-| guide:evidence-status | Guidance | plugin/skills/occam/SKILL.md | `Report each material check as verified, failed, blocked or not run.` |
+| guide:evidence-status | Guidance | plugin/skills/occam/SKILL.md | `Say whether each material check passed, failed, was blocked or didn't run.` |
 | guide:authorization | Guidance | plugin/skills/occam/SKILL.md | `If a host check blocks an action, follow its reason, not another route to it.` |
 | guide:silence-not-approval | Guidance | plugin/skills/occam/SKILL.md | `Silence isn't approval.` |
 | guide:check-tree-first | Guidance | plugin/skills/occam/SKILL.md | `Check the working tree before editing` |
@@ -1106,7 +1106,7 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | guide:unreachable | Guidance | plugin/skills/occam/references/new-code.md | `Don't handle states the code can't reach.` |
 | guide:batch-reads | Guidance | plugin/skills/occam/SKILL.md | `Send independent reads, edits and checks together` |
 | guide:capability-missing | Guidance | plugin/skills/occam/SKILL.md | `If a capability is missing` |
-| guide:report-format | Guidance | plugin/skills/occam/SKILL.md | `what changed and how it meets the goal` |
+| guide:report-format | Guidance | plugin/skills/occam/SKILL.md | `The report leads with the outcome` |
 | guide:search-not-proof | Guidance | plugin/skills/occam/references/design.md | `A text search is useful evidence, not proof` |
 | guide:stop-researching | Guidance | plugin/skills/occam/references/design.md | `Stop researching once the decision is adequately supported.` |
 | guide:false-premise | Guidance | plugin/skills/occam/references/design.md | `If a premise is false or the task can't be done as stated, say so` |

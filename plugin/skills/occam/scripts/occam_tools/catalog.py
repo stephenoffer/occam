@@ -51,7 +51,7 @@ RULES: list[Rule] = [
     ]),
     *_table("security", [
         ("cache-reads-user", "api", "high", "medium", "C", "Cached function reads the current user or tenant", "Pass the user or tenant as an argument, or don't cache it."),
-        ("live-credential-in-test", "ops", "high", "medium", "B", "Test holds a credential in a live shape (value withheld)", "Use an obviously fake value, and rotate this one if it was ever real."),
+        ("live-credential-in-test", "ops", "high", "medium", "B", "Test holds a token in a vendor's live format (value withheld)", "Use an obviously fake value, and rotate this one if it was ever real."),
         ("hardcoded-secret", "ops", "critical", "medium", "B", "Credential committed in source (value withheld)", "Move it to configuration, and tell a person to rotate it, since history keeps it."),
         ("committed-secret-file", "ops", "critical", "high", "C", "Secret-bearing file is tracked in git", "Untrack it, ignore it, and rotate what it held."),
         ("sql-injection", "storage-network", "critical", "high", "B", "SQL built from interpolated values", "Use bound parameters."),
@@ -344,6 +344,10 @@ RULES: list[Rule] = [
         ("migration-no-rollback", "storage-network", "medium", "high", "C", "Migration that can't be rolled back", "Write the way back, or say why there isn't one."),
         ("migration-destroys-data", "storage-network", "medium", "medium", "C", "Migration drops data", "Stop writing it in one release and drop it in a later one, and confirm a backup exists first."),
         ("migration-locks-table", "storage-network", "medium", "medium", "C", "Migration can block writes on a large table", "Build indexes concurrently, and add a column in steps. Check it against the real table size."),
+        # config team, 2026-11-08
+        ("tests-use-production", "test", "high", "medium", "C", "Tests run with production credentials", "Give tests their own database and credentials. Production secrets shouldn't reach a test job."),
+        ("container-secret-arg", "ops", "high", "medium", "B", "Secret passed as a build argument or ENV, which the image keeps", "Mount it with RUN --mount=type=secret, or pass it at run time."),
+        ("sends-credentials", "ops", "high", "medium", "C", "Script reads credentials or the whole environment and sends data to another host", "Don't run it. Find out who added it, and rotate what it could reach."),
     ]),
     *_table("notebook", [
         ("nb-out-of-order", "runtime", "medium", "medium", "B", "Cells were executed out of order", "Restart and run all, and commit that."),
@@ -351,6 +355,54 @@ RULES: list[Rule] = [
         ("nb-unpinned-install", "ops", "low", "medium", "B", "Unpinned install inside a notebook", "Pin it, or move it to a declared environment."),
         ("nb-large-output", "ops", "low", "high", "A", "Large output stored in the notebook", "Clear outputs before committing."),
         ("nb-sensitive-output", "ops", "high", "medium", "C", "Stored output contains personal data or credentials", "Clear the output, and check who has had access to it."),
+    ]),
+    # team jvmgo: rules the Java, Kotlin and Go checks in rules_go.py and rules_jvm.py added
+    *_table("language-practice", [
+        ("checkpoint-before-effect", "storage-network", "high", "medium", "C", "Progress is recorded before the work it covers is done", "Record it after the effect commits, or in the same transaction as it."),
+        ("lock-without-fencing", "concurrency", "high", "medium", "C", "Lock can expire or be released while another holder writes", "Fence the protected writes with a token the store checks, and release only a lock you still hold."),
+        ("native-type-mismatch", "runtime", "high", "medium", "B", "Memory passed to native code as an element type of a different size", "Copy into the exact C type, checking each value fits."),
+        ("unbounded-upload", "storage-network", "medium", "medium", "B", "Upload or archive read with no size limit", "Cap the bytes and entries read, and check the content itself, not its name."),
+        ("unacknowledged-write", "storage-network", "high", "medium", "C", "Write reported as saved without waiting for the store to confirm it", "Wait for acknowledgement wherever the caller is told it succeeded."),
+        ("unsynchronized-state", "concurrency", "high", "medium", "B", "Shared state changed by concurrent requests with no lock", "Use a concurrent type or a lock, or keep the state in a store."),
+    ]),
+    # Team js (recall fixes): rules the JavaScript and TypeScript checks report that no other language had a row for.
+    *_table("security", [
+        ("owner-from-request", "api", "high", "medium", "C", "Ownership checked against an id the client sends", "Compare with the signed-in user from the session or a verified token."),
+        ("object-not-scoped", "api", "high", "medium", "C", "Record changed by the request's id alone, with no check that it's the caller's", "Filter by the owner or tenant too, or check the record first."),
+        ("upload-no-limit", "api", "medium", "medium", "B", "Upload accepted with no size limit", "Set a file size and count limit, and check the content, not only the name."),
+        ("key-in-source", "ops", "high", "medium", "B", "Cipher or HMAC key written in the source", "Load it from a secret store or the environment, and rotate it."),
+        ("prototype-pollution", "runtime", "high", "medium", "B", "Keys from input walked into nested objects with no guard for __proto__", "Skip __proto__, constructor and prototype, or build on Object.create(null) or a Map."),
+    ]),
+    *_table("language-practice", [
+        ("ack-before-durable", "storage-network", "medium", "medium", "C", "Success reported before the write is durable", "Reply after the write's callback or fsync, and don't turn off write acknowledgement."),
+        ("ack-before-effect", "storage-network", "medium", "medium", "C", "Message acknowledged before the work it carries is done", "Acknowledge or commit after the effect is stored, and make the handler safe to repeat."),
+    ]),
+    # Team native: rules for Ruby, PHP, C, C++ and Rust, in rules_ruby.py, rules_php.py and rules_native.py.
+    *_table("security", [
+        ("unchecked-bound", "runtime", "high", "medium", "B", "Length or index from input reaches memory with no bounds check", "Check it against the destination and the bytes left, and return an error."),
+        ("upload-in-webroot", "api", "high", "medium", "B", "Upload stored in the web root under the client's name or extension", "Store it outside the web root, and choose the name and extension yourself."),
+        ("vcr-unfiltered", "test", "medium", "medium", "B", "Recorded HTTP fixtures keep the credentials they were recorded with", "Filter each credential with filter_sensitive_data, and rotate any already committed."),
+    ]),
+    *_table("language-practice", [
+        ("raw-ownership", "runtime", "high", "medium", "B", "Raw pointer or handle with two owners, or none on an error path", "Give it one owner: a std::unique_ptr, a container, or a class that defines or deletes copying."),
+        ("undefined-behavior", "runtime", "medium", "medium", "B", "Relies on behavior the C or C++ standard leaves undefined", "Use memcpy or std::bit_cast for bytes, and handle every value a switch can see."),
+        ("buffer-lifetime", "runtime", "high", "medium", "B", "Buffer destroyed while an asynchronous or foreign consumer still uses it", "Keep the data alive until the consumer is done: a member, a captured shared_ptr, or an owning capsule."),
+        ("ffi-layout", "runtime", "high", "medium", "B", "Memory layout assumed across a language boundary", "Declare the layout: #[repr(C)] on the Rust side, or c_style on a pybind11 array."),
+    ]),
+    # team py: rules added for blind P0 cases in Python that occam stayed quiet on (rules_py_trust.py, rules_py_systems.py).
+    *_table("security", [
+        ("state-change-on-get", "api", "high", "medium", "C", "GET route behind a session cookie changes data", "Make it a POST behind the CSRF check."),
+        ("unscoped-lookup", "api", "high", "medium", "C", "Handler loads a record by id that its siblings scope to the user", "Filter by the owner or tenant, or build on the scoped query."),
+        ("tool-call-unchecked", "api", "high", "medium", "C", "A model's tool call picks a method or record with nothing checking it", "Dispatch through an explicit registry, and validate arguments against a schema and the ids you offered."),
+        ("unverified-download-exec", "ops", "high", "medium", "C", "Downloaded file made executable with no pin or checksum", "Pin the version and check a recorded hash, or commit the file."),
+        ("upload-extension-only", "api", "high", "medium", "B", "Upload accepted on its file extension alone", "Cap the request size, check the content, and store it outside what's served."),
+    ]),
+    *_table("language-practice", [
+        ("durability-disabled", "storage-network", "high", "medium", "C", "Durability turned off for writes that callers are told succeeded", "Keep acks=all, synchronous=FULL or NORMAL with WAL, or w=majority for anything a caller is told was saved."),
+        ("auto-commit-before-write", "storage-network", "high", "medium", "C", "Consumer auto-commits offsets while records wait in a buffer", "Turn auto-commit off and commit offsets after the batch is written, or in the same transaction."),
+        ("ctypes-buffer-unchecked", "runtime", "high", "medium", "B", "Array passed to C as a typed pointer without fixing its dtype and layout", "Convert with np.ascontiguousarray(x, dtype=...) first, or declare an ndpointer argtype with the dtype and C_CONTIGUOUS."),
+        ("ctypes-callback-collected", "runtime", "high", "medium", "B", "ctypes callback created inline for C code that keeps it", "Keep a reference to the callback object for as long as C can call it."),
+        ("rebuilt-while-shared", "concurrency", "medium", "medium", "B", "Shared collection cleared and refilled in place while other threads read it", "Build the new collection apart and swap the reference in one assignment, or hold a lock for readers and the writer."),
     ]),
 ]
 

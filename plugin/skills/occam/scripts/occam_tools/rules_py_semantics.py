@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Callable, Iterator
 
-from .py_helpers import _walk_own
+from .py_helpers import ROUTE_DECORATOR_NAME, _walk_own
 from .rules_py_agent import FUNCTIONS, _text
 
 LOOPS = (ast.For, ast.AsyncFor)
@@ -31,6 +31,8 @@ _SCRIPT_FOLDERS = {"", "scripts", "script", "bin", "tools", "examples", "src"}
 _KEEPS_FOR_LATER = {"append", "appendleft", "insert", "add", "setdefault", "connect", "register", "add_done_callback", "call_soon",
                     "call_soon_threadsafe", "call_later", "call_at", "add_callback", "subscribe", "on", "bind", "after", "submit", "apply_async",
                     "add_job", "add_listener", "add_handler", "addEventListener", "schedule"}
+# Where a caught exception is kept to raise or report later.
+_KEEPERS = {"append", "appendleft", "insert", "add", "put", "put_nowait", "set_exception"}
 _CALLBACK_KEYWORDS = {"command", "callback", "target", "on_click", "on_change", "handler", "done_callback"}
 # Changes that skip list items or make a dict or set raise. append and extend are left out: a list grown while it's walked is
 # a known worklist idiom.
@@ -56,7 +58,6 @@ _IDEMPOTENT = re.compile(r"idempot|dedup|request_id|requestid|Idempotency-Key", 
 _VERIFIES = re.compile(r"hmac|signature|verify|construct_event|compare_digest|validate_request|webhook_secret|signing_secret|x-hub-signature|svix|webhooks\.", re.I)
 _TRACEBACK = re.compile(r"\btraceback\.format_exc\(|\btraceback\.format_exception\(")
 _RESPONDS = re.compile(r"(?:^|\.)(?:jsonify|JSONResponse|Response|HttpResponse|JsonResponse|make_response|PlainTextResponse|HTMLResponse)$")
-_ROUTE = re.compile(r"(?:^|\.)(?:route|get|post|put|patch|delete|api_route)$")
 
 
 def _names(target: ast.AST) -> set[str]:
@@ -267,10 +268,13 @@ def _catches_cancellation(handler: ast.ExceptHandler) -> bool:
 
 
 def _swallows(handler: ast.ExceptHandler) -> bool:
-    """No raise, no uncancel(), and the exception isn't stored to raise later, as in `except CancelledError as e: err = e`.
-    Logging it isn't keeping it."""
+    """No raise, no uncancel(), and the exception isn't stored to raise later, as in `err = e`, `errors.append(e)` or `future.set_exception(e)`.
+    Logging it, or keeping only its text, isn't keeping it."""
     handled = [node for statement in handler.body for node in ast.walk(statement)]
-    stored = handler.name is not None and any(isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None and handler.name in _names(node.value) for node in handled)
+    values = [node.value for node in handled if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None]
+    values += [argument for call in _calls(handled) if _method(call) in _KEEPERS for argument in call.args]
+    kept = {item.id for value in values for item in (value.elts if isinstance(value, (ast.Tuple, ast.List)) else [value]) if isinstance(item, ast.Name)}
+    stored = handler.name is not None and handler.name in kept
     return not stored and not any(isinstance(node, ast.Raise) for node in handled) and not any(_method(node) == "uncancel" for node in _calls(handled))
 
 
@@ -488,6 +492,24 @@ def _declared_foreign(tree: ast.Module) -> tuple[set[str], set[str]]:
     return declared, dynamic
 
 
+def _handles_cut_short(tree: ast.Module, libraries: set[str]) -> Iterator[tuple]:
+    """A function given argtypes but no restype still returns a C int. When what it returns is kept and handed back to the library, it's a
+    handle or pointer, and on a 64-bit build its top half is gone."""
+    argtypes, restypes = set(), set()
+    for node in (node for node in ast.walk(tree) if isinstance(node, ast.Assign)):
+        for target in (target for target in node.targets if isinstance(target, ast.Attribute)):
+            (argtypes if target.attr == "argtypes" else restypes if target.attr == "restype" else set()).add(_text(target.value))
+    foreign = [node for node in _calls(ast.walk(tree)) if isinstance(node.func, ast.Attribute) and _text(node.func.value) in libraries]
+    passed = {_text(argument) for node in foreign for argument in node.args}
+    reported = set()
+    for node in (node for node in ast.walk(tree) if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.value, ast.Call)):
+        name = _text(node.value.func)
+        if node.value in foreign and name in argtypes - restypes - reported and _text(node.targets[0]) in passed:
+            reported.add(name)
+            yield ("ctypes-untyped", node.lineno, f"{name} has argtypes but no restype, so ctypes returns its result as a C int, and the handle kept here is "
+                   "cut to 32 bits before it goes back to the library. Set restype, such as c_void_p.", {})
+
+
 def _untyped_foreign_calls(tree: ast.Module) -> Iterator[tuple]:
     """ctypes assumes every argument and return value is a C int unless told otherwise, so a pointer or a 64-bit value is cut short."""
     declared, dynamic = _declared_foreign(tree)
@@ -500,6 +522,8 @@ def _untyped_foreign_calls(tree: ast.Module) -> Iterator[tuple]:
         if isinstance(node.func, ast.Attribute) and _text(node.func.value) in libraries and id(node) not in harmless and name not in declared | seen:
             seen.add(name)
             yield "ctypes-untyped", node.lineno, f"{name} is called with no argtypes or restype, so ctypes treats its arguments and result as C int, which truncates pointers and 64-bit values. Declare both.", {}
+    if libraries:
+        yield from _handles_cut_short(tree, libraries)
 
 
 # ---------------------------------------------------------------- effects that happen twice, or for anyone
@@ -520,18 +544,116 @@ def _is_absence_check(test: ast.AST) -> bool:
     return (negated or compared) and bool(_EXISTS.search(_text(test)))
 
 
+# Code that catches the conflict a unique constraint raises, or asks the database to resolve it, has the constraint the check needs.
+_HANDLES_A_CONFLICT = re.compile(r"IntegrityError|UniqueViolation|DuplicateKey|on_conflict|ON CONFLICT|get_or_create|update_or_create|upsert", re.I)
+_READS_A_ROW = re.compile(r"\.(?:objects|query)\b.{0,200}?\.(?:filter|filter_by|get|exists|first|count)\(|\b(?:scalar|scalars|execute|query)\(\s*select\(|\.find_one\(|\.count_documents\(")
+_CHECK_THEN_INSERT = ("This checks that the row is missing and then creates it, so two requests at once can both create it. Back it with a unique "
+                      "constraint and handle the conflict, or use get_or_create or an upsert.")
+
+
+def _exits(statements: list) -> bool:
+    last = statements[-1] if statements else None
+    return isinstance(last, (ast.Raise, ast.Return)) or (isinstance(last, ast.Expr) and isinstance(last.value, ast.Call) and _text(last.value.func).rsplit(".", 1)[-1] == "abort")
+
+
+def _tests_the_row(test: ast.AST, reads: set[str]) -> bool:
+    """`taken`, `existing is not None` or `count > 0`, for a name holding a read. `wallet.balance < amount` tests a field of the row, not that it's there."""
+    if isinstance(test, ast.Name):
+        return test.id in reads
+    if isinstance(test, ast.BoolOp):
+        return any(_tests_the_row(value, reads) for value in test.values)
+    return (isinstance(test, ast.Compare) and isinstance(test.left, ast.Name) and test.left.id in reads and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.IsNot, ast.Gt, ast.NotEq, ast.GtE)) and isinstance(test.comparators[0], ast.Constant))
+
+
+def _is_presence_check(test: ast.AST, reads: set[str]) -> bool:
+    """`if db.scalar(select(...)):`, or `if taken:` where taken holds such a read. Not negated: `if not exists: create` is the other shape."""
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return False
+    text = _text(test)
+    return bool(_EXISTS.search(text) or _READS_A_ROW.search(text)) or _tests_the_row(test, reads)
+
+
+_MODEL_NAMES = re.compile(r"\b[A-Z]\w*\b|\b\w+(?=\.(?:find_one|count_documents|insert_one|insert_many|insert)\()")
+
+
+def _created_models(call: ast.Call, bound: dict[str, ast.AST]) -> set[str]:
+    """What a create writes to: `Post.objects.create` is Post, `db.add(user)` is whatever class `user` was built from, `db.users.insert_one`
+    is users. Empty when it can't be told."""
+    method, receiver = _method(call), call.func.value if isinstance(call.func, ast.Attribute) else None
+    if method in ("create", "bulk_create") and receiver is not None:
+        return {_text(receiver).rsplit(".", 1)[0].rsplit(".", 1)[-1]}
+    if method in ("insert", "insert_one", "insert_many") and receiver is not None:
+        return {_text(receiver).rsplit(".", 1)[-1]}
+    made = call.args[0] if call.args else None
+    if isinstance(made, ast.Name):
+        made = bound.get(made.id)
+    return {_text(made.func).rsplit(".", 1)[-1]} if isinstance(made, ast.Call) else set()
+
+
+def _exit_then_create(function: ast.AST) -> Iterator[ast.If]:
+    """`if <row exists>: raise Conflict` followed by an insert into the same model or table: the same race as creating inside
+    `if not exists:`. A check on one table before writing another, as a ban check before a comment, isn't this."""
+    blocks = [function.body] + [getattr(node, field) for node in _walk_own(function) for field in ("body", "orelse", "finalbody")
+                                if isinstance(getattr(node, field, None), list) and not isinstance(node, (*FUNCTIONS, ast.ClassDef))]
+    if not any(isinstance(statement, ast.If) and not statement.orelse and _exits(statement.body) for block in blocks for statement in block):
+        return
+    reads = _assigned_from(function, lambda value: bool(_EXISTS.search(_text(value)) or _READS_A_ROW.search(_text(value))))
+    bound = {node.targets[0].id: node.value for node in _walk_own(function) if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)}
+    for block in blocks:
+        creates = [(index, call) for index, later in enumerate(block) for call in _calls(ast.walk(later)) if _creates_a_row(call)]
+        if not creates:
+            continue
+        for index, statement in enumerate(block):
+            if isinstance(statement, ast.If) and not statement.orelse and _exits(statement.body) and _is_presence_check(statement.test, reads):
+                checked_text = _text(statement.test) + " " + " ".join(_text(bound[name]) for name in _names(statement.test) & reads if name in bound)
+                checked = set(_MODEL_NAMES.findall(checked_text))
+                if any(at > index and _created_models(call, bound) & checked for at, call in creates):
+                    yield statement
+                    break
+
+
 def _check_then_create(tree: ast.Module) -> Iterator[tuple]:
     """Checking that a row is absent and then inserting it lets two requests both pass the check. Only a unique constraint stops that."""
+    functions = list(_functions(tree))
+    verdicts: dict[int, bool] = {}
+    enclosing: dict[int, ast.AST] = {}
+
+    def function_of(node: ast.If) -> ast.AST | None:
+        if not enclosing:  # built the first time an absence check turns up, which most files never reach
+            enclosing.update({id(inner): function for function in functions for inner in _walk_own(function) if isinstance(inner, ast.If)})
+        return enclosing.get(id(node))
+
+    def handles_conflict(function: ast.AST | None) -> bool:  # read only where a candidate turned up, since it unparses the function
+        if function is None:
+            return False
+        if id(function) not in verdicts:
+            verdicts[id(function)] = bool(_HANDLES_A_CONFLICT.search(_text(function)))
+        return verdicts[id(function)]
+
     for node in (node for node in ast.walk(tree) if isinstance(node, ast.If) and _is_absence_check(node.test)):
-        if any(_creates_a_row(call) for statement in node.body for call in _calls(ast.walk(statement))):
-            yield "check-then-insert", node.lineno, "This checks that the row is missing and then creates it, so two requests at once can both create it. Back it with a unique constraint and handle the conflict, or use get_or_create or an upsert.", {}
+        if any(_creates_a_row(call) for statement in node.body for call in _calls(ast.walk(statement))) and not handles_conflict(function_of(node)):
+            yield "check-then-insert", node.lineno, _CHECK_THEN_INSERT, {}
+    for function in functions:
+        for node in _exit_then_create(function):
+            if not handles_conflict(function):
+                yield "check-then-insert", node.lineno, _CHECK_THEN_INSERT, {}
+
+
+def _is_retried(function: ast.AST) -> bool:
+    """A retry decorator, or a Celery task that retries itself: `autoretry_for=` on its decorator, or `self.retry(...)` in its body."""
+    for decorator in function.decorator_list:
+        if _RETRY_DECORATOR.search(_text(decorator.func if isinstance(decorator, ast.Call) else decorator)):
+            return True
+        if isinstance(decorator, ast.Call) and any(keyword.arg == "autoretry_for" for keyword in decorator.keywords):
+            return True
+    return any(isinstance(node, ast.Call) and _text(node.func) == "self.retry" for node in _walk_own(function))
 
 
 def _retried_effects(tree: ast.Module) -> Iterator[tuple]:
     """A retry library repeats the whole call, so an effect that already happened before the error happens again."""
     for function in _functions(tree):
-        decorators = [decorator.func if isinstance(decorator, ast.Call) else decorator for decorator in function.decorator_list]
-        source = _text(function) if any(_RETRY_DECORATOR.search(_text(decorator)) for decorator in decorators) else ""
+        source = _text(function) if _is_retried(function) else ""
         effect = _NOT_REPEATABLE.search(source)
         if effect and not _IDEMPOTENT.search(source):
             yield "retry-not-idempotent", function.lineno, f"{function.name} is retried, and it calls {effect.group(0).rstrip('(')} with no idempotency key, so a failure after that effect lands repeats it. Pass a key the far side deduplicates on, or retry only reads.", {}
@@ -559,7 +681,7 @@ def _unverified_webhooks(tree: ast.Module) -> Iterator[tuple]:
 
 
 def _is_route(function: ast.AST) -> bool:
-    return any(_ROUTE.search(_text(decorator.func if isinstance(decorator, ast.Call) else decorator)) for decorator in function.decorator_list)
+    return any(ROUTE_DECORATOR_NAME.search(_text(decorator.func if isinstance(decorator, ast.Call) else decorator)) for decorator in function.decorator_list)
 
 
 def _sends_a_trace(node: ast.AST, in_route: bool) -> bool:

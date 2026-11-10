@@ -13,10 +13,14 @@ from typing import Any, NamedTuple
 
 import occam_evidence as evidence
 import scan_notes
-from occam_commands import INSTALLERS, golden_command, head, is_check, nbconvert_target, rewrites_in_place, run_by, unquote, writes_project_files
-from shell_reading import expand_variables, git_commands, parse_shell, python_writes, read_steps, without_heredoc_bodies
+from destructive import MAX_MAKEFILE_BYTES, is_generated, make_deletes_through_unset, names_production, production_target, restore_reason, set_in_environment
+from occam_commands import (INSTALLERS, RUNS_A_FILE, golden_command, head, is_check, nbconvert_target, option_value, rewrites_in_place, run_by, settings_of,
+                             unquote, writes_project_files)
+from printed_secrets import SECRET_FILE, secret_printed
+from python_reading import python_prints_a_secret_file, python_runs_a_download, python_writes
+from shell_reading import expand_variables, git_commands, home_expanded, parse_shell, read_steps, without_heredoc_bodies
 
-TEMP_VARIABLES = {"TMPDIR", "TMP", "TEMP", "HOME"}
+TEMP_VARIABLES = {"TMPDIR", "TMP", "TEMP"}
 TEMP_FOLDERS = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/")
 GIT_CHANGES_FILES = {"merge", "pull", "cherry-pick", "revert", "am", "checkout", "switch", "restore", "reset", "stash", "clean", "rebase"}
 GIT_GLOBAL_VALUE_OPTIONS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
@@ -28,10 +32,11 @@ GIT = r"^git(?:\s+(?:-[cC]\s+\S+|--(?:git-dir|work-tree|namespace)\s+\S+|--[\w-]
 DESTRUCTIVE_GIT = {
     "reset": re.compile(GIT + r"reset\b[^;&|]*--hard"),
     "checkout": re.compile(GIT + r"checkout\s+(?:[^;&|]*\s)?(?:--\s|\.(?:\s|$))"),
-    "restore": re.compile(GIT + r"restore\s(?![^;&|]*--staged)"),
+    "restore": re.compile(GIT + r"restore(?=\s)(?:(?![^;&|]*(?:--staged\b|\s-[a-zA-Z]*S))|(?=[^;&|]*(?:--worktree\b|\s-[a-zA-Z]*W)))"),  # unstaging alone loses nothing
     "clean": re.compile(GIT + r"clean\b[^;&|]*\s-[a-zA-Z]*f"),
     "stash": re.compile(GIT + r"stash\b(?!\s+(?:list|show)\b)"),
-    "push": re.compile(GIT + r"push\b[^;&|]*(?:--force|\s-f\b)"),
+    # Forcing (`--force`, `-f`, a `+main` refspec) or deleting what the remote has (`--delete`, `-d`, `:old`, `--mirror`, `--prune`).
+    "push": re.compile(GIT + r"push\b[^;&|]*(?:--force|--delete\b|--mirror\b|--prune\b|\s-[a-zA-Z]*[fd]|\s[+:][^\s;&|])"),
     "rebase": re.compile(GIT + r"rebase\b"),
     "commit --amend": re.compile(GIT + r"commit\b[^;&|]*--amend\b"),
     "branch": re.compile(GIT + r"branch\s+[^;&|]*-D\b"),
@@ -85,8 +90,15 @@ def leaves_project(place: str, event: dict, command: str) -> bool:
     return not in_project(os.path.expanduser(place), event)
 
 
+_STEPS: dict[tuple, list] = {}  # the hook reads one command's steps several times in a call
+
+
 def shell_steps(command: str, event: dict) -> list:
-    return read_steps(command, lambda place: leaves_project(place, event, command))
+    key = (command, event.get("cwd"), event.get("scratchpad_dir"))
+    if key not in _STEPS:
+        _STEPS.clear()
+        _STEPS[key] = read_steps(command, lambda place: leaves_project(place, event, command))
+    return _STEPS[key]
 
 
 def shell_edits(command: str, event: dict) -> list[str]:
@@ -129,7 +141,7 @@ class _Writer(NamedTuple):
     def named(self, paths: list[str]) -> list[str]:
         """Named paths that are the project's. A variable can't be judged, so it reads as unclear unless it's known to be temp."""
         found = []
-        for path in paths:
+        for path in map(home_expanded, paths):
             if path.startswith("$") and "PWD" not in path[:6]:
                 if not is_temp_variable(path, self.command):
                     found.append("")
@@ -318,23 +330,180 @@ def is_diff(words: list[str]) -> bool:
     return name == "git" and bool(positional) and positional[0] in ("diff", "show", "status")
 
 
-def destructive_git(command: str) -> str | None:
-    """The git operation in this command that can lose work, from what really runs, so a commit message or a grep for the words isn't one."""
+def pathspecs(text: str, operation: str) -> list[str]:
+    """The paths a `git clean`, `restore` or `checkout` names: everything after `--`, or else its words that aren't options or their values."""
+    words = text.split()
+    after = words[words.index(operation) + 1:] if operation in words else []
+    if "--" in after:
+        return after[after.index("--") + 1:]
+    found, value_next = [], False
+    for word in after:
+        if value_next:
+            value_next = False
+        elif word.startswith("-"):
+            value_next = word in ("-s", "--source", "-e", "--exclude")
+        else:
+            found.append(word)
+    return found
+
+
+def _spared(operation: str, text: str, viewed: set[str]) -> bool:
+    """A clean of build output only, or a restore of files whose own diff this session looked at first, isn't someone's work going unseen."""
+    specs = pathspecs(text, operation)
+    if operation == "clean":
+        return bool(specs) and all(is_generated(spec) for spec in specs)
+    if operation in ("restore", "checkout"):
+        return bool(specs) and all(os.path.normpath(spec) in viewed and spec not in (".", "Q") for spec in specs)
+    return False
+
+
+def destructive_git(command: str, viewed: set[str] | None = None) -> str | None:
+    """The git operation in this command that can lose work, from what really runs, so a commit message or a grep for the words isn't one.
+    `viewed` is the files whose own diff this session has seen."""
     commands = git_commands(command)
-    return next((operation for operation, pattern in DESTRUCTIVE_GIT.items() for text in commands if pattern.search(text)), None)
+    return next((operation for operation, pattern in DESTRUCTIVE_GIT.items() for text in commands if pattern.search(text) and not _spared(operation, text, viewed or set())), None)
+
+
+_DIFF_HEADER = re.compile(r"^diff --git a/(\S+) b/", re.M)
+MAX_DIFF_OUTPUT_READ = 400_000
+
+
+_SUMMARY_ONLY = {"--stat", "--name-only", "--name-status", "--quiet", "-s", "--no-patch", "--shortstat", "--numstat", "--summary", "--compact-summary",
+                 "--dirstat", "--raw"}
+
+
+def diffs_shown(command: str, output: str, succeeded: bool) -> list[str]:
+    """The files a `git diff` here names and whose diff it showed: its output has the file's header, or the diff ended the line and printed
+    nothing, which means nothing a restore would discard. A summary, a diff saved to a file and a failed run show none of the changes."""
+    if not succeeded:
+        return []
+    from shell_reading import pipelines
+
+    shown = set(_DIFF_HEADER.findall(output[:MAX_DIFF_OUTPUT_READ]))
+    found = []
+    for stages in pipelines(command):
+        for position, stage in enumerate(stages):
+            name, args = head(stage.words)
+            if stage.saved or name != "git" or "diff" not in args or any(arg.split("=", 1)[0] in _SUMMARY_ONLY for arg in args):
+                continue
+            empty = position == len(stages) - 1 and not output.strip()
+            found += [path for path in diffed_paths(stage.words) if empty or any(same_file(path, header) for header in shown)]
+    return found
+
+
+def same_file(one: str, other: str) -> bool:
+    """The same file, written from the repository's root or from a folder in it."""
+    return one == other or one.endswith("/" + other) or other.endswith("/" + one)
+
+
+def diffed_paths(words: list[str]) -> list[str]:
+    """The files a `git diff` names, so a later restore of exactly those can count as looked at first."""
+    name, args = head(words)
+    if name != "git" or "diff" not in args:
+        return []
+    specs = pathspecs(" ".join(args), "diff")
+    # A file, by its name: a folder holds more than one person's changes, and a glob or a revision range isn't a path
+    return [os.path.normpath(spec) for spec in specs if "." in os.path.basename(spec.rstrip("/")) and not spec.endswith("/") and not re.search(r"[*?\[]|\.\.", spec)]
 
 
 def needs_a_person(command: str, event: dict | None = None) -> str | None:
     text = expand_variables(without_heredoc_bodies(command))
     inside = (lambda path: inside_project(path, event)) if event else (lambda _: False)
     commands = parse_shell(text)[0]
-    return evidence.reason_for_a_person(text, [head(words) for words in commands], inside, evidence.in_a_test_environment(commands))
+    return evidence.reason_for_a_person(text, [head(words) for words in commands], inside, evidence.in_a_test_environment(commands)) or _reason_from_steps(command, event)
+
+
+def _sourced(steps: list) -> list[str]:
+    return [unquote(step.words[1]) for step in steps if len(step.words) > 1 and head(step.words)[0] in (".", "source")]
+
+
+# Reading a command again step by step costs as much as the first read, so it happens only when one of these words is there to find.
+NAMES_A_SECRET_STORE = re.compile(r"secretsmanager|\bssm\b|\bsecrets?\b|keyvault|\bvault\b|\bop\b|doppler|\bsops\b|\boutput\b", re.I)  # `kubectl get Secret`
+NEEDS_THE_STEPS = re.compile(r"python|restor|modify-db|\bg?make\b")
+
+
+def _reason_from_steps(command: str, event: dict | None) -> str | None:
+    """Asks that need each step's own settings, the Python it runs, or a file it names: a secret printed, a restore over production, a download
+    run from Python, and a Makefile deleting through a variable it never sets."""
+    printed = secret_printed(command) if NAMES_A_SECRET_STORE.search(command) else None
+    if printed:
+        return f"this prints a secret's value, from {printed}, into the conversation and its logs. Its key names, its length or a hash show what's needed without the value."
+    if not NEEDS_THE_STEPS.search(command):
+        return None
+    steps = read_steps(command)
+    sourced_production = any(names_production(path) for path in _sourced(steps))
+    for step in steps:
+        reason = _step_needs_a_person(step, sourced_production, event)
+        if reason:
+            return reason
+    return None
+
+
+def _step_needs_a_person(step, sourced_production: bool, event: dict | None) -> str | None:
+    secret_file = python_prints_a_secret_file(step.code, lambda path: bool(SECRET_FILE.search(path)))
+    if secret_file:
+        return f"this prints values from {secret_file}, which holds credentials, into the conversation and its logs. Printing only whether each is set, or its non-secret parts, shows the same."
+    if python_runs_a_download(step.code):
+        return "this runs code it downloads, without checking where it came from or what it is."
+    if not step.words:
+        return None
+    name, args = head(step.words)
+    production = sourced_production or production_target(args) or any(names_production(setting) for setting in settings_of(step.words))
+    restore = restore_reason(name, args, production, _restore_script(step, name, args, event) if production else "")
+    if restore:
+        return restore
+    return _make_deletes(step, args, event) if name in ("make", "gmake") and event else None
+
+
+def _restore_script(step, name: str, args: list[str], event: dict | None) -> str:
+    """The text of the restore-named script file this step runs, as `./scripts/restore_latest.sh` or `bash restore.sh`, so what it restores
+    can be read when the command doesn't say. Read only that far, and empty when there's none."""
+    if not event:
+        return ""
+    runs_a_file = name in RUNS_A_FILE or re.fullmatch(r"python[\d.]*", name)
+    script = next((arg for arg in args if not arg.startswith("-")), "") if runs_a_file else next((unquote(word) for word in step.words if os.path.basename(unquote(word)) == name and "/" in word), "")
+    if not script or "restore" not in os.path.basename(script).lower():
+        return ""
+    return _read_small(Path(event.get("cwd") or os.getcwd(), step.folder or "", os.path.expanduser(script))) or ""
+
+
+def _make_deletes(step, args: list[str], event: dict) -> str | None:
+    folder, makefile, goals, given = _make_arguments(args)
+    given |= {setting.split("=", 1)[0] for setting in settings_of(step.words)}
+    base = Path(event.get("cwd") or os.getcwd(), step.folder or "", folder)
+    for name in ([makefile] if makefile else ["GNUmakefile", "makefile", "Makefile"]):
+        path = base / name
+        try:
+            if path.is_file():
+                with path.open(encoding="utf-8", errors="replace") as handle:
+                    return make_deletes_through_unset(handle.read(MAX_MAKEFILE_BYTES), goals, given, set_in_environment)
+        except OSError:
+            return None
+    return None
+
+
+def _make_arguments(args: list[str]) -> tuple[str, str, list[str], set[str]]:
+    """What `make` is told: the folder it runs in, the Makefile it reads, the goals, and the variables set on its command line."""
+    folder, makefile, goals, given, value_next = "", "", [], set(), ""
+    for arg in args:
+        if value_next:
+            folder, makefile = (arg, makefile) if value_next == "-C" else (folder, arg)
+            value_next = ""
+        elif arg in ("-C", "--directory", "-f", "--file", "--makefile"):
+            value_next = "-C" if arg in ("-C", "--directory") else "-f"
+        elif arg.startswith(("--directory=", "--file=", "--makefile=")):
+            folder, makefile = (arg.split("=", 1)[1], makefile) if arg.startswith("--directory=") else (folder, arg.split("=", 1)[1])
+        elif "=" in arg and not arg.startswith("-"):
+            given.add(arg.split("=", 1)[0])
+        elif not arg.startswith("-"):
+            goals.append(arg)
+    return folder, makefile, goals, given
 
 
 def side_effects(command: str, event: dict) -> list[dict]:
     """Installs and deletions a command made, which a reader of the report needs to hear about."""
     packages = [package for step in shell_steps(command, event) if step.words and not step.elsewhere for package in evidence.installed_packages(*run_by(step.words), INSTALLERS)]
-    deleted = [{"name": os.path.basename(path), "path": path} for path in deleted_paths(command, event) if not evidence.is_generated(path)]
+    deleted = [{"name": os.path.basename(path), "path": path} for path in deleted_paths(command, event) if not is_generated(path)]
     return [{"name": package} for package in packages] + deleted
 
 
@@ -352,3 +521,220 @@ def check_identity(commands: list[list[str]]) -> dict:
             target = next((arg for arg in args if not arg.startswith("-")), "")
             runs.append([evidence.redact(" && ".join(prefix + [" ".join(words)]))[:200], evidence.redact(f"{key} {target}".strip())[:200]])
     return {"runs": runs}
+
+
+# ---------------------------------------------------------------- code downloaded in one call and run in a later one (F266)
+
+CHECKSUM_CHECK = re.compile(r"\b(?:sha(?:1|224|256|384|512)sum|shasum|b2sum|md5sum)\b[^;&|\n]{0,200}(?:\s-c\b|\s--check\b|\s-[a-zA-Z]*c\b)"
+                            r"|\bgpg\b[^;&|\n]{0,200}--verify\b|\bcosign[ \t]+verify|\bminisign\b[^;&|\n]{0,100}\s-V\b|\bslsa-verifier\b")
+MAX_BUILD_FILE_BYTES = 256_000
+OFFICIAL_WRAPPER_HOSTS = {"services.gradle.org", "downloads.gradle.org", "downloads.gradle-dn.com", "repo.maven.apache.org", "repo1.maven.org"}
+WRAPPERS = {"gradlew": "gradle/wrapper/gradle-wrapper.properties", "mvnw": ".mvn/wrapper/maven-wrapper.properties"}
+
+
+def _url_host(args: list[str]) -> str:
+    return next((arg.split("/")[2] for arg in args if re.match(r"(?:https?|ftp)://[^/]", arg)), "")
+
+
+def downloads(command: str, event: dict) -> list[tuple[str, str]]:
+    """Files this command saves from the network, as (absolute path, host). One it checks against a checksum or signature in the same command isn't."""
+    if not re.search(r"\b(?:curl|wget)\b", command):
+        return []
+    cwd = event.get("cwd") or os.getcwd()
+    found = []
+    for step in shell_steps(command, event):
+        name, args = head(step.words)
+        if name in ("curl", "wget"):
+            saved = evidence._saved_as(name, args) + [target for target in step.targets if target and not target.startswith("/dev/")]
+            found += [(os.path.normpath(os.path.join(cwd, step.folder or "", os.path.expanduser(path))), _url_host(args)) for path in saved]
+    checked = checked_files(command)
+    return [(path, host) for path, host in found if os.path.basename(path) not in checked]
+
+
+_CHECKSUM_SUFFIX = re.compile(r"\.(?:sha(?:1|224|256|384|512)(?:sum)?|md5|b2|asc|sig|minisig)$", re.I)
+
+
+def checked_files(command: str) -> set[str]:
+    """Names of files a command that checks a checksum or a signature mentions, since `echo "HASH  file" | sha256sum -c -` names it before the
+    check. `x.sha256` or `x.asc` stands for x."""
+    if not CHECKSUM_CHECK.search(command):
+        return set()
+    names = set(re.findall(r"[\w.+-]+", command))
+    return names | {_CHECKSUM_SUFFIX.sub("", name) for name in names}
+
+
+def files_run(command: str, event: dict) -> list[str]:
+    """Files this command runs as programs, absolute: `bash x.sh`, `python3 x.py`, `. ./x`, or `./x` itself."""
+    cwd = event.get("cwd") or os.getcwd()
+    found = []
+    for step in shell_steps(command, event):
+        name, args = head(step.words)
+        path = _file_a_step_runs(step, name, args) if name else ""
+        if path:
+            found.append(os.path.normpath(os.path.join(cwd, step.folder or "", os.path.expanduser(path))))
+    return found
+
+
+def _file_a_step_runs(step, name: str, args: list[str]) -> str:
+    if name in RUNS_A_FILE or re.fullmatch(r"python[\d.]*", name):
+        if any(arg in ("-n", "-c", "-m", "-e") for arg in args):  # a syntax check, inline code or a module
+            return ""
+        return next((arg for arg in args if not arg.startswith("-")), "")
+    return next((unquote(word) for word in step.words if not re.match(r"^\w+=", word) and os.path.basename(unquote(word)) == name and "/" in word), "")
+
+
+def runs_an_earlier_download(command: str, event: dict, entries: list[dict]) -> str | None:
+    """A file an earlier call downloaded, run now with no checksum or signature checked on it in between."""
+    unchecked: dict[str, str] = {}
+    for entry in entries:
+        if entry.get("kind") == "downloaded":
+            unchecked[entry.get("path", "")] = entry.get("host") or "the network"
+        elif entry.get("kind") == "download_checked":
+            unchecked = {path: host for path, host in unchecked.items() if os.path.basename(path) not in entry.get("names", [])}
+    if not unchecked:
+        return None
+    if not re.search(r"\b(?:" + "|".join(re.escape(os.path.basename(path)) for path in list(unchecked)[:50]) + r")\b", command):
+        return None
+    now_checked = checked_files(command)
+    return next((f"this runs {os.path.basename(path)}, which an earlier command downloaded from {unchecked[path]}, and nothing has checked it against a checksum or signature."
+                 for path in files_run(command, event) if path in unchecked and os.path.basename(path) not in now_checked), None)
+
+
+def _at_head(event: dict, path: Path) -> str | None:
+    """The file as the last commit has it, cut one character past MAX_BUILD_FILE_BYTES so a caller can tell it was cut, or None if it wasn't
+    there or git can't say."""
+    try:
+        from occam_tools.files import run_git
+
+        root = project_root(event)
+        text = run_git(root, "show", f"HEAD:{os.path.relpath(path, os.path.realpath(root))}", timeout=5)
+        return None if text is None else text[:MAX_BUILD_FILE_BYTES + 1]
+    except Exception:  # occam: ignore[swallowed-exception] a check that can't run says nothing
+        return None
+
+
+def _read_small(path: Path) -> str | None:
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_BUILD_FILE_BYTES:
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _joined_lines(text: str) -> list[str]:
+    """A Dockerfile's lines with backslash continuations joined, so a multi-line RUN is one line."""
+    return re.sub(r"\\\n", " ", text).split("\n")
+
+
+MAX_BUILD_FILES_READ = 20  # distinct Dockerfiles or wrapper settings one command is read for, since each can cost a `git show`
+
+
+def build_runs_a_new_download(command: str, event: dict) -> str | None:
+    """An image build whose Dockerfile has a RUN step, not in the last commit, piping a download into a shell. The build is when it runs,
+    so it's asked each time. A Dockerfile already read for an earlier step in this command says the same again."""
+    if not re.search(r"\b(?:docker|podman|buildah)\b[^\n;&|]{0,300}\bbuild\b", command):
+        return None
+    cwd = event.get("cwd") or os.getcwd()
+    read: set[Path] = set()
+    for step in shell_steps(command, event):
+        dockerfile = _dockerfile_built(step, cwd)
+        if dockerfile is None or dockerfile in read or len(read) >= MAX_BUILD_FILES_READ:
+            continue
+        read.add(dockerfile)
+        text = _read_small(dockerfile)
+        run = _new_step_running_a_download(text, dockerfile, event) if text else None
+        if run:
+            host = _url_host(run.replace("'", " ").replace('"', " ").split()) or "the network"
+            return (f"this builds an image whose new step `{run[:120]}` runs a script from {host} straight in a shell, unpinned and unchecked, "
+                    "and the image keeps what it installed.")
+    return None
+
+
+_BUILD_TAKES_A_VALUE = ("-f", "--file", "-t", "--tag", "--target", "--build-arg", "--platform", "--secret", "--cache-from", "-o", "--output", "--label")
+
+
+def _dockerfile_built(step, cwd: str) -> Path | None:
+    """The Dockerfile an image build reads: the one `-f` names, or the context's own. None when the step isn't an image build."""
+    name, args = head(step.words)
+    if name not in ("docker", "podman", "buildah") or "build" not in args[:3] or "compose" in args[:1]:
+        return None
+    rest = args[args.index("build") + 1:]
+    plain = [arg for index, arg in enumerate(rest) if not arg.startswith("-") and (index == 0 or rest[index - 1] not in _BUILD_TAKES_A_VALUE)]
+    context = Path(cwd, step.folder or "", plain[-1] if plain else ".")
+    given = option_value(rest, ("-f", "--file"))
+    return Path(cwd, step.folder or "", given) if given else context / "Dockerfile"
+
+
+def _new_step_running_a_download(text: str, dockerfile: Path, event: dict) -> str | None:
+    """The first RUN step piping a download into a shell that the last commit's Dockerfile doesn't have. The commit is read once, and only
+    when there's such a step; when it's past what's read, which steps are new can't be told."""
+    committed = None
+    for line in _joined_lines(text):
+        run = line.strip()
+        if not re.match(r"RUN\b", run, re.I) or not _pipes_a_download(run):
+            continue
+        if committed is None:
+            before = _at_head(event, dockerfile.resolve()) or ""
+            if len(before) > MAX_BUILD_FILE_BYTES:
+                return None
+            committed = {old.strip() for old in _joined_lines(before)}
+        if run not in committed:
+            return run
+    return None
+
+
+def _pipes_a_download(run: str) -> bool:
+    return bool(evidence.PIPE_TO_SHELL.search(re.sub(r"'[^']*'|\"[^\"]*\"", "''", run)) or evidence.SHELL_RUNS_DOWNLOAD.search(run))
+
+
+def wrapper_moved(command: str, event: dict) -> str | None:
+    """`./gradlew` or `./mvnw` after this work pointed the wrapper at a host that isn't Gradle's or Maven's own, with no checksum: the run
+    downloads that distribution and runs it."""
+    if not re.search(r"\b(?:gradlew|mvnw)\b", command):
+        return None
+    cwd = event.get("cwd") or os.getcwd()
+    read: set[Path] = set()  # a wrapper already read for an earlier step says the same again
+    for step in shell_steps(command, event):
+        name, args = head(step.words)
+        properties = Path(cwd, step.folder or "", option_value(args, ("-p", "--project-dir")) if name == "gradlew" else "") / WRAPPERS[name] if name in WRAPPERS else None
+        if properties is None or properties in read or len(read) >= MAX_BUILD_FILES_READ:
+            continue
+        read.add(properties)
+        host = _host_a_wrapper_moved_to(properties, event)
+        if host is not None:
+            return (f"this runs {name}, which downloads the build tool from {host} and runs it. This work pointed the wrapper there, away from where the last commit had it, "
+                    "and there's no distributionSha256Sum to check what arrives.")
+    return None
+
+
+def _host_a_wrapper_moved_to(properties: Path, event: dict) -> str | None:
+    """The host a wrapper's properties now download from, when that isn't an official one, there's no checksum, and the last commit had it elsewhere."""
+    text = _read_small(properties)
+    url = re.search(r"^distributionUrl\s*=\s*(\S+)", text or "", re.M)
+    if not url:
+        return None
+    address = url.group(1).replace("\\:", ":")
+    host = address.split("/")[2] if address.count("/") >= 2 else address
+    before = _at_head(event, properties.resolve())
+    if host in OFFICIAL_WRAPPER_HOSTS or re.search(r"^distributionSha256Sum\s*=\s*\S", text or "", re.M) or before is None or url.group(0) in before:
+        return None
+    return host
+
+
+def viewed_files(entries: list) -> set[str]:
+    """Files whose own diff this session has looked at since it last changed them."""
+    viewed: set[str] = set()
+    for entry in entries:
+        if entry.get("kind") == "diff":
+            viewed.update(entry.get("paths") or [])
+        elif entry.get("kind") == "edit" and entry.get("path"):
+            edited = os.path.normpath(entry["path"])
+            viewed = {path for path in viewed if not same_file(path, edited)}
+    return viewed
+
+
+def runs_unchecked_downloads(command: str, event: dict, entries: list) -> str | None:
+    """The owner's ask for running downloaded code (2026-11-07), across calls: a file an earlier call fetched, an image build running a new
+    `curl | sh` step, and a build wrapper this work pointed at another host. Each is asked on every attempt, as the other asks are."""
+    return runs_an_earlier_download(command, event, entries) or wrapper_moved(command, event) or build_runs_a_new_download(command, event)

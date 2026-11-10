@@ -143,6 +143,7 @@ class Project:
         self.test_identifiers: set[str] = set()
         self.clone_index = clones.CloneIndex()
         self.findings: list[Finding] = []
+        self.pulled_up: set[tuple[str, int]] = set()  # methods pull-up-method already reports, so clone-function doesn't say it again
 
     def add_file(self, path: str, record: dict) -> None:
         facts = record.get("facts") or {}
@@ -160,7 +161,7 @@ class Project:
     def run(self, enabled: bool = True, whole: bool = True) -> list[Finding]:
         """`whole` is False when some files weren't read. Only the first pass judges each file on its own, so only it can still run: a committed secret file stays reported."""
         passes = [self._repository_files, partial(imports.python_imports, self), partial(imports.foreign_imports, self), partial(imports.stdlib_attributes, self), partial(imports.local_attributes, self), self._dead_code, self._unused_options,
-                  self._duplicates, self._twins, self._queries_through_helpers, self._class_families, self._import_graph, self._tests, self._dependency_use, self._config_modules, self._utility_buckets, self._settings, self._hidden_checks]
+                  self._duplicates, self._class_families, self._twins, self._queries_through_helpers, self._import_graph, self._tests, self._dependency_use, self._config_modules, self._utility_buckets, self._settings, self._hidden_checks]
         for step in (passes if whole else passes[:1]) if enabled else []:
             step()
         return self.findings
@@ -425,7 +426,7 @@ class Project:
     def _same_shape(self, by_hash: dict[str, list]) -> None:
         for key, group in by_hash.items():
             short = key.startswith("exact:")
-            if len(group) >= (3 if short else 2):
+            if len(group) >= (3 if short else 2) and not all((p, d["line"]) in self.pulled_up for p, d in group):
                 path, definition = group[0]
                 others = ", ".join(f"{p}:{d['line']} ({d['name']})" for p, d in group[1:5]) + (f" and {len(group) - 5} more" if len(group) > 5 else "")
                 what = "is the same code as" if short else "has the same structure as"
@@ -488,6 +489,7 @@ class Project:
             names = sorted({owner[1] for owner in owners})
             if len(names) >= 2 and tuple(names) not in seen:
                 seen.add(tuple(names))
+                self.pulled_up.update((p, line) for p, _, line in owners)
                 path, _, line = owners[0]
                 self.add("pull-up-method", path, line, f"{method} is identical in {', '.join(names[:5])}.", related=[f"{p}:{line}" for p, _, line in owners[1:]])
 

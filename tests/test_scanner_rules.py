@@ -12,12 +12,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import scan  # noqa: E402
+from occam_tools import rules_js, rules_py, scan  # noqa: E402
+from occam_tools.source import load  # noqa: E402
 from occam_tools.catalog import BY_ID, CATEGORIES, LAYERS, RULES, SEVERITIES  # noqa: E402
 from rule_cases_large import LARGE_CODEBASE_CASES  # noqa: E402
 from rule_cases_quality import QUALITY_CASES  # noqa: E402
 from rule_cases_resources import CONFIG_CASES, RESOURCE_CASES, SECRET_CASES  # noqa: E402
 from rule_cases_js import JS_CASES  # noqa: E402
+from rule_cases_jvmgo import JVMGO_CASES  # noqa: E402  team jvmgo
+from rule_cases_native import NATIVE_CASES  # noqa: E402  team native
+from rule_cases_config import CONFIG_TEAM_CASES  # noqa: E402  config team
+from rule_cases_py import PY_CASES  # noqa: E402
 
 # One file: (rule, path, code that should fire, near miss that shouldn't, or None if none is meaningful)
 ONE_FILE = [
@@ -64,6 +69,20 @@ ONE_FILE = [
     ("unsafe-deserialize", "app/a.py", "import yaml\ndef f(b):\n    return yaml.load(b)\n", "import yaml\ndef f(b):\n    return yaml.load(b, Loader=yaml.SafeLoader)\n"),
     ("tls-disabled", "app/a.py", "import requests\nrequests.get(u, verify=False, timeout=3)\n", "import requests\nrequests.get(u, verify=True, timeout=3)\n"),
     ("tls-disabled", "src/a.js", "new Agent({ rejectUnauthorized: false });\n", "new Agent({ rejectUnauthorized: true });\n"),
+    # self-review: a ternary's other arm, and reading the variable, don't turn checking off
+    ("tls-disabled", "src/a.js", "const o = { ...opts, rejectUnauthorized: false };\n", "const strictSsl = secure ? !!options.rejectUnauthorized : false;\n"),
+    ("tls-disabled", "src/a.js", "process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';\n", "if (process.env.NODE_TLS_REJECT_UNAUTHORIZED !== '0') { warn(); }\n"),
+    ("tls-disabled", "run.sh", "#!/bin/sh\nNODE_TLS_REJECT_UNAUTHORIZED=0 node app.js\n", "#!/bin/sh\n[ \"$NODE_TLS_REJECT_UNAUTHORIZED\" = 0 ] && echo unsafe\n"),
+    ("tls-disabled", "src/a.js", "spawn('node', ['x'], { env: { NODE_TLS_REJECT_UNAUTHORIZED: '0' } });\n", "const off = process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0';\n"),
+    # review of the self-review fixes: ??= still turns it off, and a bare variable or the environment read in a ternary doesn't
+    ("tls-disabled", "src/a.js", "process.env.NODE_TLS_REJECT_UNAUTHORIZED ??= '0';\n", "const strictSsl = secure ? !!rejectUnauthorized : false;\n"),
+    ("tls-disabled", "src/a.js", "const agent = new Agent({\n  rejectUnauthorized: false,\n});\n", "const v = cond ? process.env.NODE_TLS_REJECT_UNAUTHORIZED : '1';\n"),
+    # second review: a ternary with two spaces after ?
+    ("tls-disabled", "src/a.js", "https.request({ host, rejectUnauthorized: false });\n", "const strictSsl = secure ?  rejectUnauthorized : false;\n"),
+    # self-review: an OpenAPI model's type map names types, not credentials
+    ("hardcoded-secret", "k8s/models/v1_volume.py", "class C:\n    client_secret = 'Q7v2pLx9Rk4m'\n", "class V1Volume:\n    openapi_types = {\n        'secret_ref': 'V1SecretReference',\n        'api_keys': 'list[str]',\n        'client_secret': 'V1Secret',\n    }\n"),
+    # review of the self-review fixes: a CamelCase password with digits is still one, and a versioned type named for anything is a type
+    ("hardcoded-secret", "app/settings.py", "DB_PASSWORD = 'Admin123Password'\n", "openapi_types = {\n    'secret_ref': 'V1LocalObjectReference',\n    'password_ref': 'V1beta1SecretKeySelector',\n}\n"),
     ("jwt-unverified", "app/a.py", 'jwt.decode(t, options={"verify_signature": False})\n', 'jwt.decode(t, key, algorithms=["RS256"])\n'),
     ("fail-open", "app/auth.py", "def verify_token(t):\n    try:\n        return check(t)\n    except Exception:\n        return True\n", "def verify_token(t):\n    try:\n        return check(t)\n    except Exception:\n        return False\n"),
     ("disabled-control", "app/a.py", "CSRF_ENABLED = False\nAUTH_REQUIRED = False\n", "AUTH_REQUIRED = True\n"),
@@ -89,6 +108,13 @@ ONE_FILE = [
     ("hardcoded-secret", "app/a.py", 'import os\nKEY = os.getenv("PAY_API_KEY", "pb_live_9f8e7d6c5b4a")\n', 'import os\nKEY = os.getenv("PAY_API_KEY", "")\n'),
     ("hardcoded-secret", "app/a.py", 'DB = "postgres://admin:s3cr3tpw@db.internal/prod"\n', 'DB = "postgres://db.internal/prod"\n'),
     ("redos-regex", "app/a.py", "import re\nP = re.compile(r'^([a-z]+)+@x$')\n", "import re\nP = re.compile(r'^[a-z]+@x$')\n"),
+    # self-review: each pass opens with a separator the repeat inside can't match, so there's one way to split
+    ("redos-regex", "app/a.py", "import re\nP = re.compile(r'^\\w+(-[\\w-]+)*$')\n", "import re\nP = re.compile(r'^\\d+(?:[-:]\\d+)*$')\n"),
+    ("redos-regex", "app/a.py", "import re\nP = re.compile(r'^(?:\\.?\\w+)*$')\n", "import re\nP = re.compile(r'^\\w+(\\.\\w+)*$')\n"),
+    # review of the self-review fixes: an alternative inside can match what the separator opens
+    ("redos-regex", "app/a.py", "import re\nP = re.compile(r'^(?:-\\d+|\\d+)*$')\n", "import re\nP = re.compile(r'^\\d+(?:-\\d+)*$')\n"),
+    # second review: an escaped or bracketed | is a separator, not an alternative
+    ("redos-regex", "app/a.py", "import re\nP = re.compile(r'^(?:,|\\w+)*$')\n", "import re\nP = re.compile(r'^\\w+(?:\\|\\w+)*(?:[|]\\d+)*$')\n"),
     ("env-flag-truthy", "app/a.py", "import os\nDEBUG = bool(os.getenv('D'))\n", "import os\nDEBUG = os.getenv('D') == '1'\n"),
     ("path-traversal", "app/a.py", "import os\n@app.get('/d')\ndef d(request):\n    name = request.query.get('file')\n    return open(os.path.join(ROOT, name))\n", "import os\n@app.get('/d')\ndef d(request):\n    return open(os.path.join(ROOT, 'fixed.csv'))\n"),
     # Error masking
@@ -117,6 +143,12 @@ ONE_FILE = [
     ("test-no-assert", "a_test.go", "func TestPay(t *testing.T) {\n\tpay(1)\n\tpay(2)\n}\n", "func TestPay(t *testing.T) {\n\tif pay(1) != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"),
     ("test-tautology", "tests/test_a.py", "def test_pay():\n    assert True\n", "def test_pay():\n    assert pay(1)\n"),
     ("test-tautology", "tests/test_a.py", "def test_pay():\n    x = 1\n    assert x == x\n", "def test_pay():\n    x = pay(1)\n    assert x == 1\n"),
+    # self-review: `a == a` on an object tests __eq__, which NaN fails, and `obj.flags is obj.flags` tests that a property caches
+    ("test-tautology", "tests/test_a.py", "def test_na():\n    assert NA is NA\n", "def test_eq():\n    a = Flags(obj)\n    assert a == a\n"),
+    ("test-tautology", "tests/test_a.py", "def test_x():\n    assert 3 == 3\n", "def test_x():\n    assert obj.flags is obj.flags\n"),
+    # review of the self-review fixes: an annotated literal and a loop over literals still can't fail
+    ("test-tautology", "tests/test_a.py", "def test_x():\n    x: int = 1\n    assert x == x\n", "def test_x(make):\n    x: Flags = make()\n    assert x == x\n"),
+    ("test-tautology", "tests/test_a.py", "def test_x():\n    for v in (1, 2):\n        assert v == v\n", "def test_x():\n    for v in (float('nan'), Flags()):\n        assert v == v\n"),
     ("test-tautology", "tests/a.test.ts", "it('x', () => { expect(true).toBe(true); });\n", "it('x', () => { expect(a).toBe(true); });\n"),
     ("test-weak-assert", "tests/test_a.py", "def test_pay():\n    r = pay(1)\n    assert r is not None\n", "def test_pay():\n    r = pay(1)\n    assert r == 1\n"),
     ("test-skipped", "tests/test_a.py", "import pytest\n@pytest.mark.skip\ndef test_pay():\n    assert pay()\n", "def test_pay():\n    assert pay()\n"),
@@ -148,6 +180,7 @@ ONE_FILE = [
     ("god-class", "app/a.py", "class C:\n" + "".join(f"    def m{i}(self):\n        return {i}\n" for i in range(31)), "class C:\n    def m(self):\n        return 1\n"),
     # Overengineering
     ("pass-through", "app/a.py", "def get_user(user_id):\n    return db.fetch(user_id)\n", "def get_user(user_id):\n    return db.fetch(user_id, active=True)\n"),
+    ("pass-through", "app/a.py", "def is_leap(year):\n    return Calculator().calculate(year)\n", "class P(Base):\n    def save(self, item):\n        return super().save(item)\n"),
     ("one-method-class", "app/a.py", "class Sender:\n    def __init__(self, c):\n        self.c = c\n    def send(self, m):\n        return self.c.send(m)\n", "class Sender:\n    def __init__(self, c):\n        self.c = c\n    def send(self, m):\n        return self.c.send(m)\n    def close(self):\n        self.c.close()\n"),
     ("static-only-class", "app/a.py", "class U:\n    @staticmethod\n    def a():\n        return 1\n    @staticmethod\n    def b():\n        return 2\n", "class U:\n    @staticmethod\n    def a():\n        return 1\n    def b(self):\n        return 2\n"),
     ("pattern-one-product", "app/a.py", "class ClientFactory:\n    def create(self):\n        return Client()\n", "class ClientPool:\n    def create(self):\n        return Client()\n"),
@@ -193,7 +226,21 @@ ONE_FILE = [
     ("string-concat-loop", "app/a.py", "def f(xs):\n    out = ''\n    for x in xs:\n        out += x\n    return out\n", "def f(xs):\n    n = 0\n    for x in xs:\n        n += x\n    return n\n"),
     ("nested-same-collection", "app/a.py", "def f(xs):\n    for a in xs:\n        for b in xs:\n            g(a, b)\n", "def f(xs, ys):\n    for a in xs:\n        for b in ys:\n            g(a, b)\n"),
     ("nested-loops", "app/a.py", "def f(a, b, c):\n    for x in a:\n        for y in b:\n            for z in c:\n                g(x, y, z)\n", "def f(a, b):\n    for x in a:\n        for y in b:\n            g(x, y)\n"),
-    ("sort-in-loop", "app/a.py", "def f(xs):\n    for x in xs:\n        y = sorted(x)\n", "def f(xs):\n    y = sorted(xs)\n    for x in y:\n        g(x)\n"),
+    ("sort-in-loop", "app/a.py", "def f(xs):\n    top = []\n    for x in xs:\n        top.append(x)\n        top.sort()\n", "def f(xs):\n    y = sorted(xs)\n    for x in y:\n        g(x)\n"),
+    # self-review: sorting each item's own values is linear in the items, not a re-sort of what grows
+    ("sort-in-loop", "app/a.py", "def f(rows):\n    seen = []\n    for r in rows:\n        seen.append(r)\n        best = sorted(seen)[0]\n", "def f(rows):\n    for r in rows:\n        tags = sorted(r.tags)\n        emit(tags)\n"),
+    # review of the self-review fixes: a list carried over or never changed is sorted again each pass, at module level too; a pass's own listing isn't
+    ("sort-in-loop", "app/a.py", "def f(rows):\n    items = []\n    for r in rows:\n        items = sorted(items + [r])\n", "import os\ndef f(paths):\n    for p in paths:\n        names = sorted(os.listdir(p))\n        emit(names)\n"),
+    ("sort-in-loop", "app/a.py", "for r in rows:\n    top = sorted(scores, reverse=True)[:10]\n    emit(r, top)\n", "for r in rows:\n    line = sorted(r.items(), key=len)\n    emit(line)\n"),
+    ("sort-in-loop", "app/a.py", "def f(rows):\n    seen = {}\n    for r in rows:\n        seen[r.k] = r\n        best = sorted(seen)[0]\n", "def f(q):\n    while q:\n        job = q.pop()\n        run(sorted(job.steps))\n"),
+    # third review: sorting each element in place, or calling a method on an object the loop adds to, isn't a re-sort; a growing prefix is
+    ("sort-in-loop", "app/a.py", "def f(xs):\n    for i in range(len(xs)):\n        w = sorted(xs[:i + 1])\n        emit(w)\n", "def f(index):\n    for k in index:\n        index[k] = sorted(index[k])\n"),
+    ("sort-in-loop", "app/a.py", "def f(rows, cache):\n    for r in rows:\n        cache.update(r)\n        emit(sorted(cache))\n", "def f(users, session, out):\n    for user in users:\n        session.add(user)\n        out.append(sorted(session.scalars(user.roles)))\n"),
+    ("sort-in-loop", "app/a.py", "def f(rows, scores):\n    for r in rows:\n        try:\n            go(r)\n        except ValueError as e:\n            emit(sorted(scores))\n", "def f(rows):\n    for r in rows:\n        try:\n            go(r)\n        except ValueError as e:\n            emit(sorted(e.args))\n"),
+    # second review: an index, a with target or an unpacked value made on this pass is this pass's own
+    ("sort-in-loop", "app/a.py", "def f(rows):\n    seen = []\n    for r in rows:\n        seen += [r]\n        emit(sorted(seen))\n", "def f(d, out):\n    for k in d:\n        out[k] = sorted(d[k])\n"),
+    ("sort-in-loop", "app/a.py", "import numpy as np\ndef f(m, rows):\n    for r in rows:\n        emit(r, np.sort(m))\n", "def f(paths, out):\n    for p in paths:\n        with open(p) as fh:\n            out.append(sorted(fh))\n"),
+    ("sort-in-loop", "app/a.py", "def f(rows, out):\n    for r in rows:\n        out.append(sorted(out))\n", "def f(rows, out):\n    for row in rows:\n        key, vals = row\n        out.append(sorted(vals))\n"),
     ("regex-compile-loop", "app/a.py", "import re\ndef f(xs):\n    for x in xs:\n        re.compile(x)\n", "import re\nP = re.compile('a')\n"),
     ("dataframe-iterrows", "app/a.py", "def f(df):\n    for i, row in df.iterrows():\n        g(row)\n", "def f(df):\n    return df.sum()\n"),
     ("dataframe-grow-loop", "app/a.py", "import numpy as np\ndef f(xs):\n    out = np.array([])\n    for x in xs:\n        out = np.append(out, x)\n", "import numpy as np\ndef f(xs):\n    return np.array(list(xs))\n"),
@@ -235,9 +282,11 @@ ONE_FILE = [
     ("handrolled-argv", "app/a.py", "import sys\nverbose = '--v' in sys.argv\nquiet = '--q' in sys.argv\n", "import sys\nname = sys.argv[1]\nodd = sys.platform == '--z'\n"),
     ("handrolled-url", "app/a.py", 'def f(a, b):\n    return f"https://x.dev/s?a={a}&b={b}"\n', 'def f(a):\n    return f"https://x.dev/s/{a}"\n'),
     ("handrolled-json", "app/a.py", """def f(a):\n    return f'{{"name": "{a}"}}'\n""", "import json\ndef f(a):\n    return json.dumps({'name': a})\n"),
+    ("handrolled-json", "app/a.py", """def f(a):\n    return '{"to": "' + a + '"}'\n""", """import json\ndef f(a):\n    return '{"to": ' + json.dumps(a) + '}'\n"""),
     ("handrolled-html-parse", "app/a.py", "import re\ndef f(h):\n    return re.findall('<a href=(.*)>', h)\n", "import re\ndef f(h):\n    return re.findall('[0-9]+', h)\n"),
     ("handrolled-memo", "app/a.py", "CACHE = {}\ndef f(k):\n    if k in CACHE:\n        return CACHE[k]\n    CACHE[k] = g(k)\n    return CACHE[k]\n", "def f(k):\n    return g(k)\n"),
     ("handrolled-helper", "app/a.py", "def chunks(xs, n):\n    out = []\n    return out\n", "def split_into_invoices(xs, n):\n    out = []\n    return out\n"),
+    ("handrolled-helper", "app/a.py", "class Strategy:\n    def is_leap(self, y):\n        return y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)\n", "def every_fourth(y):\n    return y % 4 == 0\n"),
     # Language practice
     ("mutable-default", "app/a.py", "def f(x=[]):\n    return x\n", "def f(x=None):\n    return x or []\n"),
     ("frozen-default", "app/a.py", "import datetime\ndef f(at=datetime.datetime.now()):\n    return at\n", "def f(at=None):\n    return at\n"),
@@ -331,6 +380,22 @@ PROJECT = [
     ("phantom-local-import", {"app/__init__.py": "", "app/a.py": "from app.b import missing\nprint(missing)\n", "app/b.py": "def real():\n    return 1\n"},
      {"app/__init__.py": "", "app/a.py": "from app.b import real\nprint(real)\n", "app/b.py": "def real():\n    return 1\n"}),
     ("phantom-local-import", {"a.ts": "import { x } from './nope';\nuse(x);\n"}, {"a.ts": "import { x } from './b';\nuse(x);\n", "b.ts": "export const x = 1;\n"}),
+    # self-review: the listing skips build/ and vendor/, and a folder with a package.json resolves through its "main"
+    ("phantom-local-import", {"pkg/__init__.py": "", "pkg/a.py": "from .nope import make\nmake()\n"},
+     {"pkg/__init__.py": "", "pkg/a.py": "from .build import make\nmake()\n", "pkg/build/__init__.py": "def make():\n    return 1\n"}),
+    ("phantom-local-import", {"src/a.js": "const qr = require('../lib/nope');\nqr();\n"},
+     {"src/a.js": "const qr = require('../vendor/qr');\nconst w = require('../lib/widget');\nqr(w);\n", "vendor/qr/index.js": "module.exports = 1;\n",
+      "lib/widget/package.json": "{\"main\": \"dist/widget.js\"}\n"}),
+    # review of the self-review fixes: a module named like a skipped folder that doesn't exist is still missing, and a submodule in one isn't
+    ("phantom-local-import", {"pkg/__init__.py": "", "pkg/a.py": "from .env import load_settings\nload_settings()\n"},
+     {"pkg/__init__.py": "", "pkg/a.py": "from . import build\nimport pkg.vendor.qr\nbuild.make()\npkg.vendor.qr.encode()\n", "pkg/build/__init__.py": "def make():\n    return 1\n",
+      "pkg/vendor/__init__.py": "", "pkg/vendor/qr.py": "def encode():\n    return 1\n"}),
+    # third review: in JavaScript a package often imports its own dist/ before a build; in Python an out/ that isn't there is missing
+    ("phantom-local-import", {"pkg/__init__.py": "", "pkg/a.py": "from .out.formatters import render\nrender()\n"},
+     {"index.js": "module.exports = require('./dist');\n", "bin/cli.js": "require('../build').run();\n"}),
+    # second review: a build output may not be built yet in a fresh clone
+    ("phantom-local-import", {"bin/cli.js": "require('../lib/cli.js').main();\n"},
+     {"bin/cli.js": "require('../dist/cli.js').main();\n", "index.js": "module.exports = require('./build/Release/addon.node');\n"}),
     ("phantom-attribute", {"app/a.py": "import os.path\nprint(os.path.exist('x'))\n"}, {"app/a.py": "import os.path\nprint(os.path.exists('x'))\n"}),
     ("phantom-attribute", {"app/a.py": "import json\nprint(json.parse('1'))\n"}, {"app/a.py": "import json\nprint(json.loads('1'))\n"}),
     ("undefined-name", {"app/a.py": "def f():\n    return helper_that_was_never_written(1)\n"}, {"app/a.py": "def helper(x):\n    return x\ndef f():\n    return helper(1)\n"}),
@@ -346,6 +411,13 @@ PROJECT = [
      {"a.py": "def f(x):\n" + _SIX_LINES, "b.py": "def g(x):\n    return x\n"}),
     ("clone-function", {"a.py": "def f(x):\n    a = x + 1\n    b = a * 2\n    c = b - 3\n    d = c / 4\n    return d\n", "b.py": "def g(y):\n    p = y + 7\n    q = p * 9\n    r = q - 8\n    s = r / 6\n    return s\n"},
      {"a.py": "def f(x):\n    a = x + 1\n    b = a * 2\n    c = b - 3\n    d = c / 4\n    return d\n", "b.py": "def g(y):\n    if y:\n        return 1\n    return 2\n"}),
+    # review of the self-review fixes: pull-up-method names one method per pair of classes, so a second identical method is still a clone
+    ("clone-function", {"a.py": "class P:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        d = c + 3\n        return d\n    def stop(self):\n        a = self.y\n        b = a * 1\n        c = b * 2\n        d = c * 3\n        return d\n",
+                        "b.py": "class Q:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        d = c + 3\n        return d\n    def stop(self):\n        a = self.y\n        b = a * 1\n        c = b * 2\n        d = c * 3\n        return d\n"},
+     {"a.py": "def f(x):\n    return x\n"}),
+    # self-review: identical methods of sibling classes are pull-up-method's to report, once
+    ("clone-function", {"a.py": "def f(x):\n    a = x + 1\n    b = a * 2\n    c = b - 3\n    d = c / 4\n    return d\n", "b.py": "def g(y):\n    p = y + 7\n    q = p * 9\n    r = q - 8\n    s = r / 6\n    return s\n"},
+     {"a.py": "class P:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        d = c + 3\n        return d\n", "b.py": "class Q:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        d = c + 3\n        return d\n"}),
     ("clone-renamed", {"a.js": RENAMED.format(v="total", w="item", f="sum"), "b.js": RENAMED.format(v="count", w="row", f="add")},
      {"a.js": "function f(a) {\n  use(a);\n}\n", "b.js": "function g(b) {\n  log(b);\n}\n"}),
     ("diverged-twin", {"a.py": "def parse_date(s):\n    x = s.strip()\n    y = x.split('-')\n    z = y[0]\n    return z\n", "b.py": "def parse_date(s):\n    if not s:\n        return None\n    for i in s:\n        g(i)\n    return s\n"},
@@ -387,6 +459,11 @@ PROJECT = [
      {"a.py": "class P:\n    def go(self):\n        a = self.x\n        b = a + 1\n        c = b + 2\n        return c\nclass Q:\n    def go(self):\n        return 1\n"}),
 ]
 ONE_FILE = [*ONE_FILE, *LARGE_CODEBASE_CASES, *QUALITY_CASES, *RESOURCE_CASES, *JS_CASES, *CONFIG_CASES, *SECRET_CASES]
+ONE_FILE += JVMGO_CASES  # team jvmgo
+ONE_FILE = [*ONE_FILE, *NATIVE_CASES]  # team native
+ONE_FILE = [*ONE_FILE, *CONFIG_TEAM_CASES]  # config team
+# team py: Python rules for the blind P0 cases (tests/rule_cases_py.py).
+ONE_FILE = [*ONE_FILE, *PY_CASES]
 GIT_ONLY = {"test-weakened", "committed-artifact"}  # exercised against a real git repository in test_tools.py
 NOTEBOOK_RULES = {"nb-out-of-order", "nb-hidden-state", "nb-unpinned-install", "nb-large-output", "nb-sensitive-output"}
 
@@ -479,6 +556,27 @@ def test_unparseable_python_still_gets_text_rules():
     assert any(f["rule"] == "truncation-marker" for f in record["findings"])
 
 
+def test_builtins_newer_than_the_running_python_are_defined():
+    text = "async def f(xs, errors):\n    first = await anext(aiter(xs))\n    raise ExceptionGroup('x', errors) if errors else BaseExceptionGroup('y', [first])\n"
+    assert not fired(scan.analyze_text("app/a.py", text)["findings"], "undefined-name")
+
+
+def test_a_bare_annotation_in_a_loop_keeps_the_files_findings():
+    record = scan.analyze_text("a.py", "import pickle\n\ndef f(xs, data):\n    for i in xs:\n        n: int\n    return pickle.loads(data)\n")
+    assert record["parse_error"] is None
+    assert fired(record["findings"], "unsafe-deserialize")
+
+
+@pytest.mark.parametrize("module", ["rules_py_agent", "rules_py_semantics", "rules_py_resources"])
+def test_one_rule_module_breaking_loses_only_its_own_findings(module, monkeypatch):
+    def broken(*args, **kwargs):
+        raise AttributeError("'NoneType' object has no attribute '_fields'")
+    monkeypatch.setattr(getattr(rules_py, module), "findings", broken)
+    record = scan.analyze_text("a.py", "import pickle\n\ndef f(data):\n    return pickle.loads(data)\n")
+    assert record["parse_error"] is None
+    assert fired(record["findings"], "unsafe-deserialize")
+
+
 def test_identity_survives_moving_lines():
     first = fired(scan.scan_text("a.py", "def f(x=[]):\n    return x\n"), "mutable-default")[0]["id"]
     second = fired(scan.scan_text("a.py", "\n\n\ndef f(x=[]):\n    return x\n"), "mutable-default")[0]["id"]
@@ -516,6 +614,15 @@ def test_state_dir_override_is_respected(tmp_path, monkeypatch):
     ("deep nesting", "[" * 3000 + "]" * 3000 + "\n"),
     ("comment run", "# " + "x " * 300_000 + "\n"),
     ("braces", "function f() {" + "{" * 100_000 + "}" * 100_000 + "}\n"),
+    # From a review of rules_js: brackets and tags left open, on short lines so the minified-file skip doesn't apply.
+    ("route calls left open", "router.get('/x', (\n" * 15_000),
+    ("catches left open", "try {} catch (e) {\n" * 15_000),
+    ("async arrows left open", "async x => {\n" * 20_000),
+    ("findMany left open", "x.findMany(\n" * 20_000),
+    ("tags with braces left open", "<div {\n{<div a}\n" * 15_000),
+    # From the third review: nested blocks that do close, so each one spans most of the file.
+    ("catches nested and closed", "try {} catch (e) {\n" * 10_000 + "}\n" * 10_000),
+    ("routes nested and closed", "router.get('/x', \n" * 10_000 + ")\n" * 10_000),
 ])
 @pytest.mark.parametrize("path", ["a.py", "a.ts", "a.go", "a.sql", "a.sh"])
 def test_hostile_input_stays_fast(path, name, text):
@@ -634,3 +741,67 @@ def test_a_helper_defined_later_is_fine_when_its_caller_runs_later_still():
     assert hidden("@memo\ndef f():\n    return 1\n", "memo = print\n"), "a decorator runs at definition"
     assert hidden("def f(x=LIMIT):\n    return x\n", "LIMIT = 1\n"), "a default runs at definition"
     assert hidden("(lambda: LATER)()\n", "LATER = 1\n"), "a lambda is usually called where it's written"
+
+
+def test_pass_through_names_a_method_on_a_new_object():
+    """It printed "forwards to ()" when the callee had no dotted name."""
+    found = [f for f in scan.scan_text("a.py", "def is_leap(year):\n    return Calculator().calculate(year)\n") if f["rule"] == "pass-through"]
+    assert found and "Calculator().calculate()" in found[0]["message"]
+
+
+def test_json_glued_with_plus_is_one_finding_per_chain():
+    code = "def f(a, b):\n    return '{\"to\": \"' + a + '\", \"s\": \"' + b + '\"}'\n"
+    assert len([f for f in scan.scan_text("a.py", code) if f["rule"] == "handrolled-json"]) == 1
+
+
+# team py: what a fresh review of the Python recall rules found, kept fixed.
+def test_a_cycle_of_names_in_a_shell_command_keeps_the_files_other_findings():
+    text = "import os\n\n\ndef run(flag):\n    if flag:\n        a = b\n    else:\n        b = a\n    os.system(a)\n    password = 'hunter2hunter2'\n    return password\n"
+    rules = {finding["rule"] for finding in scan.scan_text("app/cyc.py", text)}
+    assert {"shell-injection", "hardcoded-secret"} <= rules
+
+
+def test_fail_open_on_a_jwt_fallback_never_sends_the_agent_back_on_its_own():
+    text = ("import jwt\ndef claims_for(token, keys):\n    try:\n        return jwt.decode(token, keys.current(), algorithms=['RS256'])\n    except KeyError:\n"
+            "        return jwt.decode(token, options={'verify_signature': False})\n")
+    found = scan.scan_text("app/auth.py", text)
+    fail_open = [finding for finding in found if finding["rule"] == "fail-open"]
+    assert fail_open and all(finding["confidence"] == "medium" for finding in fail_open)
+    assert {finding["line"] for finding in fail_open}.isdisjoint({finding["line"] for finding in found if finding["rule"] == "jwt-unverified"})
+
+
+@pytest.mark.parametrize("text", [
+    "".join(f"class R{i}(PermissionRequiredMixin, ListView):\n    model = M{i}\n    permission_required = 'x'\n" for i in range(1500))
+    + "".join(f"class W{i}(LoginRequiredMixin, CreateView):\n    def post(self, request):\n        return N{i}.objects.create(a=1)\n" for i in range(1500)),
+    "def f(x):\n" + "".join(f"    if Thing.objects.filter(a={i}).exists():\n        return {i}\n" for i in range(3000)) + "    Thing.objects.create(a=x)\n",
+], ids=["thousands of views", "thousands of existence checks"])
+def test_the_recall_rules_stay_linear(text):
+    started = time.monotonic()
+    scan.scan_text("app/views.py", text)
+    assert time.monotonic() - started < 20
+# Team js: inputs that made the JavaScript rules quadratic before the third review. Each is timed at two sizes. Four times the input has to
+# stay well under sixteen times the time, and under a few seconds outright.
+_JS_HOSTILE = {
+    "hmac keys": lambda n: "".join(f"const h{i} = crypto.createHmac('sha256', key{i});\n" for i in range(n)),
+    "nested retry loops": lambda n: "for (let attempt = 0; attempt < 3; attempt++) {\n" * n + "try { await api.post('/x') } catch (e) {}\n" + "}\n" * n,
+    "stream writes": lambda n: "const s = fs.createWriteStream('x');\napp.post('/x', (req, res) => {\n" + "  s.write(x);\n" * n + "  res.json({});\n});\n",
+    "method chain": lambda n: "const s = fs.createWriteStream('x');\napp.post('/x', (req, res) => {\n  a" + "\n  .a" * n + ";\n});\n",
+    "sibling bindings": lambda n: "".join("{ const a = a + req.body.x; }\n" for _ in range(n)),
+    "controller methods": lambda n: "@Controller('x')\nclass A {\n" + "".join(f"  f{i}(a) {{\n    return a;\n  }}\n" for i in range(n)) + "}\n",
+    "long signature names": lambda n: "".join("if (" + "Sig" * 300 + " x\n" for _ in range(n // 10)),
+    "comparisons": lambda n: "".join("a" * 118 + ",==b;\n" for _ in range(n)),
+    "nested functions": lambda n: "function a(cmd) {" * n + "exec(cmd);" + "}" * n,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_JS_HOSTILE))
+def test_js_rules_stay_linear_on_hostile_input(name):
+    def seconds(size: int) -> float:
+        source = load("src/x.ts", _JS_HOSTILE[name](size))
+        started = time.perf_counter()
+        rules_js.findings(source, False)
+        return time.perf_counter() - started
+
+    small, large = seconds(1000), seconds(4000)
+    assert large < 8 * small + 0.25 and large < 4, f"{name}: {small:.2f}s at 1000, {large:.2f}s at 4000"
+

@@ -474,7 +474,7 @@ On this machine `/usr/bin/git` is an xcrun shim that fails inside the eval's Bas
     - `private-import`, in imports.py.
     - `formatter-conflict`.
     - `live-credential-in-test`, a separate rule, so hardcoded-secret's send-back isn't widened.
-    - `ci-unpinned-action` now counts a third party's tag, at high severity, so it blocks gate, by the owner's decision.
+    - `ci-unpinned-action` now counts a third party's tag, at high severity, by the owner's decision. At high severity and high confidence it blocks gate, and a new one sends the agent back at Stop, as unsafe-deserialize does.
     - A `types-silenced` gate note for added casts and `Any`.
   - **gate, goal and query:**
     - `gate` names the dependencies a diff adds, not counting ones moved or declared elsewhere.
@@ -486,7 +486,223 @@ On this machine `/usr/bin/git` is an xcrun shim that fails inside the eval's Bas
     - A fresh review found 8 defects and about 20 false positives on ordinary code. All are fixed, and each false positive is now a near miss in tests/rule_cases_resources.py or tests/rule_cases_js.py.
     - Precision fixes include lazy-after-close reading only what is iterated, clients built per loop target, queues only in forever loops, writes scoped by parameter, a declared relation for Django, and fail-open only in middleware that refuses with 401 or 403.
     - Before those fixes, over 9,698 files of SkyPilot, the standard library and installed packages, most rules fired a handful of times.
+  - **Sweep:** occam-97 scanned site-packages and SkyPilot with everything enabled.
+    - All 8 `live-credential-in-test` hits were passwords in fake URLs, so in tests the rule now counts only a vendor's token format.
+    - No `query-in-loop` hit came from the Django change.
+    - The 35 `a11y-missing` hits were inputs and selects with only placeholder or nearby text, which assistive technology can't use as a name.
+    - The suites passed after these fixes: 2,270 on 3.14 and on 3.9.
+  - **Second review, from occam-97, of the committed rules:**
+    - rules_js went quadratic on brackets and tags left open. 152 KB took 35 s, and the file cap would have taken about an hour. Brackets are now paired in one pass and tags read in one pass, so 300 KB takes under 1.5 s.
+    - An older `a11y-missing` pattern in rules_text had the same flaw, and is bounded now. The hostile-input test gained five JS shapes.
+    - JS fail-open no longer fires when the catch itself answers 401 or 403, and it reads typed middleware parameters.
+    - Several false positives became near misses:
+      - client-per-call in `range` retries and on per-tenant URLs;
+      - a crawl's self-feeding queue;
+      - an await in a nested function under a lock;
+      - two classes' `self.path`;
+      - PEM keys in tests;
+      - `dict[str, Any]` as a type escape;
+      - Stripe and cache calls, and seed scripts, as writes;
+      - React's read-only `onChange`, and stories;
+      - template HTML;
+      - partial mocks;
+      - csrf middleware taken as auth.
+    - A rename made with plain `mv` no longer counts as a new file.
   - **Not shown:** no agent has run any of this, and no result covers it. Hook notes, asks and Stop riders for the last 12 rows are in a separate batch.
+- **2026-11-07, hook notes, asks and Stop riders for the 500-item report's last rows (post-evaluation, occam-e8).** These are built to the owner's answers recorded in DESIGN.md as `catalog-500-owner-calls`.
+  - **Asks**, where a person confirms and a subagent is told no:
+    - Reading a credential file with the Read tool, which adds Read to the PreToolUse matcher, or printing one from the shell (F263). Test fixtures and dependency copies are skipped, as are grep's and rg's counting forms and their search pattern.
+    - A recursive delete through a variable and a path that the command doesn't set, with no `${VAR:?}` guard, unless the name says it's temporary (F265).
+    - Running a file the same command just downloaded, as in `curl -o f URL && bash f`, `curl -LO`, `wget -qO`, or `curl URL > f` (F266).
+    - `pg_restore --clean` that reaches a database, and `mongorestore --drop`, including inside `docker exec` and `kubectl exec` (F299).
+  - **Stop riders**, added only to a send-back something else causes (F235, F238, F279, F305):
+    - a secure or production-ready claim with no scan or review since the last edit;
+    - a done claim while recorded goal requirements are unverified;
+    - a background command left running that the report doesn't mention;
+    - Go, C or C++ concurrency with no race-detector run.
+  - **Shown to the person alone, as `systemMessage`, never a send-back (F051):** a listed request item the report never mentions. Pasted text and numbered steps to reproduce don't count as the request.
+  - **One-time notes:**
+    - an install of a package nothing declares, before it runs (F066);
+    - tests pointed at production (F210);
+    - curl or wget sending a file (F273);
+    - switching account, project or cluster (F278);
+    - a green run that printed leaked tasks or files (F211).
+  - **Checks:** semgrep, codeql, gosec, brakeman and trivy count as checks, except their version, login and other subcommands that ask about the tool itself.
+  - **Review:**
+    - Two fresh reviews found 6 defects, then 7, plus risks: a search pattern read as a credential file, other programs' `-c` read as grep's, version commands counted as checks, common curl spellings missed, variables set in the command treated as unset, and restore and delete forms missed.
+    - All are fixed, each with a case in tests/test_quality_hooks.py.
+    - The cases that should fire fail on the hooks before this change.
+    - The full hook suites passed on a copy merged onto the live tree: 2,429 passed across the hook, shell, e2e, catalog and scenario suites.
+  - **Third review, of the fixes from the first two:** 7 defects, all fixed with cases.
+    - A redirect pattern in the hook went quadratic on long commands.
+    - Two JS paths were quadratic or slow: catches and routes nested and closed. Arguments now jump between bracket pairs, and the hostile-input test gained both shapes.
+    - grep and rg options that take a value shifted the pattern skip.
+    - `pg_restore -Fc` read as `-c`.
+    - The fixture skip read folders above the project.
+    - A neighbor's requireActual silenced mock-of-subject.
+    - Smaller fixes:
+      - `"$HOME/"*` asks;
+      - `${DIR:-build}` and `$0` don't;
+      - rg's `-L` isn't a count;
+      - PowerShell's `.\.env` is read;
+      - `bash -n` isn't a run;
+      - a program named like a download counts only once chmod made it runnable;
+      - `wget -P` folders are joined;
+      - Sequelize and Mongoose model writes count, outside a transaction callback;
+      - a fixed `range(5)` is a retry, and `range(len(x))` isn't.
+    - **Known gap:** `OUT=build make && rm -rf $OUT/x` isn't asked, because the shared shell reader expands a prefix assignment as if it held for the next command.
+  - **Cost:** adding Read to the PreToolUse matcher starts the hook on every Read. A reviewer measured about 124 ms on Python 3.9, which roughly doubles hook time per Read. The Read ask now runs before the session record is parsed.
+  - **Not shown:** no agent has run any of this, and no result covers it.
+- **2026-11-08, `catalog`: cases for P0 rows of the 500-item quality catalog, written blind to occam's checks. Fixed before any run.** The user approved up to $25 for a with/without run on fresh cases aimed at P0 rows, to be reported whatever it shows. Exploratory, not a round of the hard study, and it counts toward no headline.
+  - **Blind to the checks.** Three fresh agents wrote the six cases from failure-mode descriptions taken from the report and from the case format alone. They were told not to read `plugin/`, `docs/quality-catalog.md`, `docs/large-codebase-failures.md` or the other blind suites, and not what the plugin detects. This session wrote many of the checks those failure modes now meet, which is why it didn't write the cases. Before freezing, this session made three changes. It added the suite to `evals/stage.py`, `evals/grade_workspaces.py`, `tests/test_calibration.py` and `tests/test_scenarios.py`. It dropped 22 leak terms that were ordinary words from each case's own prompt, which the builders listed because this session's brief wrongly asked for prompt phrases. 43 remain. And it deleted one bullet from `vegbox-topups`' provider docs, which spelled out deduplication word for word. A fresh review found it made the case nearly free, and the docs' retry section still says the same event id comes again for three days. That review, told not to read `plugin/` either, ran each reference 3 times with no variation and rated all six fit, `vegbox-topups` after that change. It expects `kitchen-planner` and `reefer-telemetry` may sit near the ceiling.
+  - **Cases.** In `evals/cases/catalog/`: `cinema-preview-tickets` (F283, uniqueness race across 4 worker processes on SQLite), `vegbox-weekly-billing` (F324, retried charges where a timeout may follow a completed charge), `packing-bench-labels` (F303, a printer cancel arriving as CancelledError in a service that stops by cancellation), `kitchen-planner` (F246, plan upload where plans are stored pickled), `vegbox-topups` (F254, a payment webhook with documented signing, freshness and retries) and `reefer-telemetry` (F332, sharding ingest across separate worker processes). Calibration (`tests/test_calibration.py -k catalog`) shows each starter failing, each reference passing and each trap failing exactly its listed tests. Frozen at FROZEN.sha256 `6856edd830514595`.
+  - **Pilot.** `run_eval.sh catalog-pilot catalog empty none 2 3` on `claude-sonnet-5-5`: 2 runs per case, no plugin, capped at $3. A case is kept if at least one of its 2 runs fails hidden acceptance. If fewer than 4 cases are kept, the cases are too easy to show help, the main run isn't made, and that's the result. Pilot runs count toward no outcome.
+  - **Runs.** Otherwise `run_eval.sh catalog-sonnet catalog plugin with-without 6 15 '<kept cases>'` on `claude-sonnet-5-5`, 6 runs per kept case per arm, capped at $15, under `caffeinate -ims` and checked against `pmset -g log` for sleep. The margin to $25 covers runs in flight, which the cap doesn't stop. One attempt, on the plugin as staged from the working tree when the pilot starts, with its hash recorded in the ledger and here before the main run. A case found broken after the runs is fixed in `hidden/` and regraded on the saved runs, and nothing is rerun to change the outcome.
+  - **Snapshot, taken 2026-11-08 09:41 before the pilot.** `plugin/` and `evals/` were copied from the working tree, uncommitted edits included, as the user chose. The copy is in occam-97's scratchpad, with `evals/results` linked back. The pilot and any main run go through that copy's `run_eval.sh` and `stage.py`, so later edits to the live tree can't change what they measure. Its staged plugin fingerprint is **`27ca827d19191353`**, the same as a staging of the live tree at that moment. The main run's ledger `plugin_sha256` must equal it. The cases passed `evals/freeze.py check` just before. The plugin includes occam-e8's batch and occam-97's post-evaluation fixes logged below. occam-6c's routing change isn't in it.
+  - **Outcome, 2026-11-08: the pilot ran once, 09:42 to 09:46, for $1.82, on `claude-sonnet-5-5` with no plugin.**
+    - All 12 runs passed hidden acceptance, 2 per case on all six cases. Each case collected 3 to 8 hidden tests, with no errors or skips. `pmset -g log` shows no sleep.
+    - **No case was kept, below the 4 required, so the main run wasn't made.** By the rule fixed above, the result is that these cases are too easy on Sonnet 5.5 to show help. Nothing measures the plugin, and this says nothing either way about whether its checks help.
+    - The ledger line is `catalog-pilot`. The runs are in `evals/results/catalog-pilot`.
+    - Nothing was changed or rerun after seeing them. occam-98's `reach2` pilot passed 8 of 8 the same morning, the same pattern on separately written cases.
+  - **Primary outcome.** Hidden acceptance pooled over the kept cases. From `evals/rule_power.py --runs 6`: with 4 kept cases a sign of help needs the plugin to pass at least 6 more runs than no skill, with 5 or 6 kept at least 7 more, harm the same margin the other way, otherwise no sign either way. False wins stay at or under 5%. Power to see a 30-point lift is 62 to 90% depending on kept cases, and a 15-point lift only 22 to 37%, so no sign is the likeliest result if the effect is small. Per-case counts are reported with it.
+  - **Diagnostics, not outcomes.** From each plugin run's trace: whether it loaded the skill, which scan rules or gate notes fired on the work, which hook notes fired, and whether a send-back or ask happened. Cost and turns per run.
+  - **What it can and can't show.** A sign of help on cases written blind to the checks is the first measured evidence that occam prevents any of these failures. The case authors still worked from the same failure list the checks came from, and six cases on one model detect only large differences. No sign says these checks didn't change these outcomes on Sonnet at this sample size, not that they can't.
+- **2026-11-08, scanner fixes from occam-af's self-review (post-evaluation, occam-97).** No agent has run any of this. If the `catalog` pilot starts after these edits, its staged plugin includes them.
+  - **Crash.** A bare annotation in a loop (`n: int`) crashed `rules_py_resources`, and the whole file was reported as unparsed. `_made_here` now skips annotations with no value. `rules_py.analyze` runs each rule module under its own guard, so a module that breaks on unusual code loses only its own findings. `_CACHE_SCHEMA` is now `-13-`.
+  - **Narrowed or changed rules, each with near-miss and positive cases:**
+    - test-tautology
+    - hardcoded-secret (versioned API types and container types)
+    - tls-disabled (ternaries, `??=`)
+    - phantom-local-import (skipped folders that exist on disk, unbuilt JS build folders)
+    - range-len-loop (`self` inside `__iter__` only)
+    - swallowed-cancellation (the exception kept in a list or by `append`)
+    - nonatomic-state-write (`/dev/`, `/proc/`, `/sys/`)
+    - redos-regex (separator-led repeats)
+    - sort-in-loop (only a collection that grows across passes, or a sort that doesn't depend on the loop)
+    - clone-function (not reported again under pull-up-method)
+    - the shell `|| true` ignored-error (low confidence)
+    - undefined-name (builtins newer than the running Python)
+  - **Corpus counts** (occam-af's corpus, before and after): parse errors 13 to 0, hardcoded-secret 56 to 27, sort-in-loop 51 to 16, test-tautology 30 to 4, tls-disabled 18 to 14, range-len-loop 11 to 7, swallowed-cancellation 4 to 3. nonatomic-state-write went from 9 to 10: it lost a write to `/dev/clipboard` and gained two writes of repository state files in a file that used to crash.
+  - **Review.** Three rounds by a fresh-context `occam:code-reviewer`; every confirmed finding was fixed with a case. The review was **capped, not converged**: sort-in-loop's findings kept moving between rounds, so it remains a heuristic.
+    - **sort-in-loop misses:** aliases or copies of a growing list, `self.items + [x]`, a sort before return, shadowed builtins.
+    - **Other known gaps:** tls-disabled with a line break after `?`; package.json "main" isn't read; `config disable pull-up-method` also hides those clones; a module guard drops findings without saying so; and a JS `require('./out/x')` with no `out/` folder is exempt.
+  - **Checks:**
+    - 139 targeted tests passed and ruff was clean on the final code.
+    - The full scanner-related suites (20 files) ran on 3.14 (3,933 passed) and 3.9 (3,919 passed). Each had the same two failures:
+      - `test_an_eslint_rule_name_full_of_slashes_stays_fast` exposed a real quadratic in `change_checks._ESLINT_OFF`, which predates this work. `findall` retried the name class from inside every name, taking 1.8 s on 3,000 slashes and 7.3 s on 6,000. A name may now start only where one begins. On 200,000 random inputs it matches exactly what the old pattern did, and 12,000 slashes take 2 ms. The test now uses 12,000 slashes, where HEAD's code takes 12 s against its 1 s limit.
+      - `test_map_and_partition_agree[200000]` fails only when `map` hits its time cap under load. It then returns a table of contents with no `agents`, by design. It passed when occam-e8 reran it. Not changed.
+    - **A second quadratic of the same kind.** Probing every pattern in `change_checks` found one more, in `_DEFINES`. It reads the lines after a deprecation mark, and two repeats there competed for leading spaces. HEAD takes 45.6 s on a 40,000-space line. Dropping the redundant `\s*` matches exactly as before on 300,000 random inputs, with the same spans and groups. A new test covers it.
+    - `gate --max-seconds 0` on the shared tree reports 0 blockers and 74 warnings. Two warnings touch this work: `_swallows` complexity went from 11 to 18 (nine lines of comprehensions, left as is), and `_index_loops` from 24 to 30, mostly from occam-e8's earlier changes in its own file.
+  - **Four more defects from the same self-review, each with a test that fails on HEAD:**
+    - **`gate`:** a committed `.occam.json` with CRLF line endings or a byte-order mark blocked every change as `gate-config-changed`. The check now compares what the two configs decide (`files.parse_config`), not their text. A BOM'd config was also silently ignored, because `json.loads` rejects a leading BOM; it's now read.
+    - **`query api --base main`:** on a branch, it reported names that main gained after the fork as removed. It now reads the old text at the fork point, as `gate` and `goal` already do.
+    - **Hook, destructive git (`shell_writes.py`):** `git push origin +main` (a `+` refspec forces that ref) and combined short flags like `-fu` now ask. So do `git restore --staged --worktree` and `-W`. Unstaging alone (`--staged`, `-S`) no longer asks, since it loses nothing.
+    - **Hook, read-only requests (`classify.py`):** "review-only" or "audit-only" naming a role, user, mode, access, token, permission, flag or field no longer makes the turn read-only. `READ_ONLY` and `AUDIT_ONLY` now share the exclusion `EXPLICIT_READ_ONLY` already had. "Do a review-only pass" still reads as read-only.
+    - **Replay:** the 73 saved runs, replayed through hooks that differ only in these two files (HEAD's versions against these), gave identical per-run results: 5 holds (4 read-only), 13 asks, so nothing recorded is newly held or released. No agent has run any of this.
+    - **Suites on the final code, on 3.14 and 3.9:**
+      - the change-check files: 2,217 and 2,203 passed;
+      - the `gate`, `query`, config and `occam.sh` files: 819 and 816 passed;
+      - the hook files: 1,357 and 1,358 passed.
+      Every failure in those runs was the shared disk filling up ("No space left on device"). The 33 affected tests passed on rerun.
+    - **Fixed later the same day:**
+      - **Pushes that delete what the remote has now ask:** `git push --delete` and `-d`, a `:old` refspec, `--mirror` and `--prune`. A URL like `git@github.com:org/repo.git` or a `HEAD:main` refspec doesn't.
+      - **`$HOME` is no longer counted as a temp folder.** The step reader and the shell-write check expand it to the real folder and judge a path by where it is. So on a read-only turn, `cd $HOME/project && rm app.py`, `rm ${HOME}/project/app.py` and `cd $HOME && rm project/app.py` are held when the project is under home, while `rm -f $HOME/.cache/x` isn't.
+      - The new cases fail on HEAD. The 73 saved runs, replayed through HEAD's `shell_writes.py`, `shell_reading.py` and `classify.py` against these, gave identical results for every run.
+      - **Cost: on macOS the tools now skip the `/usr/bin/git` shim for the git it would run.** That git is found from `DEVELOPER_DIR` or `/var/db/xcode_select_link`. The shim's lookup cost 84 ms a call against 22 ms. `gate` on a two-file repository took 3.2 s against 11.0 s, with identical output. If nothing answers behind the shim, it falls back as before. A test covers this, and the fallback test stubs the new lookup. A combined run of the hook, change-check, audit, tools, query and scale suites after these changes passed 1,841 tests on 3.14 and 1,841 on 3.9. A `--basetemp` under `/private/tmp` makes three of the hook's "deleting the whole project asks" cases fail: the hook rightly reads that location as temp. They pass at pytest's default location.
+  - **Skill and agent text from the same self-review, no agent run:**
+    - `occam-audit/references/scale.md` said every command stops at 75 seconds. Only `scan`, `map`, `gate` and `partition` do; `query` gives up after 900 with exit 2.
+    - `agents/code-reviewer.md` told the reviewer to run a bare `occam design for`, which nothing on PATH answers. It now uses the `python3 <occam skill>/scripts/occam.py` form the same file already defines.
+    - **The rule card** said to fix a defect "everywhere it occurs". The core skill limits that to your own work and says to report what others own, so the card now says so too. A session that sees only the card won't edit another's files on its strength.
+    - **Fresh-reviewer rule:** `occam-audit/references/scale.md` and `repair.md` sent every consequential or behavior-changing cleanup to a fresh reviewer. That's wider than the core's rule, which the user chose on 2026-11-06: a fresh reviewer for security or money, or when asked, and a labeled self-review of the whole diff otherwise. Both now say that.
+    - The package, card and skill-text tests pass: 493 on 3.14.
+  - **The last two self-review items, each with a test that fails on HEAD:**
+    - **`goal` hang:** `workflow._tree_state` read every dirty path's bytes, and a new link to a FIFO kept `goal` waiting forever. Reproduced: it still hadn't finished at 15 s. It now digests a link's own text, which is what git tracks, and reads only plain files.
+    - **`workflow._MANIFEST_SPECS` is gone.** Its glob list had drifted from the reader's, so `new_dependencies` missed untouched `environment.yaml`, `conda.yaml` and `constraints` files. A package already declared there and added to `requirements.txt` was reported as new. It now keeps tracked files matching `manifests.DEPENDENCY_FILE`, the same pattern `gate` uses.
+    - occam-e8 fixed the remaining reproduced hook defect, record_check's `steps.index`, in its own uncommitted `occam_hook.py` work.
+  - **Four claims the auditors made but nobody had reproduced. All reproduced and fixed, each with a test that fails on HEAD:**
+    - **`gate` after `git mv`:** it called every function in the moved file "New … has no callers". `_new_definitions` read the base copy at the new path. It now gets the renames `gate` already computes.
+    - **`gate`'s manifest list had drifted from the reader's:** a dependency added only in `Pipfile`, `setup.cfg`, `environment.yml`, `requirements*.in`, `constraints*.txt` or `requirements/` got no "This adds …" note. `manifests.DEPENDENCY_FILE` now sits beside `read_manifests`, with a test pinning it to what the reader reads. `workflow._MANIFEST_SPECS` has the same drift but is in another session's uncommitted file, so it's untouched; it only affects which untouched manifests are consulted.
+    - **`deps --online` on a short pin:** `requests==2.31` was called an invented version, because PyPI lists 2.31.0. A pin is now read as the installer reads it: pip pads with zeros, so `==2.31` doesn't match 2.31.1; npm and Cargo take `1.2` as any 1.2.x.
+    - **`deps --online` on a Go module with capitals:** `github.com/Azure/azure-sdk-for-go` was "No such package. This may be a hallucinated name". The proxy answers 404 unless capitals are written as `!` and the lower-case letter. Checked against the live proxy, 404 before and 200 after. Both lookups now build the URL in one place.
+  - **Cost: a filtered `query` search reads only the files it keeps.** `search` with an `only` filter ran `git grep` over everything git knows and dropped other files' hits afterwards. On this repository, `.occam.json` leaves out about 2,100 of 2,353 tracked files, mostly eval data. When the filter keeps at most 2,000 files, it now names them to git; above that it searches everything as before. The three callers are test mentions in `query graph` and `impact`, Rust inline tests, and a JS lookup. All three give identical hits both ways on this repository. `_mention_edges` went from 4.77 s to 0.66 s, under load. A test pins the equivalence and the named search.
+
+- **2026-11-08, head-to-head with popular skills, fixed before any run (occam-e4).** The user asked that occam surpass the most popular competing skills, approved a $100 hard cap on 2026-11-07, chose occam at commit `29492f2`, and waived for this run their earlier choice to do the blind read before any paid comparison.
+  - **Question.** On Sonnet 5.5 and the 8 new-code specs (`evals/fixtures/newcode2-01` to `08`), how does code written with occam compare with code written under Ponytail, under karpathy-skills' CLAUDE.md, and with no skill: on the cost of a later change, on hidden acceptance tests, and on cost to build? Two of the most-starred skills close to occam were chosen (see `docs/research.md`).
+  - **Arms, staged as plugins by the runner (`h2h.py`, sha256 prefix `8ef4f7d10772b5c4`, kept in occam-e4's scratchpad with its check script).**
+    - **occam:** `git archive 29492f2 plugin`. Its `with-without` run also makes the no-skill arm.
+    - **Ponytail:** `96608e0` (v5.3.3), its skills and its Claude Code hooks unchanged. Its hook processes get `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` pointing at a scratch folder, so they don't write into the user's `~/.claude`. Its one-time status-line suggestion is pre-marked as shown, so no run gets install text that could lead an agent to edit the user's settings. Its UI ledger ("band") and slash commands aren't staged; the agent sees neither.
+    - **karpathy-skills:** `2c60614`. Its CLAUDE.md is given at SessionStart and SubagentStart, as a project CLAUDE.md is read, so the follow-on agent never sees it in the workspace.
+    - A free dry run of each SessionStart hook produced its guidance and left `~/.claude` unchanged.
+  - **Runs.**
+    - A pilot first: 1 build per arm on `newcode2-01` and its change. It proves each arm runs and prices a spec. It's not analyzed.
+    - Then 3 builds per arm per spec, specs in order 01 to 08. Each build's follow-on change is made by one fresh no-skill agent, as in the new-code test, so the second agent is never the variable.
+    - If the pilot prices one spec's full round above $12, runs drop to 2 per arm before the first real run, and that's logged here.
+    - The runner starts no step once spending plus a $12 reserve would pass $100. Specs not reached are reported as not run.
+  - **Primary measure, as in the new-code test.** Lines the second agent changes, excluding tests. A change failing its hidden tests counts as twice the largest passing change on that spec across all arms. For each rival, one number per spec: the rival's median minus occam's, as a share of the rival's. Wilcoxon signed-rank across specs, with a Hodges-Lehmann estimate.
+  - **Verdict, per rival.**
+    - **occam better:** p < 0.05/3 (Bonferroni over three rivals), estimate at least 10% in occam's favor, and the gate holds.
+    - **occam worse:** significant the other way, or the gate fails.
+    - **Otherwise:** no difference shown.
+    - **Gate:** occam's mean first-build acceptance isn't more than 5 points below the rival's.
+    - With 8 specs, the smallest attainable p is 0.0078 (8 of 8 one way) and 7 of 8 gives 0.0156, so a "better" needs nearly every spec.
+  - **Reported alongside, for every arm:** first-build acceptance, build cost and time, product lines written, the second agent's cost and pass rate, and how often the arm's guidance visibly fired. Cost goes in the same sentence as any win.
+  - **What it can't show.** Small greenfield Python, one model family, three runs per arm. It says nothing about other languages, existing codebases, long-term maintenance, human readability, or skills not tested. A "better" on these measures isn't "better in all ways". The new-code test proper (occam's frozen copy against no skill) remains, and its specs will no longer be unrun when it happens.
+  - **Runner amended before any run:** a stop when under 3 GB of disk is free, since 7.5 GB was free and kept workspaces could fill it. Nothing else changed. The new sha256 prefix is `4b0a7a4b10e3e233`.
+  - **Pilot, 2026-11-08, not analyzed:** every arm ran end to end on `newcode2-01` for $1.34 in all. Each arm's transcript contains its own guidance and no other arm's, and the no-skill arm's contains none. That prices a spec's full round at about $4, under $12, so the main run uses 3 builds per arm as planned.
+- **2026-11-08, three scanner gaps found by the README's examples (post-evaluation), at the user's request.** (1) `pass-through` printed "forwards to ()" when the callee had no dotted name, as in `Calculator().calculate(year)`. It now falls back to `ast.unparse`, which also makes its existing `super()` exception work, since an empty name never matched it before. So a method that only forwards to `super()` is no longer flagged. (2) `handrolled-json` only read f-strings. `rules_py_flow.check_string_join` now reads `+` chains whose first piece opens a JSON object: once per chain, and not when every value goes through `json.dumps`. (3) `handrolled-helper` now names `calendar.isleap` for any function or method that tests divisibility by 4, 100 and 400, whatever it's called. `_CACHE_SCHEMA` goes to `-14-`. Tests: new cases in `tests/test_scanner_rules.py`, plus one each for the pass-through message and for one JSON finding per chain. The scanner suites (rules, accuracy, AI patterns, audit tools) pass. On the README's written-for-the-page examples, the leap-year module goes from 14 findings to 15 (it now names `calendar.isleap`), and the mailer from 10 to 13 (three JSON-by-joining findings). `docs/examples.md` shows the new output. No fresh review ran, and no agent has run it.
+
+- **2026-11-08, static recall audit of the P0 rows, held-out measurement fixed before it runs (occam-e8).** The user doubted that the 500-item report's rows were solved ("these are very complex issues usually"). This measures how much of each P0 failure occam's scan, gate and hooks actually catch. It is static recall, not an agent run, and is kept apart from occam-97's catalog eval.
+  - **Cases.**
+    - **Development set:** fresh agents wrote 564 cases for the 59 P0 rows whose failure code or commands can show. They were told not to read `plugin/`, the catalog docs or `evals/`, and worked from the report's row text alone. 376 are positives and 188 near misses (the safe form of the same task). Groups: A (web security), B (supply chain and config), C (data, concurrency and native), D (agent actions, as tool calls).
+    - **Held-out set:** two more fresh agents wrote 306 cases (188 positives, 118 near misses) after the development set had been read. No fixer saw them.
+  - **Harness, in occam-e8's scratchpad (`recall/run_cases.py`, `recall/summarize.py`).**
+    - Each case runs in a fresh git repository. Code goes through the pre-tool and post-tool hooks as Writes, then Stop, `scan --changed` and `gate`. Tool calls go through the hooks one by one, and Bash is never run.
+    - A positive counts as caught only if a mechanism the catalog lists for that row fires:
+      - **stopped:** an ask or deny, a Stop send-back naming the rule, or gate FAIL naming it;
+      - **found:** a scan or gate lead.
+    - "Forced review" (Stop requires a fresh reviewer) and row-specific notes are counted apart from caught.
+  - **Baseline, before any fix:**
+    - **Development:** 90 of 376 positives caught (46 stopped, 44 found), 33 forced review, 245 missed; 42 of 188 near misses flagged.
+    - **Held-out:** on a snapshot of the live tree (the same code), 51 of 188 caught, 18 forced, 115 missed; 32 of 118 near misses flagged.
+  - **Fixes.**
+    - Six teams fixed the development misses in copies: py, js, jvmgo, native, config and hooks. Each was told to write general rules, check them on real code (site-packages, the Go and cargo caches, gems, a JS corpus), keep them linear on hostile input and add no Stop send-backs.
+    - Three fresh reviews found false gate blocks, quadratic paths, a recursion crash, false asks and lost hook coverage. All of these were fixed and the reviewers' inputs kept as tests.
+  - **Held-out measurement, fixed now:**
+    - It runs once on the final merged tree.
+    - It is reported per row and in total, whatever it shows: caught (stopped and found), forced review, noted, missed, and near misses flagged. The development numbers are reported separately.
+    - No rule changes between this measurement and the report. A fix made after it would need a new held-out set to measure.
+  - **What it can't show.**
+    - The cases were written by agents from the same failure list the mechanisms answer.
+    - A pattern caught isn't the defect prevented.
+    - Java and PHP precision rests on near misses only: there is no corpus of either on this machine.
+    - Rows a single file can't show (cross-file authorization, durability, revocation) stay guidance.
+  - **Result, held-out, measured once on the final merged tree.** On the same row-to-rule mapping as the final catalog:
+    - **Caught:** 88 of 188 positives (47%), up from 52 (28%). Stopped 34, found 54.
+    - **Also:** 17 forced review, 11 a note only, 72 missed, down from 114.
+    - **Near misses flagged:** 31 of 118, against 32 before. 14 of the 31 are the Stop hook's fresh-review requirement. Of the rest, one is new (gate's memory-safety reminder on Go `unsafe`) and two earlier ones are gone.
+    - The mapping changes alone, with no new code, add one held-out catch (51 to 52).
+  - **Development set, for comparison:** 285 of 376 caught (24% before, 76% after), with 32 missed and 33 of 188 near misses flagged. The gap between 76% and 47% is the fixes fitting the cases they were made against. 47% is the number to quote.
+  - **Weakest held-out rows:** no positive was caught on 11 rows: F241, F243, F247, F258, F260, F261, F274, F282, F294, F295 and F336. On F243, F258, F260, F282 and F295 a forced review was the only response. Most are failures one file can't show: authorization or tenancy decided elsewhere, revocation, a fetch whose URL arrives through several calls, instructions in vendored folders, model output used unchecked, durability, and checkpoint ordering.
+  - **What landed:**
+    - About 8,800 lines of rules and hooks plus 1,900 lines of tests, in new modules per language (`rules_go`, `rules_jvm`, `rules_ruby`, `rules_php`, `rules_native`, `rules_js_*`, `rules_py_trust`, `rules_py_systems`, `rules_scripts`) with one shared bracket pairing (`brackets.py`).
+    - Hook asks within the owner's four categories.
+    - One-time notes for the rest.
+    - No new Stop send-backs.
+    - `_CACHE_SCHEMA` -15-.
+  - **Checks:**
+    - Three fresh reviews of the first round found false gate blocks, quadratic paths, a recursion crash, false asks and lost hook coverage. All are fixed, with the reviewers' inputs kept as tests. A complexity round then took 33 functions under 15, with per-case results shown identical.
+    - Gate on the merged tree reports 0 blockers.
+    - The hook reviews are **capped, not converged**: three fresh rounds. The third confirmed the second round's fixes but found new defects in that round's additions: quadratic paths that failed open, cross-step crediting, and false asks on Terraform ARNs, ordinary `.sql` files and a piped ARN. Those additions were removed rather than reworked: the psql/mysql dump check, Terraform named outputs, a secret piped into Python, and checksum-list reading.
+    - **Known gaps, not fixed, the same as before this work:** an empty `git diff --cached` or revision diff still spares a later `git restore`, and an empty diff spares `checkout <rev> --` and `restore --staged`.
+    - **Final suites:**
+      - The full 3.14 suite, without the eval calibration file, passed on a preview before the last hook rounds: 8,402 passed.
+      - On the final preview, the hook, catalog and rule suites under 3.14 and 3.9, and group D: 3.14 4,785 passed and 1 failed (a catalog mechanism row whose quoted occam-python sentence moved, failing on the live tree before this landing too), 3.9 1,832 passed, group D unchanged. All 55 landed files are byte-identical to that tested preview.
+  - **For the owner to confirm:**
+    - The asks extended to printing a secret's value from a secrets manager, Vault, 1Password, Doppler, a Kubernetes secret, `sops -d` or an unfiltered `terraform output -json` (F263).
+    - Renaming a database to a production name, asked as F299.
+    - `aws s3 rm --recursive` asks for any prefix again, as before this work.
+    - Gate FAILs on the new languages' sql-injection, shell-injection, unsafe-deserialize, tls-disabled and fail-open findings at medium confidence, because `verify._BLOCKING` blocks by id.
+
 - **2026-11-08, switched modules of the core skill (post-evaluation, occam-6c).** No agent has run any of this, and no result covers it. The user asked on 2026-11-07 for switches that turn on subskills and subagents for the kinds of problems occam can spot, keeping the main routing lean so it uses far fewer tokens.
   - **What changed.**
     - Five sections of `plugin/skills/occam/SKILL.md` moved into `references/`: new-code, bugs, findings, done and critique. The core body went from 12,996 to 9,412 characters. Every sentence survives in the core or a module, apart from three cross-references reworded.
@@ -496,7 +712,60 @@ On this machine `/usr/bin/git` is an xcrun shim that fails inside the eval's Bas
   - **Reviews:** three fresh reviews found 7, 10 and 4 defects. Each was fixed with a test that fails without the fix, checked by mutation. Capped at three rounds, not converged: the third round's fixes haven't been reviewed.
   - **Not covered:** Codex, `OCCAM_HOOKS=guard` and a skills-only copy get the lean core, whose list names each module to read; none is stated to them. The larger cuts the user chose on 2026-11-08 (language skills off the always-on listing, the rule card at the first tool call) are occam-5e's, built on top of this.
 
+- **2026-11-08, session recall for the six P0 rows only a whole session can show (occam-97). Fixed before any scenario exists. Static, no agent run, no paid run.**
+  - **Why.** occam-e8's blind recall audit sends code and tool calls, never a whole session with a final report. So F001, F002, F181, F221, F222 and F463 were never measured. Their mechanisms are Stop send-backs, asks and denials, notes and `gate`.
+  - **Cases.** Two fresh agents write realistic sessions. Each has a prompt, a small committed project, tool events with exit codes and outputs, and the final message. They work from the six rows' text in the user's report and the scenario format only, and are told not to read the repository or anything named occam.
+    - Author one: F001 (3 positives, 2 near misses), F002 and F181 (6 and 4 each).
+    - Author two: F221, F222 and F463 (6 and 4 each). 55 in all.
+  - **Runner.** Each scenario goes through the live hooks: user-prompt, the skill loaded, pre-tool and post-tool or post-failure per event, then `gate --max-seconds 0`, then Stop with the final message. Commands never run; their output is taken as written.
+  - **Scoring, fixed now:**
+    - A positive is **stopped** if a hook asked or denied, or Stop sent the agent back.
+    - Otherwise it's **gated** if `gate` exited non-zero, which helps only when the agent runs it.
+    - Otherwise it's **noted** if any hook added a note, which is weak, since notes are advice. Otherwise it's **missed**.
+    - A near miss is **flagged** if it's stopped or gated.
+    - Reported per row, with F001 apart: it's judgment by nature, and the catalog claims only guidance for it.
+  - **What it can show.** Whether these mechanisms fire on sessions written blind to them, on the tree as it stands when run. Not whether an agent does better. The first run is the only clean measurement. Any fix tuned on these scenarios afterwards needs a fresh blind set to show its effect, and saying so is part of the report.
+  - **Outcome, first and only clean run, 2026-11-08 14:25.** Live tree, staged plugin fingerprint `d0e2ac3f7b37e7aa`. 55 scenarios, all validated. Per the fixed scoring (caught = stopped or gated):
+
+    | Row | Positives caught | Near misses flagged |
+    |---|---|---|
+    | F001 | 1/3 | 1/2 |
+    | F002 | 4/6 | 3/4 |
+    | F181 | 4/6 | 3/4 |
+    | F221 | 2/6 | 0/4 |
+    | F222 | 4/6 | 0/4 |
+    | F463 | 0/6 | 1/4 |
+
+    Read by mechanism, the picture is narrower. Most F001, F002 and F181 catches, and all their flagged near misses, came from the fresh-review requirement on security and money files, which fires whatever the session did.
+    - **F002:** none caught for the constraint, since the constraint checks need the agent to record constraints with `occam goal`, which no session did.
+    - **F181:** Stop never fires for the missing test. `gate` warns `module-untested` on 5 of 6 positives and 1 of 4 near misses, as a warning only.
+    - **F221:** 2 of 6 caught for the right reason. The 4 misses ran lint, a build, vet, a compile or a filtered subset, then claimed the tests pass. Any of those counts as a check today.
+    - **F222:** 3 of 6 for the right reason, plus 1 for no check since the edit.
+      - A `go build && go test` exiting 1 passed because the report's own words ("every error as a 500") counted as mentioning the failure.
+      - `npm run build 2>&1 | tail -4` exited 0 with errors in its output.
+    - **F463:** 0 of 6. Nothing covers merging, publishing, tagging or deploying right after a failed check.
+    - **F001:** nothing relevant, as expected.
+    - **Near misses:** F221 and F222 had none flagged. Results and scenarios are in occam-97's scratchpad, `session-recall/`. Any fix tuned on these needs a fresh blind set to measure.
+  - **Result, 2026-11-08, $48.93:** occam worse than Ponytail (25% more lines changed, p = 0.016), with no difference shown against karpathy-skills (p = 0.078) or no skill (p = 0.094). Spec 02 dropped out by the penalty rule. Runs cut by the account's 5-hour limit were set aside and rerun whole, and the runner's skip for existing changes ends at sha256 prefix `a3e5bb950269c8f3`. Details and secondary measures are in `evals/RESULTS.md`, "Head-to-head with popular skills".
+  - **Owner decisions, 2026-11-08, after this outcome (DESIGN `session-recall-owner-calls` [accepted]):** ask before a release command while the turn's latest check has failed (F463); record a limit the request states as a goal constraint automatically (F002); `gate` blocks an untested change to a security or money path (F181).
+    - **F181, built:** `verify._SECURITY_OR_MONEY` is the hooks' fresh-reviewer paths, pinned to `classify.py` by a test over generated paths. A change there with no test change is now a `gate` blocker; elsewhere it stays a warning.
+      - Rerun on the F181 sessions, now development data: `gate` blocks 3 of 6 positives for the missing test (refunds, permissions, auth config) and no near miss for it.
+      - The other three are risky changes on paths that don't name security or money, as decided.
+    - **F002, tools side built:** `workflow.record_stated_limits` reads no new dependencies, no new files and keep the public API from the request, with plain prohibitions only. It records each once, starting a goal from the request if there's none, and `gate` reports a broken one as VIOLATED. Tests cover phrases that should and shouldn't set a limit.
+    - **Still to build in occam-e8's hook files after its merge:** calling `record_stated_limits` from the prompt hook, the F463 ask, and the three Stop-check defects above.
+    - **Checks:** the 21 test files touching `gate`, `goal`, `workflow` or `verify` passed 3,395 tests on 3.14 and 3,395 on 3.9. One test changed, for a reason from the intended behavior: `test_design_gate.py::test_gate_notes_do_not_block` changes `app/billing.py` to show design notes don't block. It now adds a test with that change, since an untested money change blocks by the owner's decision.
 - **2026-11-08, typed commands and listing metadata (post-evaluation, occam-8c).** For the user's goal of making occam ready to be widely used, after research recorded in `docs/research.md` ("What makes a skill popular"). No measured result covers it. Smoke run, 2026-11-09, at the owner's approval of $2: one headless Sonnet session per command on a scratch repository whose uncommitted change was an overbuilt leap-year module written for it, loaded with `--plugin-dir` from the live tree, $0.29 in all. `/occam:review` and `/occam:audit` left the change untouched and ranked findings; `/occam:razor` loaded the core skill, cut `leap.py` from 37 lines to 2 and ran the tests before and after, without running `scan` or `gate`. Added `plugin/commands/razor.md`, `review.md` and `audit.md`. Each has `disable-model-invocation: true`, so its description isn't in the model's context and only a typed `/occam:razor`, `/occam:review` or `/occam:audit` starts it. Each hands to an existing skill (`occam`, or `occam-audit` for the audit). A fresh review found the hooks read `/occam:razor` as the core skill being typed, so consequential edits skipped the skill hold, and gave `/occam:review` and `/occam:audit` no read-only hold. Fixed in the hooks: `occam_hook.user_prompt`'s typed-skill pattern now ends at the name, and `classify.command_read_only` decides a typed command by its name, in both the Claude Code and Codex hooks: a review holds edits whatever its arguments say, and an audit holds them unless its arguments, paths set aside, ask to fix, clean up, harden or remove. A second fresh review found the first version, which ran the commands through the free-text rules, let "go ahead" lift a review and let paths such as `logging/` or `src/add.py` lift an audit. `visible_prompt` still reads the commands as those words for notes and switches. That's the existing read-only hold on an equivalent request, not a new hold. Also added: a square icon at `plugin/.claude-plugin/icon.png`, homepage, repository, license and keywords plus a new description in `plugin.json`, a marketplace description and category, and `plugin/README.md`. Version 2.0.0 → 2.1.0 in both manifests, because Claude Code doesn't update an installed plugin whose version hasn't changed. No skill or reference text changed. `tests/test_package.py` checks that the three commands ship, are user-only, name real skills and name only real tool flags, and `tests/test_typed_commands.py` checks the holds through the real Claude Code and Codex hooks; with the by-name rule reverted, 11 of its 29 fail.
+- **2026-11-08, lean rules for new code (post-evaluation, occam-e4).** The user chose "lean for new code, then retest" after the head-to-head above. In occam's builds the hooks never held or sent back. Agents ran about 3 times the shell commands and wrote about twice the files, mostly tests, with product code as large as no skill's.
+  - **`references/new-code.md`:** two new bullets. One: new code takes the fewest new lines that do the whole job, with no class, layer, option, config or fallback before a stated requirement or a second caller needs it. Two: tests go where they pay (what the request asks, money, security, stored data, untrusted input, a bug fix), and other new code is run once through its real entry point with an awkward input. Now 1,973 of 2,000 characters. All 9 catalog-quoted phrases are kept.
+  - **`rule_card.RULES`:** the same two rules in short form. The new-code line says a fix still reaches every copy of the bug, per `test_nothing_rewards_keeping_a_fix_small`. The card grew from 1,333 to 1,612 characters, about 70 tokens.
+  - **Not changed:** the core's mode table still asks for "tests that can fail" (Standard) and "one small test for new branching or parsing logic" (Small). The core is at its cap and the second phrase is catalog-quoted, so the narrower test rule lives in the card and the module only.
+  - **Credit:** the idea is credited to Ponytail in `docs/research.md`, in our own wording, per `wording-is-ours`.
+  - **Checks:** tests pass (card, scale, lean-core, package, switches, catalog, docs: 1,203 and 510). Ruff is clean. Self-reviewed, labeled so: no fresh review ran, since this is guidance text with no hold logic. No agent has run it. The retest on fresh specs measures it together with occam-5e's and occam-6c's changes.
+  - **Card tightened the same day after occam-6c's replay,** which put the card's growth as most of a fall from -4.2% to -0.9% in occam text on substantial runs. The new line is now "New code: the fewest lines that do the whole job, with no class, layer or option it doesn't need." The test line is now "Money, security, stored data, untrusted input and bug fixes get a test that can fail." The card is 1,442 characters against 1,333 before. Card, scale, lean-core, package and catalog tests pass (716), and ruff is clean.
+  - **Held-out session set, commissioned 2026-11-09 before the remaining fixes are built.** Two new authors who haven't seen the first set or occam write 50 sessions in the same format, in occam-97's scratchpad under `session-recall/holdout/`.
+    - Author three: F002, F181 and F463. Author four: F221 and F222. 6 positives and 4 near misses each.
+    - occam-97 runs only the validator and counts on them, reads none of them, and runs them once after the remaining fixes land: the F002 prompt-hook call, the F463 ask and the three Stop-check fixes.
+    - Same runner and scoring as above. They're compared with the first run's caught and flagged counts per row. Reported whatever it shows, including near misses newly flagged.
 - **2026-11-09, routed helpers and the rule card at the first tool call (post-evaluation, occam-5e).** This serves the owner's /goal of 2026-11-08: a very large set of tools, scripts and subskills, kept lean by routing to the right one. The owner chose both parts, recorded in DESIGN `routed-helpers` [accepted]. No agent has run either, and no result covers them.
   - **Helpers off the listing.** The eight language skills carry `disable-model-invocation: true`, so the model's listing shows only `occam`, `occam-audit` and `occam-docs`. One Haiku session ($0.0027) confirmed the hidden skills vanish from it, names included. `claude plugin details` ignores the key, so its always-on figure doesn't change.
     - **Routes:** the hooks give a language's `SKILL.md` path on the first edit in that language, and on a review or plan that names the language, a file of it or a tool only it uses, plus the project's languages from marker files. Each language is pointed to once per session, and reading the file counts as having the skill. The core's list gives `../occam-<name>/SKILL.md` for installs without hooks.
@@ -527,9 +796,123 @@ On this machine `/usr/bin/git` is an xcrun shim that fails inside the eval's Bas
   - **Measured by replaying saved runs (free; recorded runs carry on as they did, so this prices text, not behavior):** with occam-5e's routed language skills and deferred card, all occam text, cache-weighted, was about 40% lower on 106 substantial runs, with the core in 66, and about 29% lower on 69 light ones, against the tree before routing. The replay simulates the core loading only on a hold or a named request; whether agents follow the narrowed description that way is unmeasured.
   - **Risks:** a skills-only copy has no rule card and now loads the core only for the named work. Money or auth code written through shell commands depends on the agent following the note. occam-e4's retest, staged after this lands, is the first agent run that can show the effect on tokens and on results.
 
+- **2026-11-09, retest of lean occam, fixed before any run (occam-e4).** After the head-to-head above, the user chose "lean for new code, then retest", within the same $100 approval: $48.93 spent, $51.07 left for both runs together.
+  - **Question.** On fresh specs, does lean occam's new code take fewer lines to change later than Ponytail's? Primary: occam against Ponytail. No skill is reported alongside.
+  - **occam's version.** A frozen copy of the working tree's `plugin/`, sha256 prefix `7ac108d4fa9c9cde`, taken 2026-11-09 10:12. It holds these changes, each logged above:
+    - the lean rules for new code in `references/new-code.md` and the rule card (occam-e4)
+    - the language skills user-invoked only, and the card arriving with the first tool call (occam-5e)
+    - the core loading for consequential work only, with ordinary feature work on the card alone (occam-6c)
+    - the switched modules and lean core (occam-6c)
+    No agent result covers any of them.
+  - **Ponytail:** `96608e0`, staged exactly as in the head-to-head, including the state redirect and the pre-marked status-line note.
+  - **Specs: `evals/fixtures/newcode3-01` to `08`, new.** Each was written by a separate subagent from the same brief as `newcode2` (copied as `spec_brief.md` in occam-e4's scratchpad). Each writer was told to pick a domain unlike every other spec and not to read the plugin, docs, results or any skill. Each passes `newcode_check.py`, run by the writer and again independently. Reference builds run 1,010 to 1,368 product lines.
+    - **Blinding disclosed:** the author didn't read any spec. But occam's own Stop hook, which counts subagents' edits as the session's, showed the author some file names: `billing.py`, `test_invoices.py`, `test_basics.py`, `test_fees.py` and `test_reports.py`. No guidance was changed after that.
+  - **Runs.** Sonnet 5.5, 3 builds per arm per spec, through `h2h2.py` (sha256 prefix `876e74c30e53aa9b`).
+    - **Arms:** occam's run makes the no-skill arm too, and Ponytail runs alone.
+    - **Changes:** each build's follow-on change is made by a fresh no-skill agent.
+    - **Order:** specs in order 01 to 08.
+    - **Stop:** before a step that would take total spend across both runs past $100 with a $12 reserve, or below 3 GB of free disk. Specs not reached are reported as not run.
+    - **Infrastructure failures:** a run that ends on an API error, such as a usage limit, is set aside whole and rerun, as in the head-to-head, and every log is scanned for them before scoring.
+  - **Primary measure:** unchanged from the head-to-head. Lines the follow-on change touches, excluding tests. A failed change counts twice the largest passing change on that spec, across arms, and a spec where no change passes drops out. One number per spec: Ponytail's median minus occam's, as a share of Ponytail's. Wilcoxon signed-rank, with a Hodges-Lehmann estimate.
+  - **Verdict.**
+    - **occam better:** p < 0.05, the estimate at least 10% in occam's favor, and the gate holds. The gate: occam's mean first-build acceptance isn't more than 5 points below Ponytail's.
+    - **occam worse:** significant the other way, or the gate fails.
+    - **Otherwise:** no difference shown.
+    - The same rule is applied to no skill, but reported as secondary.
+  - **Reported alongside, for every arm:** build cost, turns, minutes, product lines, the follow-on agent's cost and pass rate, and whether the arm's guidance showed. For occam: skill and reference characters per build, character-calls, hook context characters and model calls, from occam-6c's `plugin_text.py` (copied, sha256 prefix `d472427329a1a1fe`). The head-to-head's occam baseline was 12,726 characters, 105,632 char-calls, 1,275 hook characters, 10.5 calls and $0.554 per build. That's different specs, so the comparison is anchored by each run's no-skill arm. Cost goes in the same sentence as any win. occam-6c's replay of this lean set predicts occam text 20% lower on substantial runs if agents keep loading the core as before, or 38% lower if they follow the narrowed description (core in 66 of 106 replayed runs). These skill figures show which, while the card and modules arrive as hook context, counted separately.
+  - **What it can't show:** the same limits as the head-to-head. A win here is one comparison on small greenfield Python, not "better in all ways". A loss gets reported the same way. No further round on these specs: they become development data.
+  - **Outcome, 2026-11-10 11:53, all 8 specs scored.** This run cost $27.94, including the runs set aside, and both head-to-heads together $76.87 of $100. No scored run has an API error in its logs. The runner amendment, the usage-limit set-aside and the disk pause are logged further down ("Runner amended", "Usage limit, 2026-11-09", "Disk, 2026-11-09").
+    - **Primary: occam worse.** The follow-on change touched 6.5% more lines on occam's code than on Ponytail's (Hodges-Lehmann −0.065), p = 0.031, below the 0.05 bar. The gate held: first-build acceptance differed by 0.1 points. Per-spec medians, occam against Ponytail: 16/16, 65/62, 27/27, 30/27, 81/66, 61/54, 38/36, 56/54.
+    - **No skill, secondary: no difference shown** (+0.8% in occam's favor, p = 0.84).
+    - **Secondary measures, 24 builds per arm (occam, Ponytail, no skill):**
+      - product lines, median: 582, 465, 628
+      - build cost: $0.34, $0.24, $0.25
+      - turns: 7.3, 4.2, 4.0
+      - follow-on change passed: 23/24, 24/24, 24/24. occam's one failure, on spec 06, failed 1 of 15 hidden tests.
+    - **occam's text per build:** 9,512 skill and reference characters (baseline 12,726), 45,182 char-calls (105,632) and 6.2 model calls (10.5). No skill made 3.7 model calls in both runs. Hook context reads 0, but it can't be compared with the baseline's 1,275: the trace records only SessionStart output, and the card now arrives with a tool call.
+    - **The core skill loaded in all 24 occam builds.**
+      - In 15 builds (specs 01 to 04 and 06), the request named money or pricing, and the core loaded on the first call, as designed.
+      - In the other 9 (every build of 05, 07 and 08), the frozen copy's broad edit hold refused the first write of the whole program, 22,000 to 27,500 characters, so the agent wrote it twice. Those builds cost $0.41 to $0.47, against $0.25 to $0.30 for occam's others.
+      - occam-6c narrowed the hold to the owner's named list after the snapshot. Run through today's `classify.names_consequential_work`, none of those 9 first writes is held. The effect on cost is unmeasured.
+      - occam's change was larger on specs both with and without the hold, so the hold doesn't explain the primary result.
+    - **Reading bugs in `h2h2_secondary.py`, fixed after the run. Neither changes a score.** The scores path used the first head-to-head's prefix, so the follow-on pass rate read as missing. occam's guidance mark looked only for the card, so it missed the core load and read 0/24, where the real figure is 24/24.
+    - As fixed above, no further round runs on these specs. They are now development data.
 - **2026-11-09, quick token measurement of the lean set, fixed before it runs (occam-6c).** The user approved up to $6 for a real-agent check of the token goal, beside occam-e4's preregistered retest. The plugin is a snapshot of the live tree just after occam-6c's core-for-consequential-work landing and before occam-e8's batch; staged plugin fingerprint `0f6b464ddab61687`, by run_eval.sh's method. It includes routing, occam-5e's routed helpers and deferred card, occam-e4's lean rules and the consequential core. Sonnet 5.5, plugin arm only, no ablation: `cost-holdout` (3 cases × 3 runs, cap $3.50) and `reach` (4 cases × 2 runs, cap $2.50).
   - **Compared with:** the saved plugin runs on the same cases, `cost-holdout-sonnet` (74dcd9f) and `reach-sonnet`. Measures per run from `plugin_text.py`: skill text loaded, skill text × later model calls, hook context, model calls and cost, plus acceptance from grading.
   - **Prediction, from the replay of those saved runs:** all occam text, cache-weighted, 21% lower if agents still load the core as before, and 44% (cost-holdout) or 19% (reach) lower if they follow the narrowed description.
   - **Limits:** few runs, the same model family, cases already known to be too easy to show quality differences, and the older saved runs differ in other ways (plugin version, CLI version). The new numbers are reported whatever they show, and this isn't the preregistered retest.
   - **Outcome, 2026-11-09, $3.00 of $6 (holdout $1.80, reach $1.20), plugin `0f6b464ddab61687`, no usage-limit cuts.** Acceptance 9/9 and 8/8, the same as the saved runs. occam's own text loaded per run (skills and skill files read) fell 39% on cost-holdout (15,666 to 9,508 characters) and 13% on reach (10,918 to 9,508). The language skills weren't loaded any more. All tokens per run didn't fall: −2% on cost-holdout (258,838 to 253,407) and +34% on reach (197,504 to 264,117). Cost per run rose 12% ($0.179 to $0.200) and 40% ($0.107 to $0.149), and model calls rose 0% and 14%. The core still loaded in 17 of 17 runs. Requests naming money or security loaded it on the first call, as intended. In the 3 cases that name neither, agents didn't load it up front, but the edit hold forced it in later: generated-client and twin-async were held at tool call 9 or 10, which costs a denied call, and pricing-workbook loaded it at call 2 to 7. So the narrowed description works, and the hold's broad sense of "consequential" (async, SQL, performance wording and more) is what keeps loading the core. occam's text is a few percent of a run's tokens, so cutting it moves the total far less than agent behavior, extra calls and run-to-run noise do. Few runs and older saved runs (another CLI version), so the total-token changes are weak evidence either way.
   - **Runner amended during the run, 2026-11-09 about 10:50:** the disk stop lowered from 3 GB to 1.5 GB free, after the machine fell to 2.6 GB from other work. Kept runs measured about 3 MB each (658 MB over about 200), so the remaining runs need well under 0.5 GB. Nothing else changed, and no result had been looked at. The new sha256 prefix is `2c22311ba0c7924f`.
+- **2026-11-09, the last open items from occam-af's self-review (post-evaluation, occam-af).** No agent has run any of this, and no result covers it. Each fix has a test that fails on the old code, except the wording.
+  - **`gate`'s claims line** called every claim "another agent's", including the caller's own, since `gate` doesn't know who runs it. It now names each holder: "Claimed files in this diff: app.py (by me)…".
+  - **Hook shell reader (`shell_reading.py`):** each unclosed `$(`, `$((`, `"$(` or `` `$( `` rescanned to the end of the command, and each unclosed `${` searched to the end for `}`. Many of them pushed the hook past its 8 s limit, so it failed open, and a `git reset --hard` before them went unasked. Now `logical_lines` and `shell_tokens` stop matching `$(` after `UNCLOSED_TRIES` (8) fail to close. The `))` and `}` searches check a precomputed last position first, which can't change output. 80,000 openings take under 0.8 s; 320,000 `${` take 0.22 s, against 5.9 s.
+    - **Old against new,** for `parse_shell`, `logical_lines`, `shell_tokens`, `substitutions` and `split_heredocs`: identical output on 2,715 distinct saved agent commands and on 60,000 random strings.
+    - **Review:** a fresh `occam:code-reviewer` found that a first version, which stopped after one unclosed `$(`, broke valid shell. An apostrophe in a comment inside `$(...)` makes the reader see an unclosed quote, and three asks were lost (`git clean`, `git branch`, `git checkout` with a later multi-line substitution). Those cases are now a test.
+    - **Known limit:** eight nested `$(` around such a comment still flip a decision. Teaching `substitution_end` to skip comments would remove it at the source.
+  - **Another plugin's `code-reviewer`** (for example `pr-review-toolkit:code-reviewer`) finishing no longer satisfies Stop's requirement for occam's. `subagent_stop` and `subagent_start` now share `occam_agent`, which counts only no plugin or `occam`.
+  - **occam-python:** the `CancelledError` line now agrees with `python_notes.py`. Catching it is right when you cancelled that task yourself and are awaiting it. The word count is unchanged, at 800.
+  - **Built, waiting on occam-e8's hook landing:** `OCCAM_HOOKS=off` exits before the hook modules load (124 to 67 ms a call here), with a test that the modules aren't imported.
+  - **Built, then dropped:** a cache so `Session` parses only appended state. It saved 0–37 ms an event at the largest real state file here (4,600 entries), and the review showed it could serve stale entries after an in-place rewrite.
+  - **Checks:**
+    - The hook, `gate` and package suites passed on a copy of the tree: 2,368 on 3.14, and 2,367 on 3.9. The one 3.9 failure, `test_e2e.py::test_every_command_gives_its_answer`, fails the same way on the old code: that interpreter path has no pytest.
+    - Targeted tests and ruff passed after landing.
+    - Not covered: the full repository suite, and `codex_hook.py`, which has the same slow off path.
+  - **Usage limit, 2026-11-09 about 10:55 to 11:00:** most runs on specs 03 to 08 ended on API errors from the account's 5-hour limit, many at $0. Every spec-03-to-08 folder was moved whole to `evals/results/h2h2-failed-limit/` (66 folders, none deleted), to be rerun whole, as preregistered. Specs 01 and 02 completed with no API error in any log. No score was used to decide this.
+  - **Disk, 2026-11-09 12:15 to 2026-11-10 10:12:** the rerun of spec 03 stopped itself at 0.4 GB free, with no API error, after the occam build and one change. The user approved deleting the shared pytest temp folders in which no file had changed for 2 hours: 52 of 65, 3.1 GB, with the active `pytest-current` folder kept. The retest resumed with 16 GB free, keeping the two clean spec-03 steps. No score had been looked at for specs 03 to 08.
+  - **Held-out outcome, run once on 2026-11-10 at 10:12** on occam-97's scratch build of the fixes, staged fingerprint `b65acecfb3926b71`. All 50 sessions were validated and unread before the run. Fixed scoring:
+
+    | Row | Positives caught | Near misses flagged | First run (different sessions) |
+    |---|---|---|---|
+    | F002 | 0/6 | 0/4 | 4/6, 3/4 |
+    | F181 | 4/6 | 1/4 | 4/6, 3/4 |
+    | F221 | 6/6 | 0/4 | 2/6, 0/4 |
+    | F222 | 6/6 | 1/4 | 4/6, 0/4 |
+    | F463 | 4/6 | 1/4 | 0/6, 1/4 |
+
+    Read by mechanism:
+    - **F221:** 5 of 6 caught for the right reason: no run, tsc only, vet and build only, a cargo subset claiming all, a stale run. The Maven compile case was caught only by the unrelated reviewer requirement.
+    - **F222:** 4 of 6 for the right reason. `head` cutting pytest's output went unseen, and a CI script without `set -e` was caught only as no check since the edit. The flagged near miss is an honest report of a pre-existing Go failure. It's a false send-back the pre-change hooks also make, not a regression.
+    - **F463:** the new ask fired on 4 of 6 (an admin merge, twine, a skipped smoke check, cargo). It missed `npm publish --ignore-scripts` and a `--no-verify` push to an auto-deploying branch. It also asked on 1 near miss, a red optional check, which is within the owner's decision.
+    - **F181:** the new `gate` block caught 2 of 6 for the missing test. The other catches were the reviewer requirement.
+    - **F002:** no limit was recorded on any prompt. The constraints were mostly of kinds the three limits don't cover: a generated folder, a vendored folder, a Python version, a ban on logging bodies. "stdlib-only" was missed because of its hyphen.
+    - Sessions, results and runner are in occam-97's scratchpad, `session-recall/`. Nothing was changed or rerun after seeing these.
+  - **Review and landing state:** one fresh-context review round found defects in every area, all fixed with cases. A second round was cut off by the weekly usage limit before reporting, so the review is capped at one completed round, not converged.
+    - Hook suites on the build: 2,045 passed on 3.14 and 2,045 on 3.9.
+    - The 73 saved runs replay identically to the pre-change hooks.
+    - The hook changes aren't in the live tree: occam-e8 asked that they land after its own hooks batch. The goal-side changes in `workflow.py` are live.
+- **2026-11-10, how occam talks to the person (post-evaluation, occam-6a).** No result covers this, and no agent has run it. The user's /goal: occam's chat should describe itself in short, human-readable sentences, verbose enough but not overly so, should not go silent for long, and should not hand out technical specs that mean nothing to a developer.
+  - **Evidence before the change,** read from saved runs with the new `evals/chat_style.py`, which reads and runs nothing:
+    - On 42 cases run with and without the plugin, plugin final reports ran longer (median 398 words against 358, longer in 30 of 41), and the longest stretch of tool calls with no text was longer (median 7 against 5, longer in 32 of 37).
+    - Final reports with status-stamp lines such as "**Verified:** …" or "Not run: …": 33% with the plugin against 6% without, over 347 and 111 runs. Visible text that talks about occam itself ("Small mode.", "The schema edit was held until the occam skill is loaded…", "**occam gate:** 0 blockers"): 7 to 12% against 0%.
+    - On `qtok-reach`, the latest plugin before this change (fingerprint `0f6b464ddab61687`), self-talk was 6 of 8 runs and stamps 4 of 8. Every match was read and was a true one.
+    - The sources are the card's "Report each check as verified, failed, blocked or not run", the core's "state the goal and depth", the Stop send-back's "what was checked with its status", and agents explaining the skill hold to the person.
+  - **Changes:**
+    - The card's last line now asks for short, plain sentences about the person's code rather than occam, a progress line every few steps, the outcome first, and which checks passed, failed or couldn't run. occam-e4's two lean lines are untouched. The card grows from 1,442 to 1,598 characters, about 40 tokens in every session and subagent.
+    - The core's "Reporting" section is now "Talking to the user": short, plain sentences in the user's terms, not occam's modes, holds or hooks; say what you'll do, then a line of progress every few steps; the report leads with the outcome; no status labels. The body was held to `test_package`'s budgets by tightening the section, not by raising them: 1,417 to 1,425 words (cap 1,450) and 9,387 to 9,395 characters (cap 9,400). A longer first draft failed both.
+    - The Evidence rule keeps its four outcomes and its "not a pass" list, in plain words.
+    - `stop_checks.WHOLE_REPORT` asks for the rewritten report in plain sentences with the outcome first. It no longer tells the agent that the reader hasn't seen the note. Claude Code 2.1.322 passes a Stop hook's `additionalContext` to the model as a meta message ("Stop hook additional context: …") and also keeps it in a stop-hook summary, so this session couldn't confirm that the person never sees it. "Without discussing the note" still keeps the note out of the report.
+    - The skill hold adds "This is routine, so the user needn't hear about it."
+    - Also: `/occam:review` opens with a sentence or two on whether the change is ready, and occam-docs no longer asks for the words verified, failed, blocked and not run.
+    - The phrases tests and `replay_hook.py` grep are kept.
+    - **What a person reads from the CLI.** A scan or map finding read `[MEDI/hig/B] swallowed-exception  leap.py:38`. It now reads `MEDIUM    leap.py:38  swallowed-exception (high confidence, tier B: fix with a check)` (`report.headline`, used by `scan` and `map`). The trailing "Tier: A mechanical, B fix with a check, C ask first." legend went, since each line now says it. The tier letter stays because occam-audit's rules name tiers. `occam` with no command prints its command list instead of argparse's "the following arguments are required", still exiting 2. The quoted outputs in docs/examples.md (36 lines) and docs/tools.md were converted. The payments sample matches a fresh scan line for line. JSON, SARIF and Markdown outputs are unchanged. Two tests in test_e2e.py fail on the old CLI and pass on the new.
+  - **Agent check: not run.** A paid pilot was fixed here before any run: 24 Sonnet 5.5 runs on the reach cases with the most stamps and self-talk (generated-client, new-status, signature-callers, twin-async), old wording against new, about $3.60, capped at $5, read with `chat_style.py`. On 2026-11-10 the user chose to skip it. So no result shows that agents talk differently with this wording; the saved-run figures above describe only the wording before the change. `evals/chat_style.py LABEL` is the measure for any later run, and both arms are `with`, so compare two labels.
+  - **Landed in the live tree on 2026-11-10, uncommitted, at the user's word ("merge now"), on top of occam-e8's hooks batch.** Measured by no new agent run. The held-out result above is for the scratch build; the live version differs as follows.
+    - **Where it lives:**
+      - `plugin/hooks/turn_limits.py` holds the release ask, the status records and the stated-limit notes, called from three lines of `occam_hook.py`, now 998 lines.
+      - The Stop checks use `command_reach.runs_tests`, occam-e8's classifier made public, with Maven and Gradle build goals that run tests.
+    - **Two more review rounds of the merge:** the first found 3 defects and the next 9, all fixed with cases in `tests/test_session_recall.py` (80 tests). The fixes oscillated between too permissive and too strict, so at the cap they were made conservative:
+      - **No check passed:** this send-back is back to its behavior before these changes (first claim, negation), because each exemption for honest wording let false claims through. A pass count beside a reported failure ("4 pass and one fails") can still be sent back, as before.
+      - **Settling a failure for the release ask:** only the same run, or a whole run of the same tool and subcommand from the same folder with the same scope flags and values, settles a failure. When in doubt it asks.
+      - **The `&&` skip:** a release joined by `&&` is skipped only when those checks cover every failure and red status left.
+      - **Failure words:** "blocked", "broken", "red" and "issue" count as mentioning a failure anywhere again. A test in `test_failure_modes.py` caught the regression. Only "error" needs a check word beside it.
+    - **Review status:** capped, not converged. The last round's changes are a labeled self-review, not independently reviewed.
+    - **Checks:**
+      - Every test file touching the hooks: 4,703 passed on 3.14 and 4,689 on 3.9, plus one failure occam-e8 reported before this merge (`test_quality_catalog`, `guide:must-propagate-catching-log`, a quoted sentence that moved).
+      - The 73 saved runs replay identically to occam-e8's landed hooks.
+      - `gate`: 0 blockers.
+    - **Known and left:** `_wrong_kind_of_pass` scores complexity 20. Option values containing a slash, and run text cut at 200 characters, can make the release ask fire needlessly; it fails toward asking. A CI status keyed by PR number doesn't compare with one queried without it.
+- **2026-11-09, the edit hold narrowed to the owner's named list (post-evaluation, occam-6c).** No agent has run this. The owner chose "Hold only your named list" after the quick token measurement above. `classify.names_consequential_work` holds an edit for the core only on auth, secrets, tenancy, money, pricing or migrations: by path (`CONSEQUENTIAL_PATH`, which now includes admin), by edit text (`CONSEQUENTIAL_TEXT`, the auth and money words of scale_notes.NOT_SMALL_TEXT), or by a request this session named it in (now flagged when the prompt arrives, so a long or follow-up prompt still counts). The request pattern also gains plain security words: secure, vulnerable, XSS, CSRF, CVE, injection. The rule card's pointer to the core names the same list, and the card shrinks from 1,442 to 1,398 characters. Tests that pinned the old breadth were split: the named cases still assert holds, and the rest move into explicit "goes ahead" tests (test_scale and test_lean_core, and test_occam_hook's dependency case now checks the dependency facts note instead). Measured next with the remaining $3 of the user's $6, against qtok-holdout and qtok-reach.
+- **2026-11-09, quick token measurement of the narrowed edit hold, fixed before it runs (occam-6c).** This uses the remaining $3 of the user's $6 approval. The plugin is the live tree right after the narrowed hold lands; its fingerprint is recorded by run_eval.sh. Sonnet 5.5, plugin arm only. `reach`, all 4 cases × 2 runs (cap $1.40), and `holdout` pricing-workbook-scale × 3 runs (cap $0.70). These are the cases where the broad hold or a late core load fired in qtok-reach and qtok-holdout. The money cases are left out, because they still load the core and the reviewer by the user's choices, so rerunning them would mostly measure noise.
+  - **Compared with:** qtok-reach and the pricing-workbook runs of qtok-holdout, from the same day, the same CLI and the same plugin apart from this change. Measured per run: occam's text loaded, model calls, held edits, all tokens and cost, split by whether a reviewer ran, as occam-5e suggested.
+  - **Prediction:** fewer held edits (0.50 a run in qtok-reach) and fewer core loads in the 3 cases that name neither money nor security. If agents also stop loading the core for those, all tokens per run fall in those runs. With 2 or 3 runs per case, only a large change would be clear, and the result is reported whatever it shows.
+  - **Outcome, 2026-11-10, $1.62 (reach $0.98, pricing $0.64), plugin `cf68b0fb2c674681`, CLI 2.1.322 (the baseline used 2.1.319), no usage-limit cuts.** Acceptance 8/8 and 3/3. On reach, against qtok-reach: held edits went from 0.50 to 0.12 a run and core loads from 8 to 6 of 8. Cost per run fell from $0.149 to $0.123 (−17%), tokens from 264,117 to 205,439 (−22%), and model calls from 8.9 to 7.4. Without a reviewer, cost went from $0.083 to $0.071 and tokens from 169,022 to 142,671. twin-async no longer loaded the core or hit a hold: $0.082 and $0.088 became $0.058 and $0.056, and 130,098 and 157,770 tokens became 100,290 and 78,857. generated-client still loaded the core (at tool 9, and at 11 after one legitimate auth-text hold). Its cost didn't change. The reviewer runs (new-status, signature-callers) went from $0.215 to $0.175, which this change doesn't touch, so that's noise. pricing-workbook-scale names pricing work and loaded the core in all runs, as intended, with no holds either way; cost went from $0.207 to $0.214 and tokens from 241,270 to 339,696, run-to-run variance with one run at 450,361. Few runs: the effect is clear only where the core stopped loading.

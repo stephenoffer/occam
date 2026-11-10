@@ -161,9 +161,7 @@ def test_a_session_that_never_heard_the_card_hears_it_once_before_its_first_edit
     ("fix it", "auth.py", "x = 1", "x = 2"),
     ("fix it", "billing/invoice.py", "x = 1", "x = 2"),
     ("fix the authorization check", "app.py", "x = 1", "x = 2"),
-    ("speed up the report, it is too slow", "app.py", "x = 1", "x = 2"),
     ("fix it", "app.py", "x = 1", "password = read_password()"),
-    ("fix it", "requirements.txt", "a==1", "a==2"),
 ])
 def test_consequential_edits_still_wait_for_the_skill(session, prompt, name, old, new):
     session.send("session-start", source="startup")

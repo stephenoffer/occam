@@ -141,6 +141,8 @@ def _api_rules(ctx, node, name, body, params, decorator_last, complexity, class_
         ctx.add("handrolled-helper", node, f"{name} reimplements {HELPERS[name]}.")
     _memo(ctx, node, name, body)
     nodes = list(_walk_own(node))
+    if _tests_leap_years(nodes):  # by shape, whatever it's called and wherever it sits
+        ctx.add("handrolled-helper", node, f"{name} reimplements calendar.isleap.")
     if ENCRYPTION_NAME.search(name) and any(_is_xor_or_base64(n) for n in nodes):
         ctx.add("homemade-crypto", node, f"{name} uses XOR or base64 as encryption.")
     _return_shapes(ctx, node, nodes, name)
@@ -148,6 +150,12 @@ def _api_rules(ctx, node, name, body, params, decorator_last, complexity, class_
         broad = [h for h in body[0].handlers if h.type is None or _last(_dotted(h.type)) in ("Exception", "BaseException")]
         if broad and not any(isinstance(n, ast.Raise) for h in broad for s in h.body for n in ast.walk(s)):
             ctx.add("broad-wrap", node, f"All of {name} is inside a broad try that doesn't re-raise.")
+
+
+def _tests_leap_years(nodes: list) -> bool:
+    """Divisibility by 4, by 100 and by 400 in one function is the Gregorian leap-year rule."""
+    divisors = {n.right.value for n in nodes if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mod) and isinstance(n.right, ast.Constant)}
+    return {4, 100, 400} <= divisors
 
 
 def _is_xor_or_base64(node: ast.AST) -> bool:
@@ -171,7 +179,7 @@ def _pass_through(ctx, node, name, body) -> None:
     call = body[0].value
     passed = [arg.id for arg in call.args if isinstance(arg, ast.Name)] + [k.value.id for k in call.keywords if isinstance(k.value, ast.Name)]
     own = [arg.arg for arg in node.args.args if arg.arg not in ("self", "cls")] + [arg.arg for arg in node.args.kwonlyargs]
-    target = _call_name(call)
+    target = _call_name(call) or ast.unparse(call.func)  # `Calculator().calculate` has no dotted name, and an empty one read "forwards to ()"
     if own and passed == own and len(call.args) + len(call.keywords) == len(own) and "super" not in target and _last(target) != name:
         ctx.add("pass-through", node, f"{name} only forwards to {target}().")
 
@@ -275,13 +283,27 @@ def _route_is_guarded(node, decorators: list[str]) -> bool:
 def _route(ctx, node, decorators: list[str]) -> None:
     ctx.routes.append({"name": node.name, "line": node.lineno, "guarded": _route_is_guarded(node, decorators), "node": node})
     from_request = _names_from_request(node)
+    allow_listed = _allow_lists_the_host(node)
     for inner in ast.walk(node):
         if isinstance(inner, ast.Call):
             _handler_call(ctx, inner, node.name)
             if _call_name(inner) in FILE_SINKS and from_request & {n for argument in inner.args for n in _names_in(argument)}:
                 ctx.add("path-traversal", inner, f"{_call_name(inner)}() uses a value taken from the request.")
-            if _fetches_from(ctx, inner, from_request):
+            if not allow_listed and _fetches_from(ctx, inner, from_request):
                 ctx.add("ssrf", inner, f"{_call_name(inner)}() fetches a URL taken from the request.")
+
+
+_HOST_PART = re.compile(r"\b(?:host|hostname|netloc|domain)\b", re.I)
+
+
+def _allow_lists_the_host(node) -> bool:
+    """`if parsed.hostname not in ALLOWED_HOSTS: return error` before the fetch: only hosts someone listed are reached. A deny-list,
+    `host in BLOCKED`, doesn't count, since what it leaves out is everything else."""
+    for guard in (inner for inner in ast.walk(node) if isinstance(inner, ast.If) and inner.body and isinstance(inner.body[-1], (ast.Return, ast.Raise))):
+        for compare in (inner for inner in ast.walk(guard.test) if isinstance(inner, ast.Compare)):
+            if any(isinstance(op, ast.NotIn) for op in compare.ops) and _HOST_PART.search(ast.unparse(compare.left)):
+                return True
+    return False
 
 
 def _fetches_from(ctx, call: ast.Call, from_request: set[str]) -> bool:
@@ -463,7 +485,22 @@ def _test_call(ctx, call: ast.Call, name: str, found: dict) -> None:
         ctx.add("test-sleep", call)
 
 
-def _is_tautology(test: ast.AST) -> bool:
+def _literal_names(function: ast.AST) -> set[str]:
+    """Names a test binds only to literals, as `x = 1`, `x: int = 1` or `for x in (1, 2)`."""
+    stores, literal = {}, {}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        targets = node.targets if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) else \
+            [node.target] if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Constant) else \
+            [node.target] if isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)) and all(isinstance(item, ast.Constant) for item in node.iter.elts) else []
+        for target in targets:
+            if isinstance(target, ast.Name):
+                literal[target.id] = literal.get(target.id, 0) + 1
+    return {name for name, count in literal.items() if stores.get(name) == count}
+
+
+def _is_tautology(test: ast.AST, literals: set[str] = frozenset()) -> bool:
     if isinstance(test, ast.Constant):
         return bool(test.value)
     if isinstance(test, ast.Tuple):  # `assert (x == 3, "message")` checks a tuple, not x
@@ -472,9 +509,12 @@ def _is_tautology(test: ast.AST) -> bool:
         return True
     if isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.GtE) and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == 0:
         return (isinstance(test.left, ast.Call) and _call_name(test.left) == "len") or bool(COUNT_LIKE.search(_dotted(test.left) or ""))
-    # Two calls can differ, and comparing them is how a test checks a singleton or a seed.
-    return (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], (ast.Eq, ast.Is))
-            and ast.dump(test.left) == ast.dump(test.comparators[0]) and not any(isinstance(node, ast.Call) for node in ast.walk(test.left)))
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], (ast.Eq, ast.Is)) and ast.dump(test.left) == ast.dump(test.comparators[0])):
+        return False
+    # `x == x` calls __eq__, which NaN and custom types can fail, `a.b is a.b` checks that a property caches, and two calls can differ.
+    # Only a literal, a name's identity, or `==` on a name bound to a literal can't.
+    left = test.left
+    return isinstance(left, ast.Constant) or (isinstance(left, ast.Name) and (isinstance(test.ops[0], ast.Is) or left.id in literals))
 
 
 def _test_function(ctx, node, name, decorator_last) -> None:
@@ -488,8 +528,9 @@ def _test_function(ctx, node, name, decorator_last) -> None:
     asserts = found["asserts"]
     if not asserts and not found["checks"] and not _says_it_must_not_raise(ctx, node):
         ctx.add("test-no-assert", node, f"{name} doesn't assert anything.")
+    literals = _literal_names(node)
     for check in asserts:
-        if _is_tautology(check.test):
+        if _is_tautology(check.test, literals):
             ctx.add("test-tautology", check, "This assertion can't fail.")
     if asserts and not found["checks"] and all(_is_weak_assert(check.test) for check in asserts):
         ctx.add("test-weak-assert", node, f"{name} only checks that something came back.")

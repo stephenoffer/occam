@@ -284,3 +284,11 @@ def test_nohup_keeps_a_hangup_from_stopping_gate(repo, tmp_path):
     finally:
         process.terminate()
         process.wait(timeout=60)
+
+
+def test_a_claim_is_named_by_its_holder_not_called_another_agents(repo):
+    """gate can't tell who runs it, so your own claim mustn't come back as another agent's."""
+    assert repo.occam("coord", "claim", "app.py", "--owner", "me").returncode == 0
+    repo.write("app.py", "def f():\n    return 2\n")
+    out = repo.occam("gate").stdout
+    assert "app.py (by me)" in out and "Other agents" not in out
