@@ -2,7 +2,7 @@
 
 These pages are for people. Agents get the skills instead, so nothing here costs tokens during a coding session.
 
-New here? Start with [the examples](examples.md).
+New here? The [README](../README.md) has the two-line install and the three commands, `/occam:razor`, `/occam:review` and `/occam:audit`. Then [the examples](examples.md) show real runs, and [what was tested](evidence.md) shows the numbers, including where occam did worse.
 
 ## Getting started
 

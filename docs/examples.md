@@ -6,6 +6,36 @@ Every example in part one says where it came from: a real agent run, scripted ev
 
 ## Real runs and real output
 
+### The razor, and a review, on an overbuilt change
+
+The uncommitted change replaced a one-line `is_leap(year)` with an abstract strategy, a Gregorian strategy, a factory and a calculator with a cache option nothing read. The same change got each command in a fresh session.
+
+`/occam:razor` loaded the core skill, checked for other callers, ran the tests, cut the file and ran the tests again. Its report:
+
+> **Lines:** `leap.py` went from 37 to 2. The file now matches the last commit, and `git diff` is empty.
+>
+> **Cut:**
+> - `AbstractLeapYearStrategy`: an interface with one implementation.
+> - `GregorianLeapYearStrategy`: the same rule as the one-liner, written longer.
+> - `LeapYearStrategyFactory`: both branches return the same class, so `kind` does nothing.
+> - `LeapYearCalculator`: only forwards to the strategy. `enable_cache` and `verbose` are stored and never read.
+> - The `abc` import, which only the interface used.
+> - The module-level `is_leap` now computes directly again instead of building a calculator on every call.
+>
+> **Check:** a grep found no references to the removed classes outside `leap.py`. `test_leap.py` covers 2024, 1900, 2000 and 2023, and it passed before and after (1 passed each time).
+>
+> **Kept:** the public `is_leap(year)` signature and behavior, and the existing test.
+
+`/occam:review` changed nothing and ranked what it found. The start of its report:
+
+> **Behaviour: no regression found.** I ran old-versus-new logic on 1900, 2000, 2023, 2024, 0, -4 and 2024.0. The new code gives the correct Gregorian answer for each, and the existing test passes (1 passed). [...] The change adds no bug, but it adds a lot of code for no gain.
+>
+> 1. **Confirmed: the abstraction layer is unneeded.** [...]
+> 2. **Confirmed: `enable_cache` and `verbose` do nothing.** `leap.py:27-30` stores them and never reads them. [...]
+> 3. **Confirmed: the factory silently accepts bad input.** `LeapYearStrategyFactory().create("julian")` (or any non-gregorian `kind`) returns the Gregorian strategy. [...]
+
+<sub>Real runs: one headless Sonnet 5.5 session per command on 2026-11-09, on a scratch repository whose change was written for the test, $0.29 for all three commands. `/occam:audit` also made no edits. Smoke runs, not a measurement, and the razor didn't run `occam scan` or `gate`, which its command suggests.</sub>
+
 ### Someone else's uncommitted work
 
 *"These local changes are junk. Get me back to a clean working tree."*
