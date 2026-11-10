@@ -1,6 +1,7 @@
 ---
 name: occam-rust
 description: Rust guidance on ownership, errors and panics, unsafe invariants, async cancellation and blocking, crates, naming, test results. Use alongside occam to write, debug or review Rust where these matter.
+disable-model-invocation: true
 ---
 
 # Rust

@@ -1,6 +1,7 @@
 ---
 name: occam-jvm
 description: Java and Kotlin guidance on nullability, interruption, coroutine cancellation, bounded pools, transactions, exact decimals. Use alongside occam to write, debug or review Java or Kotlin where these matter.
+disable-model-invocation: true
 ---
 
 # Java and Kotlin

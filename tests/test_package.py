@@ -42,7 +42,10 @@ def test_frontmatter_follows_the_spec(path):
     assert front["name"] == path.parent.name
     assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", front["name"]) and len(front["name"]) <= 64
     assert 1 <= len(front["description"]) <= 1024
-    assert not set(front) - SPEC_FIELDS, "other keys hard-error outside Claude Code"
+    # Other keys hard-error in strict validators such as skills-ref. The one exception, chosen by the user on 2026-11-08: the language
+    # skills are helpers, routed by the hooks and the core instead of listed in every session, which only this Claude Code key does.
+    allowed = SPEC_FIELDS | ({"disable-model-invocation"} if path in LANGUAGE_SKILLS else set())
+    assert not set(front) - allowed, "other keys hard-error outside Claude Code"
     assert "<" not in front["description"] and ">" not in front["description"]
 
 
@@ -51,9 +54,26 @@ def test_core_skill_is_named_occam():
 
 
 def test_core_names_every_language_skill():
+    """By the path to read, since a routed skill can't be loaded by name. Without hooks, as when only the skills are copied, this is the route."""
     _, body = parts(SKILL_MD)
+    assert "`../occam-<name>/SKILL.md`" in body
+    line = next(line for line in body.splitlines() if "`../occam-<name>/SKILL.md`" in line)
     for path in LANGUAGE_SKILLS:
-        assert f"`{path.parent.name}`" in body
+        assert re.search(rf"\b{path.parent.name.removeprefix('occam-')}\b", line), path.parent.name
+        assert (SKILL / ".." / path.parent.name / "SKILL.md").is_file(), "the core's relative path must reach it"
+
+
+def test_helpers_are_routed_and_front_doors_are_listed():
+    """Every session pays for each listed description, and the listing drops descriptions past about 1% of context, so a large
+    set of skills can't all be listed. Helpers come off it and get a route instead; adding one costs no always-on text."""
+    sys.path.insert(0, str(PLUGIN / "hooks"))
+    from classify import LANGUAGE_PROMPTS, LANGUAGE_SKILLS as ROUTES
+    for path in ALL_SKILLS:
+        front, _ = parts(path)
+        assert front.get("disable-model-invocation") is (True if path in LANGUAGE_SKILLS else None), path.parent.name
+    for path in LANGUAGE_SKILLS:
+        name = path.parent.name
+        assert name in ROUTES.values() and name in LANGUAGE_PROMPTS, f"{name} is hidden but nothing routes to it"
 
 
 def test_hook_maps_only_to_language_skills_that_exist():
@@ -117,7 +137,7 @@ def test_size_budgets():
     _, body = parts(SKILL_MD)
     words = len(body.split())
     assert len(SKILL_MD.read_text().splitlines()) < 500
-    assert 1200 <= words <= 2000, f"{words} words"
+    assert 1000 <= words <= 1450, f"{words} words: the core routes to switched modules, so growth belongs in one of them"
     assert len(body) / 3.5 < 5000, "estimated tokens over budget, and only the first 5,000 survive compaction"
 
 
@@ -219,11 +239,19 @@ def test_only_expected_things_ship_in_the_skill():
 
 def test_text_every_run_pays_for_stays_small():
     """Every session pays for descriptions on every turn, and most code runs for the core and a language skill. Growing them should be a decision."""
-    front = sum(len(parts(path)[0]["description"]) for path in ALL_SKILLS)
+    front = sum(len(parts(path)[0]["description"]) for path in ALL_SKILLS if not parts(path)[0].get("disable-model-invocation"))
     agents = sum(len(parts(path)[0]["description"]) for path in (PLUGIN / "agents").glob("*.md"))
-    assert front + agents <= 3350, front + agents
-    assert len(parts(SKILL_MD)[1]) <= 13000
+    assert front + agents <= 1500, f"{front + agents}: 3,350 before the language skills were routed on 2026-11-08. A new skill is a routed helper unless people ask for it by name"
+    assert len(parts(SKILL_MD)[1]) <= 9400, "13,000 before its modules moved behind switches on 2026-11-07"
     assert all(len(parts(path)[1]) <= 5500 for path in LANGUAGE_SKILLS)
+
+
+def test_switched_modules_stay_short():
+    """A module is stated whole, as context, when its switch turns on, so each one is paid in full by every run it fires in."""
+    sys.path.insert(0, str(PLUGIN / "hooks"))
+    import skill_switches as switches
+    for name in switches.MODULES:
+        assert len((SKILL / "references" / f"{name}.md").read_text()) <= 2000, name
 
 
 def test_compact_variant_is_a_real_compact_core():

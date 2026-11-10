@@ -13,6 +13,9 @@ import pytest
 
 from test_occam_hook import Agent
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin" / "hooks"))
+import rule_card  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 OCCAM = ROOT / "plugin" / "skills" / "occam" / "scripts" / "occam.py"
 GIT = shutil.which("git")
@@ -522,7 +525,8 @@ def pointer_in(result) -> bool:
 
 @pytest.mark.parametrize("name", ["README.md", "docs/guide.md", "notes.mdx", "guide.rst"])
 def test_editing_a_document_points_at_the_skill_once_and_holds_nothing(agent, name):
-    assert agent.try_edit(name) is None
+    before = (agent.try_edit(name) or {}).get("hookSpecificOutput") or {}
+    assert not before.get("permissionDecision") and before.get("additionalContext", "") in ("", rule_card.CARD), "holds nothing; the first tool call carries only the rule card"
     first = agent.edit(name)
     assert pointer_in(first)
     assert str(OCCAM) in first["hookSpecificOutput"]["additionalContext"]

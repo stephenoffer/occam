@@ -89,4 +89,4 @@ Details and agent counts are in [scale](references/scale.md).
 
 ## Language and framework depth
 
-The `occam-*` language skills cover what each language gets wrong, so load the one that matters: `occam-python` has Python's tools and traps.
+occam's language guidance covers what each language gets wrong, in `../occam-<name>/SKILL.md` beside this skill, so read the one that matters: `../occam-python/SKILL.md` has Python's tools and traps.

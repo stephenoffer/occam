@@ -100,7 +100,7 @@ Examples in public documentation should actually run. Errors should be actionabl
 
 ## File size and large codebases
 
-Size is a prompt to look, not a defect in itself. A very large file usually holds several responsibilities and costs every later reader, human or agent, but moving lines to reach a number only spreads the same coupling around. Use the limits the repository configures, and otherwise the defaults of the language's common linter. `occam-python` lists Python's.
+Size is a prompt to look, not a defect in itself. A very large file usually holds several responsibilities and costs every later reader, human or agent, but moving lines to reach a number only spreads the same coupling around. Use the limits the repository configures, and otherwise the defaults of the language's common linter. `../../occam-python/SKILL.md` lists Python's.
 
 - **New code with its own responsibility** goes in a new file named for that responsibility. A small fix stays where it is.
 - **Splitting existing code** is a separate change to propose, unless the request asks for it. Cut where calls across the boundary are few and each side has a name. Lock behavior with tests first, move without changing anything else, and keep old import paths working if anything outside could use them.

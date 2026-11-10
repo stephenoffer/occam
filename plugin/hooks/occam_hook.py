@@ -3,9 +3,9 @@
 
 A skill is guidance the model may or may not follow. These hooks are the deterministic part:
 
-  session-start   gives the rule card (rule_card.py), and offers a reload after compaction
+  session-start   offers a reload, with the rule card (rule_card.py), after compaction. Otherwise the card waits for the first tool call
   subagent-start  gives a subagent the same rules, except occam's own agents, which carry their own briefs
-  user-prompt     records the request, and notices review-only and plan-only requests
+  user-prompt     records the request, notices review-only and plan-only requests, and arms the switches it shows (skill_switches.py)
   expansion       records a skill the user typed by name
   subagent-stop   records a subagent that finished, so a review counts only once it has completed
   pre-tool        holds consequential code edits until the skill is loaded, holds edits on read-only turns,
@@ -13,7 +13,8 @@ A skill is guidance the model may or may not follow. These hooks are the determi
                   reference once before the edit, mentions language skills once, holds edits that make
                   a check easier to pass or write a credential, and denies credentials in web requests
   post-tool       records what happened, mentions once when an edited source file is very large, and
-                  mentions a run of failed checks once
+                  mentions a run of failed checks once. Loading the core, a scan lead and a check turn on
+                  the core's switched modules, each stated once (skill_switches.py)
   post-failure    records a failed command, because a failing check still ran
   stop            sends the agent back if it edited code and skipped verification, or if its final
                   message disagrees with the record (see stop_checks.py and docs/failure-modes.md)
@@ -48,15 +49,17 @@ from pathlib import Path
 import design_notes
 import docs_notes
 import in_place
+import language_notes
 import occam_evidence as evidence
 import repo_notes
 import rule_card
 import scale_notes
 import scan_notes
 import stop_checks
-from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_NAMES, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
+import skill_switches
+from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
                       PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
-                      command_read_only, reads_as_read_only, visible_prompt)
+                      command_read_only, reads_as_read_only, visible_prompt, BUILD_REQUEST, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_SHELL_PATH)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
 from session_state import Session, record, state_file
@@ -95,8 +98,7 @@ def skill_name(raw: str) -> str:
 
 
 def reference_path(name: str, skill: str = CORE_SKILL) -> str:
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT") or str(Path(__file__).resolve().parents[1])
-    return str(Path(root) / "skills" / skill / "references" / f"{name}.md")
+    return str(Path(language_notes.skill_path(skill)).parent / "references" / f"{name}.md")
 
 
 # ---------------------------------------------------------------- output
@@ -189,23 +191,32 @@ def failing_streak_note(event: dict, succeeded: bool) -> dict | None:
 
 def session_start(event: dict) -> dict | None:
     folder = state_file(event.get("session_id")).parent
-    for old in folder.glob("*.jsonl"):
+    for old in [*folder.glob("*.jsonl"), *folder.glob("*.card")]:
         try:
             if time.time() - old.stat().st_mtime > STATE_RETENTION_SECONDS:
                 old.unlink()
         except OSError:
             continue
-    record(event, kind="mentioned", name="card")
+    if event.get("source") in ("compact", "clear"):
+        record(event, kind="compacted")  # what was said before is gone from context
+        rule_card.marker(event).unlink(missing_ok=True)
     if event.get("source") == "compact":
+        rule_card.claim(event)
+        record(event, kind="mentioned", name="card")
         return context("SessionStart", "The conversation was compacted, so the occam skill's full text may no longer "
                                        "be in context. Loading `occam:occam` again restores it. " + rule_card.CARD + scale_notes.goal_reminder(event.get("cwd")) + design_notes.session_note(event.get("cwd")))
-    return context("SessionStart", rule_card.CARD + design_notes.session_note(event.get("cwd")))
+    # The card waits for the first tool call (rule_card.due): a session that loads the core first hears it all there, and one that
+    # uses no tool needs none. The user moved it from here on 2026-11-08.
+    note = design_notes.session_note(event.get("cwd")).strip()
+    return context("SessionStart", note) if note else None
+
+
+def with_card(event: dict, session: Session, result: dict | None, event_name: str) -> dict | None:
+    return rule_card.attach(event, session.entries, result, event_name, CORE_SKILL, level() == GUARD)
 
 
 def python_project(event: dict) -> bool:
-    folders = [event.get("cwd") or os.getcwd(), os.environ.get("CLAUDE_PROJECT_DIR")]
-    markers = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile")
-    return any(folder and os.path.exists(os.path.join(folder, name)) for folder in folders for name in markers)
+    return "occam-python" in language_notes.in_project(event.get("cwd"))
 
 
 def user_prompt(event: dict) -> dict | None:
@@ -232,14 +243,24 @@ def user_prompt(event: dict) -> dict | None:
     reviewing = (read_only and not declined) or REVIEW_OR_PLAN.search(words)  # a bare "no" isn't a review
     if not typed and not Session(event).has("skill", CORE_SKILL) and reviewing:
         notes.append("The `occam:occam` skill covers code review and planning, and has not been loaded yet.")
+    elif asks_for_the_core(event, prompt, words, typed):
+        notes.append("This request names security or money work, which the `occam:occam` skill covers, so load it before editing.")
     if AUDIT_REQUEST.search(words) and not Session(event).has("skill", "occam-audit") and not (typed and typed.group(1) == "occam-audit"):
         notes.append("The `occam:occam-audit` skill covers auditing and repairing existing code at any size, with tools.")
+    armed = skill_switches.prompt_switches(words, read_only, bool(BUILD_REQUEST.search(words)) and not read_only)
+    if armed:
+        record(event, kind="armed", names=armed)
+        session = Session(event)
+        notes += module_notes(event, session, skill_switches.armed(session.turn, session.entries))  # only if the core is already here, typed or loaded
     if docs_notes.REQUEST.search(words) and not read_only:
         notes += filter(None, [docs_pointer(event)])
-    # A review makes no edit, so this is the only place it hears about the language skill.
-    if reviewing and (PYTHON_PROMPT.search(prompt) or python_project(event)) \
-            and not Session(event).has("skill", "occam-python"):
-        notes.append("`occam:occam-python` has Python guidance on auditing, structure, tests and semantics.")
+    # A review makes no edit to show its language, so it hears here where the guidance is for the languages it names and the
+    # project's. The language skills are routed, not listed, so this and the edit note are how they're found.
+    if reviewing:
+        session = Session(event)
+        due = [name for name in language_notes.for_review(prompt, event.get("cwd")) if not session.has("skill", name) and once(event, session, name)]
+        if due:
+            notes.append(language_notes.note(due))
     if PYTHON_PROMPT.search(prompt) or python_project(event):
         notes += say_once(Session(event), lambda key: record(event, kind="mentioned", name=key), prompt_facts(words, reference_path))
     if evidence.PUSHBACK.search(words) and (Session(event).has("check") or Session(event).has("edit")):
@@ -247,6 +268,16 @@ def user_prompt(event: dict) -> dict | None:
                      "against the evidence first. Change the answer for what the recheck shows or for new evidence, and say "
                      "which. If neither moves it, keep the answer and show why.")
     return context("UserPromptSubmit", " ".join(notes)) if notes else None
+
+
+def asks_for_the_core(event: dict, prompt: str, words: str, typed) -> bool:
+    """A request naming security or money work, before the core has loaded, once a session. Ordinary work runs without the core. A question
+    that asks for no work is an explanation, which the core isn't for. Names in backticks count, so this reads the prompt without pastes."""
+    if (typed and typed.group(1) == CORE_SKILL) or Session(event).has("skill", CORE_SKILL) or event.get("permission_mode") == "plan":
+        return False
+    if words.rstrip().endswith("?") and not BUILD_REQUEST.search(words):
+        return False
+    return bool(CONSEQUENTIAL_REQUEST.search(scale_notes.without_pasted(prompt))) and once(event, Session(event), "core-request")
 
 
 def expansion(event: dict) -> dict | None:
@@ -324,6 +355,24 @@ def needed_references(code: list[str], prompt: str) -> tuple:
     )
 
 
+def module_notes(event: dict, session: Session, names: list[str], why: str | None = None) -> list[str]:
+    """Each module's text, the first time its switch turns on. They're part of the core skill, so a session without it hears none, as
+    before they moved out of it. A subagent answers to the agent that started it, which hears these."""
+    if event.get("agent_id") or level() == GUARD or not session.has("skill", CORE_SKILL):
+        return []
+    notes = []
+    for name in dict.fromkeys(names):
+        if skill_switches.heard(session.entries, name):
+            continue
+        try:
+            text = skill_switches.statement(name, why)
+        except (OSError, ValueError):  # a missing or unreadable module costs only itself, and stays unheard
+            continue
+        record(event, kind="mentioned", name=f"module-{name}")
+        notes.append(text)
+    return notes
+
+
 def once(event: dict, session: Session, key: str) -> bool:
     """True the first time this session asks, and remembers that it was asked."""
     if session.has("mentioned", key):
@@ -342,7 +391,24 @@ def before_shell(event: dict, tool_input: dict, session: Session) -> dict | None
     reason = needs_a_person(command, event)
     if reason:
         return ask_a_person(event, f"occam: {reason} A person should confirm.")
-    return hold_a_shell_edit(command, event, session) or python_shell_context(event, session, command)
+    return hold_a_shell_edit(command, event, session) or joined_context("PreToolUse", python_shell_context(event, session, command), consequential_shell_note(event, session, command))
+
+
+def consequential_shell_note(event: dict, session: Session, command: str) -> dict | None:
+    """A shell command writing an auth, money or migration file before the core skill has loaded. An edit tool writing there is held for
+    the skill, but shell commands are held only for destructive actions, by the owner's decision, so this says what matters, once."""
+    if event.get("agent_id") or level() == GUARD or session.read_only or event.get("permission_mode") == "plan" or session.has("skill", CORE_SKILL):
+        return None
+    risky = [relative_path(path, event) for path in shell_edits(command, event) if path]
+    risky = [path for path in risky if is_code(path) and CONSEQUENTIAL_SHELL_PATH.search(path)]
+    if not risky or not once(event, session, "shell-consequential"):
+        return None
+    heard = session.has("mentioned", "reference-security") or session.has("reference", "security")
+    if not heard:
+        record(event, kind="mentioned", name="reference-security")  # so an edit there later doesn't state the same facts again
+    facts = "" if heard else " " + in_place.FACTS["security"]
+    return context("PreToolUse", f"occam: this command changes {risky[0]}, which touches access control, money or migrations. An edit tool changing "
+                                  f"it would wait for the `occam:occam` skill, which covers this work, so load it before going further.{facts}")
 
 
 def before_web(event: dict, tool_input: dict, session: Session) -> dict | None:
@@ -378,7 +444,7 @@ def reads_as_small(event: dict, session: Session, tool_input: dict, edit_path: s
 
 
 def needs_the_full_skill(event: dict, session: Session, code: list[str], old: str, new: str) -> bool:
-    """Consequential by the request, the path or what the edit writes or removes, whatever its size. The rule card from session start covers the rest."""
+    """Consequential by the request, the path or what the edit writes or removes, whatever its size. The rule card covers the rest."""
     target = absolute_path(event, code[0]) if code else None  # code paths are relative to the project, not the working directory
     if event.get("tool_name") == "Write" and not old and target and target.is_file() and target.stat().st_size > 0:
         return True  # a file too large to read: what it removes can't be seen
@@ -395,10 +461,8 @@ def notes_before_edit(event: dict, session: Session, tool_input: dict, code: lis
     for reference, applies, why in needed_references(code, session.prompt):
         if applies and not session.has("reference", reference) and once(event, session, f"reference-{reference}"):
             notes.append(in_place.reference_note(reference, why, reference_path(reference)))
-    if not session.has("skill", CORE_SKILL) and once(event, session, "card"):  # a session that began before this plugin did never heard it
-        notes.append(rule_card.CARD)
     if language and not small and not session.has("skill", language) and once(event, session, language):
-        notes.append(f"`occam:{language}` has {LANGUAGE_NAMES[language]} guidance on {LANGUAGE_RISKS[language][0]}.")
+        notes.append(language_notes.note([language]))
     if TEST_PATH.search(file_path) and not session.has("reference", "verification") and once(event, session, "verification"):
         notes.append("occam's guidance on tests that can fail is at " + reference_path("verification") + f". `{scale_notes.TOOL} mutate --cmd \"<test command>\" <file>` shows which behavior no test protects.")
     note = instructions_note(event, session, file_path)
@@ -441,6 +505,9 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
     if created:
         record(event, kind="created", path=known[0])
     old, new = evidence.old_and_new_text(name, tool_input, event.get("cwd")) if known else ("", "")
+    sized_big = bool(known) and not scale_notes.small_edit(name, tool_input, str(absolute_path(event, edit_path)), old, new)
+    if known:  # what this replaces is only visible now, so the edit's size is judged here and read back after it
+        record(event, kind="sizing", path=known[0], big=sized_big)
     shape = evidence.secret_shape(new, old)
     if shape:
         return hold_a_secret(event, session, known[0], shape)
@@ -464,6 +531,8 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
             return hold(event, session, "skill", "the `occam:occam` skill has not been loaded in this session, and consequential code "
                                                  "edits are held until it is.", "Call the Skill tool with `occam:occam`, then retry this edit.")
     notes = notes_before_edit(event, session, tool_input, code, small)
+    if code and sized_big and skill_switches.adds_something(created, bool(DEPENDENCY_MANIFEST.search(code[0])), old, new):  # by size alone: `small` is False once the core is loaded
+        notes += module_notes(event, session, ["new-code"])
     return context("PreToolUse", " ".join(notes)) if notes else None
 
 
@@ -471,7 +540,8 @@ def pre_tool(event: dict) -> dict | None:
     name = event.get("tool_name", "")
     for tools, handler in ((SHELL_TOOLS, before_shell), (EDIT_TOOLS, before_edit), (evidence.WEB_TOOLS, before_web), (AGENT_TOOLS, before_agent)):
         if name in tools:
-            return handler(event, event.get("tool_input") or {}, Session(event))
+            session = Session(event)
+            return with_card(event, session, handler(event, event.get("tool_input") or {}, session), "PreToolUse")
     return None
 
 
@@ -611,13 +681,19 @@ def review_first_note(event: dict) -> dict | None:
                                   f"review the whole diff yourself: {stop_checks.SELF_REVIEW} Then give the report a line starting {stop_checks.SELF_REVIEW_LINE}.")
 
 
-def after_skill(event: dict, tool_input: dict, succeeded: bool) -> None:
-    if succeeded and not event.get("agent_id"):
-        record(event, kind="skill", name=skill_name(tool_input.get("skill", "")))
+def after_skill(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
+    """Loading the core turns on the modules the request armed, so they arrive with it."""
+    if not succeeded or event.get("agent_id"):
+        return None
+    name = skill_name(tool_input.get("skill", ""))
+    record(event, kind="skill", name=name)
+    session = Session(event)
+    notes = module_notes(event, session, skill_switches.armed(session.turn, session.entries)) if name == CORE_SKILL else []
+    return context("PostToolUse", " ".join(notes)) if notes else None
 
 
 def after_read(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
-    match = re.search(r"/skills/occam/references/(\w+)\.md$", tool_input.get("file_path") or "")
+    match = re.search(r"/skills/occam/references/([\w-]+)\.md$", tool_input.get("file_path") or "")
     if match:
         record(event, kind="reference", name=match.group(1))
     return read_notes(event, tool_input.get("file_path") or "")
@@ -634,7 +710,7 @@ def read_notes(event: dict, path: str) -> dict | None:
     has, mark = said_before(event, session, f"{agent}:" if agent else "")
     notes = [repo_notes.secret_file_read(path, has, mark), repo_notes.addressed_to_an_agent(output_text(event.get("tool_response")), has, mark)]
     said = [note for note in notes if note]
-    return context("PostToolUse", " ".join(said)) if said else None
+    return with_card(event, session, context("PostToolUse", " ".join(said)) if said else None, "PostToolUse")  # a Read's pre-tool skips the session record, so its card comes here
 
 
 def shell_outcome_notes(event: dict, command: str, succeeded: bool, ran_check: bool) -> dict | None:
@@ -662,8 +738,29 @@ def after_edit(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     if not succeeded or not in_project(file_path, event):
         return None
     path = relative_path(file_path, event)
-    record(event, kind="edit", path=path, code=is_code(path))
-    return joined_context("PostToolUse", size_note(event, file_path, path), scan_note(event, file_path, path), docs_note(event, path), design_notes.on_edit(event, file_path, Session(event), record, context), long_run_note(event), review_first_note(event))
+    record(event, kind="edit", path=path, code=is_code(path), big=edit_is_big(event.get("tool_name", ""), tool_input, Session(event).turn, path))
+    scanned = scan_note(event, file_path, path)
+    findings = module_notes(event, Session(event), ["findings"], "the scan raised something in this edit") if scanned else []
+    return joined_context("PostToolUse", size_note(event, file_path, path), scanned, context("PostToolUse", " ".join(findings)) if findings else None, docs_note(event, path),
+                          design_notes.on_edit(event, file_path, Session(event), record, context), long_run_note(event), review_first_note(event))
+
+
+COLLECTION_ERROR = re.compile(r"\b\d+ errors?\b|errors? during collection|Traceback|\b(?:Syntax|Import|ModuleNotFound|Indentation|Name)Error\b")
+
+
+def edit_is_big(name: str, tool_input: dict, turn: list[dict], path: str) -> bool:
+    """Past the small path's size, as pre-tool judged it when it could still see what the edit replaced. Without that record, it's judged
+    from the edit's own text, and an edit with no text to size leaves the decision to how many edits and files there are."""
+    sized = [entry for entry in turn if entry.get("kind") == "sizing" and entry.get("path") == path]
+    if sized:
+        return bool(sized[-1].get("big"))
+    if name not in ("Edit", "MultiEdit"):
+        return name in ("Write", "NotebookEdit")  # what a Write replaced is gone by now, and a notebook cell can't be sized
+    pieces = [piece for piece in ((tool_input.get("edits") or []) if name == "MultiEdit" else [tool_input]) if isinstance(piece, dict)]
+    olds, news = [piece.get("old_string") for piece in pieces], [piece.get("new_string") for piece in pieces]
+    if not pieces or not all(isinstance(text, str) for text in olds + news):
+        return False  # nothing to size, so how many edits and files there are decides
+    return not scale_notes.small_edit("Edit", {"replace_all": any(piece.get("replace_all") for piece in pieces)}, "", "\n".join(olds), "\n".join(news))
 
 
 def after_agent(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
@@ -723,7 +820,7 @@ def record_check(event: dict, command: str, steps: list, checks: list, succeeded
 
 def after_shell(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     command = tool_input.get("command", "")
-    for reference in re.findall(r"/skills/occam/references/(\w+)\.md", command):
+    for reference in re.findall(r"/skills/occam/references/([\w-]+)\.md", command):
         record(event, kind="reference", name=reference)
     if succeeded and not event.get("agent_id"):
         for effect in side_effects(command, event):
@@ -738,7 +835,30 @@ def after_shell(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
     if any(is_diff(words) for words in commands):
         record(event, kind="diff")
     mixed = copy_mixed_in_note(event, checks, command, passed) if checks else None
-    return joined_context("PostToolUse" if succeeded else "PostToolUseFailure", shell_outcome_notes(event, command, succeeded, bool(checks)), failing_streak_note(event, succeeded) if checks else None, long_run_note(event) if succeeded else None, review_first_note(event), mixed)
+    return joined_context("PostToolUse" if succeeded else "PostToolUseFailure", shell_outcome_notes(event, command, succeeded, bool(checks)), failing_streak_note(event, succeeded) if checks else None, long_run_note(event) if succeeded else None, review_first_note(event), mixed,
+                          check_modules(event, passed) if checks else None)
+
+
+def check_modules(event: dict, passed: bool) -> dict | None:
+    """A check on this turn's work beyond a small change. Either way the end is near, so done applies, with what to say about failures that
+    remain. Passing, the diff is ready for critique. Failing, it's a bug to find the cause of, unless only tests changed, which is
+    more likely a test written to fail first."""
+    session = Session(event)
+    since = session.after_last_edit("check") if session.code_edits() else []
+    if not since or since[-1].get("not_this_code") or not skill_switches.beyond_small(session.prompt_entry, session.turn):
+        return None  # a check before the last edit, or on a copy of the old code, says nothing about this work
+    if not passed:
+        from occam_tools.zero_tests import ran_no_tests  # on sys.path through scale_notes, and imported late so a problem there fails open
+        everything = output_text(event.get("tool_response")) + "\n" + str(event.get("error") or "")
+        if ran_no_tests(everything) and not COLLECTION_ERROR.search(everything):
+            return None  # nothing collected is no check of this work, and Stop says so. Failing to collect is a failure
+    if passed:
+        notes = module_notes(event, session, ["done", "critique"])
+    else:
+        notes = module_notes(event, session, ["done"])
+        if not skill_switches.tests_only(session.turn, TEST_PATH):
+            notes += module_notes(event, session, ["bugs"], "a check failed after this work's edits")
+    return context("PostToolUse" if passed else "PostToolUseFailure", " ".join(notes)) if notes else None
 
 
 AFTER_TOOL = {"Skill": after_skill, "Read": after_read, **dict.fromkeys(evidence.WEB_TOOLS, after_web), **dict.fromkeys(EDIT_TOOLS, after_edit), **dict.fromkeys(AGENT_TOOLS, after_agent),
@@ -746,6 +866,10 @@ AFTER_TOOL = {"Skill": after_skill, "Read": after_read, **dict.fromkeys(evidence
 
 
 def post_tool(event: dict, succeeded: bool = True) -> dict | None:
+    tool_input = event.get("tool_input") or {}
+    if succeeded and not event.get("agent_id") and event.get("tool_name") in ("Read", *SHELL_TOOLS):
+        for name in dict.fromkeys(language_notes.SKILL_FILE.findall(str(tool_input.get("file_path") or tool_input.get("command") or ""))):
+            record(event, kind="skill", name=name)  # a routed skill is read, not loaded, and reading it is having it
     handler = AFTER_TOOL.get(event.get("tool_name", ""))
     return handler(event, event.get("tool_input") or {}, succeeded) if handler else None
 

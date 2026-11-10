@@ -5,6 +5,7 @@ None of this is measured on an agent. These pin what the hooks say and hold, thr
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -86,9 +87,54 @@ ORDINARY = "\n".join(f"row_{i} = format_row({i})" for i in range(25))  # past th
 # ---------------------------------------------------------------- the rule card
 
 
-def test_a_session_starts_with_the_rule_card(session):
-    text = said(session.send("session-start", source="startup"))
-    assert rule_card.RULES in text and "load the full `occam:occam` skill before editing" in text
+def test_the_card_comes_with_the_first_tool_call_not_at_session_start(session):
+    """Moved from session start by the user on 2026-11-08: a session that loads the core first hears these rules there at length."""
+    assert rule_card.RULES not in said(session.send("session-start", source="startup"))
+    session.send("user-prompt", prompt="fix it")
+    first = said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+    assert rule_card.RULES in first and "load the full `occam:occam` skill before editing" in first
+    assert rule_card.RULES not in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+
+
+def test_a_session_that_loads_the_core_first_never_hears_the_card(session):
+    session.send("user-prompt", prompt="fix it")
+    session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"}, tool_response={})
+    assert rule_card.RULES not in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+    before, _ = session.do(session.edit("app.py", "x = 1", "x = 2"))
+    assert rule_card.RULES not in said(before)
+
+
+def test_a_first_read_hears_the_card_after_it(session):
+    """A Read's pre-tool hook skips the session record to stay fast, so the card comes with its result."""
+    session.send("user-prompt", prompt="what does app.py do?")
+    path = session.project / "app.py"
+    path.write_text("x = 1\n")
+    event = {"tool_name": "Read", "tool_input": {"file_path": str(path)}}
+    assert rule_card.RULES not in said(session.send("pre-tool", **event))
+    assert rule_card.RULES in said(session.send("post-tool", **event, tool_response={}))
+    assert rule_card.RULES not in said(session.send("post-tool", **event, tool_response={}))
+
+
+def test_a_held_first_call_leaves_the_card_for_the_next(session):
+    session.send("user-prompt", prompt="fix it")
+    held = session.send("pre-tool", **session.edit("auth.py", "x = 1", "x = 2"))
+    assert decision(held) == "deny" and rule_card.RULES not in json.dumps(held)
+    assert rule_card.RULES in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+
+
+def test_a_clear_starts_the_card_again_and_compaction_gives_it_at_once(session):
+    session.send("user-prompt", prompt="fix it")
+    session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"})
+    session.send("session-start", source="clear")
+    assert rule_card.RULES in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+    assert rule_card.RULES in said(session.send("session-start", source="compact"))
+    assert rule_card.RULES not in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+
+
+def test_a_subagents_tool_calls_dont_get_the_main_card(session):
+    session.send("user-prompt", prompt="fix it")
+    assert rule_card.RULES not in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}, agent_id="a1"))
+    assert rule_card.RULES in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
 
 
 def test_compaction_gives_the_card_again_with_the_reload_note(session):
@@ -101,7 +147,7 @@ def test_an_ordinary_edit_past_the_old_small_size_goes_ahead_under_the_card(sess
     session.send("user-prompt", prompt="fix it")
     before, _ = session.do(session.edit("app.py", "x = 1", ORDINARY))
     assert decision(before) is None
-    assert rule_card.RULES not in said(before), "the card was already given at session start"
+    assert rule_card.RULES in said(before), "the first tool call carries the card"
 
 
 def test_a_session_that_never_heard_the_card_hears_it_once_before_its_first_edit(session):
@@ -257,6 +303,8 @@ def test_the_note_says_a_money_change_is_why(session):
 def test_guard_says_nothing_at_session_start_or_to_a_subagent(guarded):
     assert guarded.send("session-start", source="startup") == {}
     assert guarded.send("subagent-start", agent_type="general-purpose", agent_id="a1") == {}
+    guarded.send("user-prompt", prompt="fix it")
+    assert guarded.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}) == {}, "no card at the first tool call either"
 
 
 def test_guard_holds_no_edit_for_the_skill_and_adds_no_notes(guarded):
@@ -286,3 +334,132 @@ def test_turning_the_hooks_down_needs_a_person_however_it_is_spelled(session, va
     event = {"tool_name": "Edit", "tool_input": {"file_path": str(session.project / ".claude" / "settings.json"), "old_string": "{}",
                                                  "new_string": '{"env": {"OCCAM_HOOKS": "%s"}}' % value}}
     assert decision(session.send("pre-tool", **event)) == "ask"
+
+
+# ---------------------------------------------------------------- routed language skills
+# The user chose on 2026-11-08 to take the language skills off the always-on listing. They can't be loaded with the Skill tool
+# then, so the hooks name the file to read: on the first edit in that language, and on a review, which makes no edit.
+
+LANGUAGE_FILE = re.compile(r"/skills/(occam-[a-z]+)/SKILL\.md")
+
+
+def pointed_to(text):
+    found = LANGUAGE_FILE.findall(text)
+    for name in found:
+        assert (ROOT / "plugin" / "skills" / name / "SKILL.md").is_file(), name
+    return set(found)
+
+
+def test_an_edit_points_to_its_languages_file_once(session):
+    session.send("user-prompt", prompt="fix it")
+    session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"}, tool_response={})
+    first, _ = session.do(session.edit("web/app.ts", "let x = 1", "let x = 2"))
+    assert pointed_to(said(first)) == {"occam-typescript"}
+    again, _ = session.do(session.edit("web/app.ts", "let x = 2", "let x = 3"))
+    assert not pointed_to(said(again))
+
+
+def test_reading_the_languages_file_counts_as_having_it(session):
+    session.send("user-prompt", prompt="fix it")
+    session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"}, tool_response={})
+    path = str(ROOT / "plugin" / "skills" / "occam-go" / "SKILL.md")
+    session.send("post-tool", tool_name="Read", tool_input={"file_path": path}, tool_response={})
+    before, _ = session.do(session.edit("main.go", "x := 1", "x := 2"))
+    assert not pointed_to(said(before))
+
+
+@pytest.mark.parametrize("prompt, language", [
+    ("Review the Go service in main.go", "occam-go"),
+    ("review only: is this TypeScript reducer sound?", "occam-typescript"),
+    ("Review the Rust crate's error handling", "occam-rust"),
+    ("Review the Kotlin repository layer", "occam-jvm"),
+    ("Review the C++ parser for undefined behavior", "occam-cpp"),
+    ("Review this SQL migration", "occam-sql"),
+    ("Review deploy.sh, don't change anything", "occam-shell"),
+    ("Review this pull request in app.py", "occam-python"),
+])
+def test_a_review_finds_the_guidance_for_the_language_it_names(session, prompt, language):
+    assert language in pointed_to(said(session.send("user-prompt", prompt=prompt)))
+
+
+def test_a_review_naming_no_language_gets_the_projects(session):
+    (session.project / "Cargo.toml").write_text("[package]\n")
+    assert pointed_to(said(session.send("user-prompt", prompt="Review this repo, read-only"))) == {"occam-rust"}
+
+
+@pytest.mark.parametrize("prompt", ["Review the plan: should we go ahead?", "Review plan C", "Review the doc, no code changes"])
+def test_ordinary_words_name_no_language(session, prompt):
+    assert not pointed_to(said(session.send("user-prompt", prompt=prompt)))
+
+
+def test_a_language_is_pointed_to_once_per_session(session):
+    assert pointed_to(said(session.send("user-prompt", prompt="Review main.go"))) == {"occam-go"}
+    assert not pointed_to(said(session.send("user-prompt", prompt="Now review handler.go")))
+
+
+def test_parallel_first_calls_give_the_card_once(session):
+    """Several reads at once are a common first move, and their hooks run at once."""
+    session.send("user-prompt", prompt="what does this do?")
+    path = session.project / "app.py"
+    path.write_text("x = 1\n")
+    event = json.dumps({"session_id": "s1", "cwd": str(session.project), "tool_name": "Read", "tool_input": {"file_path": str(path)}, "tool_response": {}})
+    runs = [subprocess.Popen([sys.executable, str(HOOK), "post-tool"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=session.env) for _ in range(6)]
+    for run in runs:  # every hook has its input before any finishes, so they decide at the same time
+        run.stdin.write(event)
+        run.stdin.close()
+    outputs = [run.stdout.read() for run in runs]
+    for run in runs:
+        run.wait(timeout=60)
+    assert sum(rule_card.RULES in json.loads(out)["hookSpecificOutput"]["additionalContext"] for out in outputs if out.strip()) == 1
+
+
+@pytest.mark.parametrize("prompt, language", [
+    ("Review `app.py` for bugs", "occam-python"),
+    ("Review `parser.c` for undefined behavior", "occam-cpp"),
+    ("Review `deploy.sh`, don't change anything", "occam-shell"),
+    ("Review `migrations/001_add.sql`", "occam-sql"),
+])
+def test_a_quoted_file_name_names_its_language(session, prompt, language):
+    assert language in pointed_to(said(session.send("user-prompt", prompt=prompt)))
+
+
+@pytest.mark.parametrize("prompt", ["Review how the client should react to timeouts", "Review the spring release checklist",
+                                    "Review the scripts in C:\\work\\tools", "Review the port in C#",
+                                    "Review the plan in C/D", "Review the folder in C\\work"])
+def test_ordinary_words_dont_push_out_the_projects_language(session, prompt):
+    (session.project / "pyproject.toml").write_text("")
+    assert pointed_to(said(session.send("user-prompt", prompt=prompt))) == {"occam-python"}
+
+
+@pytest.mark.parametrize("read", [
+    {"tool_name": "Read", "tool_input": {"file_path": "C:\\plugins\\occam\\skills\\occam-go\\SKILL.md"}},
+    {"tool_name": "Bash", "tool_input": {"command": "cat ../occam-go/SKILL.md"}},
+])
+def test_reading_the_languages_file_counts_in_other_path_forms(session, read):
+    session.send("user-prompt", prompt="fix it")
+    session.send("post-tool", tool_name="Skill", tool_input={"skill": "occam:occam"}, tool_response={})
+    session.send("post-tool", **read, tool_response={})
+    before, _ = session.do(session.edit("main.go", "x := 1", "x := 2"))
+    assert not pointed_to(said(before))
+
+
+def test_a_named_language_adds_to_the_projects(session):
+    (session.project / "pyproject.toml").write_text("")
+    assert pointed_to(said(session.send("user-prompt", prompt="Review the Go service in main.go"))) == {"occam-go", "occam-python"}
+
+
+@pytest.mark.parametrize("prompt, language", [
+    ("review my react app for bugs", "occam-typescript"),
+    ("Review our spring boot service", "occam-jvm"),
+    ("Review this function written in C: it leaks memory", "occam-cpp"),
+])
+def test_lowercase_framework_names_and_a_colon_after_c_still_name_the_language(session, prompt, language):
+    assert language in pointed_to(said(session.send("user-prompt", prompt=prompt)))
+
+
+def test_the_card_isnt_repeated_after_its_marker_is_swept(session):
+    """The sweep removes week-old markers while a long session's record lives on."""
+    session.send("user-prompt", prompt="fix it")
+    assert rule_card.RULES in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))
+    (Path(session.env["CLAUDE_PLUGIN_DATA"]) / "sessions" / "s1.card").unlink()
+    assert rule_card.RULES not in said(session.send("pre-tool", tool_name="Bash", tool_input={"command": "ls"}))

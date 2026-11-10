@@ -5,10 +5,15 @@ concatenation so this file doesn't itself look like a leak to a scanner.
 """
 
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
 from test_occam_hook import Agent, added, decision
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "plugin" / "hooks"))
+import rule_card  # noqa: E402
 
 FAKE_TOKEN = "gh" + "p_" + "a1B2" * 9
 FAKE_AWS = "AK" + "IA" + "ABCDEFGHIJKLMNOP"
@@ -259,7 +264,8 @@ def test_a_credential_in_a_web_request_is_denied_and_keeps_being_denied(agent, t
 
 def test_a_clean_web_request_passes_even_before_the_skill_loads(tmp_path):
     made = Agent(tmp_path)
-    assert made.send("pre-tool", tool_name="WebSearch", tool_input={"query": "python decimal rounding"}) is None
+    output = made.send("pre-tool", tool_name="WebSearch", tool_input={"query": "python decimal rounding"})
+    assert decision(output) is None and added(output) in ("", rule_card.CARD), "nothing but the rule card, since this is the first tool call"
 
 
 def test_web_tools_are_in_the_hook_matcher():

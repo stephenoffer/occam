@@ -206,7 +206,7 @@ One Sonnet subagent followed the skill on a private copy of a real, mostly AI-wr
 | Bloat | `scratch-file`, `ai-report-file`, `committed-artifact`, `unused-dependency`, `competing-dependencies`, `utility-bucket`, `debug-leftover`, dead-code rules | Design, repair |
 | Non-scalable architecture | `process-local-state`, `unpaginated-query`, `query-in-loop`, `unbounded-concurrency`, `materialize-all`, `import-time-io`, `import-cycle`, `hub-module` | Performance, design |
 | Not properly tested | `no-tests`, `module-untested`, `test-*`, `checks-hidden-by-config`, `mutate`, `gate` on weakened tests | Verification, repair |
-| Not critiquing its own work | `gate`, and the scan at stop | Critique, then converge |
+| Not critiquing its own work | `gate`, and the scan at stop | The critique module, stated once checks pass |
 | Security | 27 rules, and `tools` for scanners. Tenancy and logic flaws are **judgment** | Security |
 | Usability | `generic-exception`, `opaque-error`, `inconsistent-return`, `a11y-missing`, `rest-verb-route`, `many-params`, `flag-params`. Most of this is **judgment** | Design |
 | Comments, too many or too few | `ai-residue`, `narration-comment`, `comment-flood`, `banner-comment`, `missing-docstring`, `docstring-restates-name` | Design |
@@ -221,7 +221,7 @@ One Sonnet subagent followed the skill on a private copy of a real, mostly AI-wr
 | Number of subagents | `map`, `partition`. The numbers are heuristics | Scale, collaboration |
 | Architecture down to hardware | Rules tagged by layer. `map` lists implicated layers. `dataframe-grow-loop`, `python-loop-over-array`, `transfer-in-loop`, `remote-get-in-loop`, `oversubscription` | Design |
 | Standard naming | `hedge-name`, `vague-name`, `convention-mismatch`, `rest-verb-route`. Whether a name is the industry's term is **judgment** | Design |
-| Fixing, while asking | Tiers, the audit-only read-only hook | Repair, and "When you find something else" in the core |
+| Fixing, while asking | Tiers, the audit-only read-only hook | Repair, and the findings module |
 
 ## How well the scanner works
 

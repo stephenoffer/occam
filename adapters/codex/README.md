@@ -13,7 +13,7 @@ Checked against the official docs on 2026-11-05 and Codex CLI 0.164.0-alpha. Wha
 | You, all projects | `mkdir -p ~/.agents/skills && cp -R plugin/skills/* ~/.agents/skills/` |
 | One repository | `mkdir -p <repo>/.agents/skills && cp -R plugin/skills/* <repo>/.agents/skills/` |
 
-Check first that nothing there has the same name. Note the path: Codex discovers skills under `.agents/skills`, not `.claude/skills` or `~/.codex/skills`. They load implicitly from their descriptions, or invoke one with `$occam` or `$occam-python`, or through `/skills`.
+Check first that nothing there has the same name. Note the path: Codex discovers skills under `.agents/skills`, not `.claude/skills` or `~/.codex/skills`. They load implicitly from their descriptions, or invoke one with `$occam` or `$occam-python`, or through `/skills`. The eight language skills carry `disable-model-invocation: true`, a Claude Code key that keeps them off its always-on listing. The Agent Skills reference validator rejects that key, and whether Codex loads, ignores or rejects these skills hasn't been checked.
 
 The Claude Code plugin's enforcement hooks are not part of this. On Codex, occam is guidance, so nothing makes it fire or holds an edit. Whether a Codex equivalent is worth building is an open question.
 

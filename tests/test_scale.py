@@ -210,11 +210,12 @@ def test_the_shadow_note_still_reaches_a_small_edit(session):
 
 def test_nothing_rewards_keeping_a_fix_small(session):
     """Two paid runs saw a second copy of a bug and left it, after being told edits past a size were held. The size isn't announced, and neither is a penalty for growing."""
-    start = added(session.send("session-start", source="startup"))
-    assert "everywhere it occurs" in start and "occam:occam" in start
+    session.send("session-start", source="startup")
     session.prompt("fix it")
     (session.project / "app.py").write_text("a = 1\n")
     note = added(session.attempt(session.edit_event("app.py", "a = 1", "a = 2")))
+    start = note  # the rule card comes with the first tool call, since the user's decision of 2026-11-08
+    assert "everywhere it occurs" in start and "occam:occam" in start
     for text in (start, note):
         for word in ("small", "grows", "held", "required"):
             assert word not in text.lower(), word

@@ -234,7 +234,7 @@ def test_a_whole_session_through_the_configured_hooks(session):
     code = session.folder / "billing.py"
     code.write_text("a = 1\n")
 
-    assert "occam" in session("SessionStart", source="startup")["additionalContext"]
+    assert "occam is active" not in session("SessionStart", source="startup").get("additionalContext", ""), "the card waits for the first tool call"
     session("UserPromptSubmit", prompt="Change the billing rounding.")
 
     held = session("PreToolUse", **edit(code))
@@ -243,6 +243,7 @@ def test_a_whole_session_through_the_configured_hooks(session):
     session("PostToolUse", tool_name="Skill", tool_input={"skill": "occam:occam"})
     allowed = session("PreToolUse", **edit(code))
     assert allowed.get("permissionDecision") != "deny"
+    assert "occam is active" not in allowed.get("additionalContext", ""), "the core came first, so the card isn't needed"
     code.write_text("a = 2\n")
     session("PostToolUse", **edit(code), tool_response={})
 

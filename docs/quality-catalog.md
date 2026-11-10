@@ -744,7 +744,7 @@ The tokens in the large-codebase catalog's Mechanisms table mean the same here. 
 | guide:anything-needs-credentials-has | plugin/skills/occam-docs/SKILL.md | `Anything that needs credentials or has outside effects is reported as not run` |
 | guide:api-names-true | plugin/skills/occam/references/design.md | `When behavior changes, rename what no longer describes it` |
 | guide:api-signatures | plugin/skills/occam/references/design.md | `Keep parameter order the same across related functions` |
-| guide:appear-only-their-scope | plugin/skills/occam/SKILL.md | `appear only with their scope and evidence` |
+| guide:appear-only-their-scope | plugin/skills/occam/references/done.md | `appear only with their scope and evidence` |
 | guide:argon2-scrypt-bcrypt | plugin/skills/occam-python/references/apis-and-security.md | `argon2, scrypt or bcrypt` |
 | guide:arguments-need-picklable | plugin/skills/occam-python/references/structure.md | `so arguments need to be picklable` |
 | guide:ask-before-changing-what | plugin/skills/occam/SKILL.md | `Ask before changing what acceptance means` |
@@ -896,7 +896,7 @@ The tokens in the large-codebase catalog's Mechanisms table mean the same here. 
 | guide:inconsistent-return-types | plugin/skills/occam/references/design.md | `inconsistent return types` |
 | guide:inspect-python-object-overhead | plugin/skills/occam-python/SKILL.md | `Inspect Python object overhead, dtypes` |
 | guide:install-stack-established | plugin/skills/occam-python/SKILL.md | `install a stack that isn't established` |
-| guide:instead-layering-retries | plugin/skills/occam/SKILL.md | `instead of layering retries` |
+| guide:instead-layering-retries | plugin/skills/occam/references/bugs.md | `instead of layering retries` |
 | guide:integer-overflow-size-calculations | plugin/skills/occam-cpp/SKILL.md | `integer overflow in size calculations` |
 | guide:integer-precision-across-languages | plugin/skills/occam-python/SKILL.md | `integer precision across languages` |
 | guide:integer-versus-real-division | plugin/skills/occam-sql/SKILL.md | `integer versus real division` |
@@ -929,7 +929,7 @@ The tokens in the large-codebase catalog's Mechanisms table mean the same here. 
 | guide:make-invalid-states-hard | plugin/skills/occam/references/design.md | `Make invalid states hard to express where practical` |
 | guide:make-one-small-real | plugin/skills/occam/references/design.md | `make one small real call before building on it` |
 | guide:mapping-large-list-promises | plugin/skills/occam-typescript/SKILL.md | `mapping a large list to promises starts everything at once` |
-| guide:mark-limit-request-allows | plugin/skills/occam/SKILL.md | `Mark a limit the request allows` |
+| guide:mark-limit-request-allows | plugin/skills/occam/references/new-code.md | `Mark a limit the request allows` |
 | guide:materializing-input | plugin/skills/occam-python/SKILL.md | `Materializing an input with` |
 | guide:measure-alternate | plugin/skills/occam/references/performance.md | `Alternate baseline and candidate runs on the same machine` |
 | guide:measure-completed | plugin/skills/occam/references/performance.md | `Report completed, successful operations per second` |

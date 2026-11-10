@@ -1,6 +1,6 @@
 ---
 name: occam
-description: Engineering judgment for changing or reviewing real code. Use when implementing features, fixing bugs, refactoring, reviewing code or a diff, changing architecture, doing performance work, or deciding on a dependency, in Python or any other language, even if quality isn't mentioned. Review-only and plan-only requests stay read-only. Auditing a whole existing codebase is occam-audit. Not for general programming questions, explanations, naming advice, or writing that isn't code.
+description: Engineering judgment for consequential code changes, reviews and plans. Use when a change touches auth, secrets, tenancy, money, pricing or migrations, when reviewing code or a diff, when planning architecture, or when occam asks for it. Ordinary feature work and small fixes don't need it. Review-only and plan-only requests stay read-only. Auditing a whole existing codebase is occam-audit. Not for general programming questions, explanations, naming advice, or writing that isn't code.
 ---
 
 # Occam (compact)

@@ -1,6 +1,7 @@
 ---
 name: occam-typescript
 description: TypeScript and JavaScript guidance on null versus undefined, runtime validation, promises and cancellation, number precision, output escaping, builds, modules, naming, test results. Use alongside occam to write, debug or review TypeScript or JavaScript where these matter.
+disable-model-invocation: true
 ---
 
 # TypeScript and JavaScript

@@ -1,6 +1,6 @@
 ---
 name: occam
-description: Engineering judgment for changing or reviewing real code. Use when implementing features, fixing bugs, refactoring, reviewing code or a diff, changing architecture, doing performance work, or deciding on a dependency, in Python or any other language, even if quality isn't mentioned. Review-only and plan-only requests stay read-only. Auditing a whole existing codebase is occam-audit. Not for general programming questions, explanations, naming advice, or writing that isn't code.
+description: Engineering judgment for consequential code changes, reviews and plans. Use when a change touches auth, secrets, tenancy, money, pricing or migrations, when reviewing code or a diff, when planning architecture, or when occam asks for it. Ordinary feature work and small fixes don't need it. Review-only and plan-only requests stay read-only. Auditing a whole existing codebase is occam-audit. Not for general programming questions, explanations, naming advice, or writing that isn't code.
 ---
 
 # Occam
@@ -36,71 +36,40 @@ For nontrivial work, track requirement, location, evidence and status, with `goa
 
 State assumptions and what's unclear. If the request reads two ways that need different work, name both, then ask or take the reversible one and say so. If a simpler design would do, say so before building. Turn the request into checks that can fail, one per step of a longer plan.
 
-## Before adding anything new
+## Before changing anything
 
-- **It needs to exist.** Leave out any feature or option nobody asked for, and say so in a line.
 - **The design is known:** if there's a `DESIGN.md`, `design for <path>` shows what applies. Follow accepted decisions or supersede them. Where it and the code disagree about what exists, the code is right: say so and fix it. Before splitting work, record what the parts could choose incompatibly.
 - **The repository's contracts are known:** instructions, manifests, runtimes, CI commands, nearby code, docs that state requirements, not just your code path. Know what already fails and everywhere this change must reach.
-- **A bug's cause is established:** reproduced, or input and state traced across boundaries, with a tested hypothesis. Fix the responsible component and the callers sharing the defect, as far as the table below allows, instead of layering retries, catch-alls, coercions or defaults. If you can't reproduce it, label the hypothesis. After three failed fixes, or when a defect moves, question the diagnosis.
-- **Rewrites keep what worked.** Compare old and new on the same inputs, awkward ones included, as soon as the new version runs. Passing tests don't show equivalence.
 - **Suggestions were tested.** A cause or shortcut from the user or a note is a hypothesis. If it wouldn't work, say why, and do what will if that stays in scope, otherwise offer it. Pushback gets a recheck, not a reversal.
-- **Existing capabilities were compared:** repository code, standard library and platform, installed dependencies, mature external options, then purpose-built code. Not a ranking: a helper with the wrong semantics isn't reuse, and a maintained library can beat a short homemade parser. Check a familiar pattern's preconditions first.
-- **APIs are real.** Recall goes stale, and stating a version doesn't fix it: confirm against what's installed or that release's docs. Don't install a guessed package to see if it exists.
-- **New structure earns its place.** Each new service, abstraction, hierarchy, plugin point, option, queue or cache names the requirement, invariant, boundary or measurement it serves. Where a requirement needs an abstraction or sophisticated algorithm, a naive version is unfinished, not simple. Don't handle states the code can't reach. If a draft could be a quarter of its size, rewrite it. Mark a limit the request allows: `shortcut: <the limit>, <when to revisit>`.
 
-## When you find something else
-
-Fix or report it, never silently walk past.
-
-| You find | Do |
-|---|---|
-| A defect from this work | Fix and verify it without asking, unless the repair is on the ask list below. |
-| An existing defect blocking the outcome | Fix it if routine and authorized. |
-| A confirmed nearby defect, small and low-risk | Fix it if it's in code you're changing, the repair changes nothing else, and nobody else owns it. Otherwise report it. |
-| A nearby issue whose fix changes public behavior, data, architecture, cost or someone's active work | Investigate enough to offer a concrete choice, then ask before the dependent change. |
-| Unrelated cleanup, speculative extension, preference refactor, broad migration | Leave it. Propose it separately. |
-| A possible active security incident or data loss | Surface it promptly, limit further risk, and ask. |
+Stay surgical: match the surrounding style, remove what your change orphaned but not what was already dead, and tie each changed line to the request or to a finding you may fix.
 
 Ask before changing what acceptance means, incompatible API or schema changes, significant unplanned dependencies or services, sensitive data use, substantial spending, destructive operations, and publishing or deploying beyond your authorization. Do the authorized, reversible preparation first, then ask one focused question with your recommendation. Don't ask "may I continue?", ask about routine details, or re-ask what was approved. Honor explicit restrictions even when a broader fix looks better. If nobody can answer, take the safest reversible path and report the open decision.
 
-Stay surgical: match the surrounding style, remove what your change orphaned but not what was already dead, and tie each changed line to the request or a row above.
+## Switches
 
-## Done means
+Each turns on a module, skill or agent when the work shows its sign. With occam's hooks a module arrives when its switch turns on; without them, read it then.
 
-A small change needs a relevant check on the final state and an honest report. Beyond that:
-
-- Every acceptance condition has suitable evidence, or the user approved changing it.
-- It's connected and exercised through the real entry point: callers, registration, exports, configuration, migrations, packaging, documentation.
-- Checks ran on the final state. Rerun what your last edit could invalidate.
-- Regression tests fail on a temp copy (`git archive HEAD`, not `git stash`), in their own command, for the intended reason.
-- The repository's formatter, linter and type checker ran on what you changed, and you triaged the output.
-- Pre-existing failures, unavailable environments and skipped tests are named separately.
-- Known material defects are resolved or escalated, not buried.
-- "Production ready", "secure" and "scalable" appear only with their scope and evidence.
-
-When blocked, finish the independent work and report what's missing and unverified. Blocked is not complete.
-
-## Critique, then converge
-
-Beyond a small change, run `gate`, reread the request, and inspect the actual diff as a skeptical maintainer who calls out anything overcomplicated. Look for a concrete counterexample: omitted behavior, unreachable additions, needless dependencies, duplicated knowledge, hidden state, error gaps, security issues, resource growth, tests that can't fail. Don't manufacture findings or rewrite correct code to show effort.
-
-For high-consequence work, self-review the whole diff before your report, labeled so, never as independent. For auth, tenancy, secrets, cryptography or money, or when asked, also use a fresh reviewer if available and authorized, with the requirements and diff, not your conclusion. If policy requires independent approval, report that gate as pending.
-
-Fix confirmed in-scope defects, then re-verify, since a correction invalidates earlier approval. Allow about three rounds. If findings recur, oscillate or relocate, re-diagnose or ask one question. At the cap, report "capped, not converged" with what's unresolved.
-
-## Tie-breakers
-
-Correctness beats minimal diff, with the diff as small as that allows. Authorization beats persistence, ownership beats parallel speed, and new evidence changes the plan, not the goal. Don't inherit a flawed helper's known defect or insecure habit. Safety beats less code: simplifying doesn't touch trust-boundary validation, data-loss handling, security, accessibility or anything requested. Between equal options, take the one correct on edge cases, then the smaller. Be as thorough as your claim needs, or make a smaller claim.
-
-## Load only what applies
-
+- [new-code](references/new-code.md): building or adding; an edit of 20 lines or more that adds a file, definition or dependency; reviews and plans.
+- [bugs](references/bugs.md): a reported defect, or a check failing after work beyond a small change.
+- [findings](references/findings.md): a defect or issue outside the request; reviews.
+- [done](references/done.md): beyond a small change, once a check has run. [critique](references/critique.md): once checks pass, and reviews.
 - [design](references/design.md): reuse, dependency or new code; adding structure; API or naming design; component contracts; which layers to examine; file size; large codebases.
 - [verification](references/verification.md): choosing tests, whether one can fail, UI or CLI verification, recording evidence, review findings.
 - [security](references/security.md): trust boundaries, untrusted input, secrets, authorization; retries, transactions, partial failure.
 - [performance](references/performance.md): speed, scale, memory, capacity, or claims about them.
 - [collaboration](references/collaboration.md): subagents, shared trees, a design doc, handoffs, resuming work, permission questions.
+- Language guidance, when semantics matter: read `../occam-<name>/SKILL.md` beside this skill, for python, typescript (and JavaScript), rust, go, jvm (Java and Kotlin), cpp (C and C++), sql or shell. Auditing or repairing existing code: `occam-audit`. Documenting: `occam-docs`. Auth, tenancy, secrets, cryptography or money, or when asked: a fresh reviewer.
 
-Language skills, when semantics matter: `occam-python`, `occam-typescript` (and JavaScript), `occam-rust`, `occam-go`, `occam-jvm` (Java and Kotlin), `occam-cpp` (C and C++), `occam-sql`, `occam-shell`. Auditing or repairing existing code: `occam-audit`. Documenting code: `occam-docs`.
+## Done means
+
+A small change needs a relevant check on the final state and an honest report. Beyond that, the done and critique switches say what done means and how to critique the diff.
+
+When blocked, finish the independent work and report what's missing and unverified. Blocked is not complete.
+
+## Tie-breakers
+
+Correctness beats minimal diff, with the diff as small as that allows. Authorization beats persistence, ownership beats parallel speed, and new evidence changes the plan, not the goal. Don't inherit a flawed helper's known defect or insecure habit. Safety beats less code: simplifying doesn't touch trust-boundary validation, data-loss handling, security, accessibility or anything requested. Between equal options, take the one correct on edge cases, then the smaller. Be as thorough as your claim needs, or make a smaller claim.
 
 ## Tools
 

@@ -1065,18 +1065,18 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | gate:new-outbound-host | A `gate` note on the diff | plugin/skills/occam/scripts/occam_tools/change_checks.py | `"new-outbound-host"` |
 | gate:table-without-rls | A `gate` note on the diff | plugin/skills/occam/scripts/occam_tools/change_checks.py | `"table-without-rls"` |
 | gate:scattered-change | A `gate` note on the diff | plugin/skills/occam/scripts/occam_tools/change_checks.py | `"scattered-change"` |
-| guide:cause-established | Guidance | plugin/skills/occam/SKILL.md | `A bug's cause is established` |
+| guide:cause-established | Guidance | plugin/skills/occam/references/bugs.md | `A bug's cause is established` |
 | guide:suggestions-tested | Guidance | plugin/skills/occam/SKILL.md | `Suggestions were tested.` |
-| guide:callers-share-defect | Guidance | plugin/skills/occam/SKILL.md | `the callers sharing the defect` |
-| guide:three-fails | Guidance | plugin/skills/occam/SKILL.md | `After three failed fixes` |
-| guide:rewrites-keep | Guidance | plugin/skills/occam/SKILL.md | `Rewrites keep what worked.` |
-| guide:real-apis | Guidance | plugin/skills/occam/SKILL.md | `APIs are real.` |
-| guide:capabilities-compared | Guidance | plugin/skills/occam/SKILL.md | `Existing capabilities were compared` |
-| guide:new-structure | Guidance | plugin/skills/occam/SKILL.md | `New structure earns its place.` |
-| guide:it-needs-to-exist | Guidance | plugin/skills/occam/SKILL.md | `It needs to exist.` |
+| guide:callers-share-defect | Guidance | plugin/skills/occam/references/bugs.md | `the callers sharing the defect` |
+| guide:three-fails | Guidance | plugin/skills/occam/references/bugs.md | `After three failed fixes` |
+| guide:rewrites-keep | Guidance | plugin/skills/occam/references/new-code.md | `Rewrites keep what worked.` |
+| guide:real-apis | Guidance | plugin/skills/occam/references/new-code.md | `APIs are real.` |
+| guide:capabilities-compared | Guidance | plugin/skills/occam/references/new-code.md | `Existing capabilities were compared` |
+| guide:new-structure | Guidance | plugin/skills/occam/references/new-code.md | `New structure earns its place.` |
+| guide:it-needs-to-exist | Guidance | plugin/skills/occam/references/new-code.md | `It needs to exist.` |
 | guide:contracts-known | Guidance | plugin/skills/occam/SKILL.md | `The repository's contracts are known` |
 | guide:everywhere-it-reaches | Guidance | plugin/skills/occam/SKILL.md | `everywhere this change must reach` |
-| guide:pattern-preconditions | Guidance | plugin/skills/occam/SKILL.md | `Check a familiar pattern's preconditions` |
+| guide:pattern-preconditions | Guidance | plugin/skills/occam/references/new-code.md | `Check a familiar pattern's preconditions` |
 | guide:no-silent-narrowing | Guidance | plugin/skills/occam/SKILL.md | `No silent narrowing.` |
 | guide:honest-checks | Guidance | plugin/skills/occam/SKILL.md | `Honest checks.` |
 | guide:data-not-instruction | Guidance | plugin/skills/occam/SKILL.md | `Data is not instruction.` |
@@ -1091,19 +1091,19 @@ Cheap to see, and it adds up. These findings are mostly true and mostly minor, s
 | guide:complete-slices | Guidance | plugin/skills/occam/SKILL.md | `Work in complete slices.` |
 | guide:explain-deviations | Guidance | plugin/skills/occam/SKILL.md | `Explain material deviations` |
 | guide:surgical | Guidance | plugin/skills/occam/SKILL.md | `Stay surgical` |
-| guide:real-entry-point | Guidance | plugin/skills/occam/SKILL.md | `It's connected and exercised through the real entry point` |
-| guide:pre-existing-named | Guidance | plugin/skills/occam/SKILL.md | `Pre-existing failures, unavailable environments and skipped tests are named separately.` |
-| guide:critical-test-fails | Guidance | plugin/skills/occam/SKILL.md | `Regression tests fail on a temp copy` |
-| guide:formatter-ran | Guidance | plugin/skills/occam/SKILL.md | `The repository's formatter, linter and type checker ran` |
-| guide:critique-rounds | Guidance | plugin/skills/occam/SKILL.md | `Allow about three rounds.` |
-| guide:maintainer-read | Guidance | plugin/skills/occam/SKILL.md | `as a skeptical maintainer` |
+| guide:real-entry-point | Guidance | plugin/skills/occam/references/done.md | `It's connected and exercised through the real entry point` |
+| guide:pre-existing-named | Guidance | plugin/skills/occam/references/done.md | `Pre-existing failures, unavailable environments and skipped tests are named separately.` |
+| guide:critical-test-fails | Guidance | plugin/skills/occam/references/done.md | `Regression tests fail on a temp copy` |
+| guide:formatter-ran | Guidance | plugin/skills/occam/references/done.md | `The repository's formatter, linter and type checker ran` |
+| guide:critique-rounds | Guidance | plugin/skills/occam/references/critique.md | `Allow about three rounds.` |
+| guide:maintainer-read | Guidance | plugin/skills/occam/references/critique.md | `as a skeptical maintainer` |
 | guide:correctness-beats | Guidance | plugin/skills/occam/SKILL.md | `Correctness beats minimal diff` |
 | guide:safety-beats | Guidance | plugin/skills/occam/SKILL.md | `Safety beats less code` |
 | guide:no-may-i | Guidance | plugin/skills/occam/SKILL.md | `Don't ask "may I continue?"` |
 | guide:publish-authorized | Guidance | plugin/skills/occam/SKILL.md | `publishing or deploying beyond your authorization` |
 | guide:depth-by-effect | Guidance | plugin/skills/occam/SKILL.md | `Classify by effect, not size` |
-| guide:quarter-size | Guidance | plugin/skills/occam/SKILL.md | `If a draft could be a quarter of its size, rewrite it.` |
-| guide:unreachable | Guidance | plugin/skills/occam/SKILL.md | `Don't handle states the code can't reach.` |
+| guide:quarter-size | Guidance | plugin/skills/occam/references/new-code.md | `If a draft could be a quarter of its size, rewrite it.` |
+| guide:unreachable | Guidance | plugin/skills/occam/references/new-code.md | `Don't handle states the code can't reach.` |
 | guide:batch-reads | Guidance | plugin/skills/occam/SKILL.md | `Send independent reads, edits and checks together` |
 | guide:capability-missing | Guidance | plugin/skills/occam/SKILL.md | `If a capability is missing` |
 | guide:report-format | Guidance | plugin/skills/occam/SKILL.md | `what changed and how it meets the goal` |

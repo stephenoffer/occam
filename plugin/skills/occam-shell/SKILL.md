@@ -1,6 +1,7 @@
 ---
 name: occam-shell
 description: Shell guidance on quoting, arrays, failure handling gaps, GNU and BSD portability, temp files, untrusted input. Use alongside occam to write, debug or review shell scripts.
+disable-model-invocation: true
 ---
 
 # Shell

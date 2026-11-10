@@ -559,15 +559,15 @@ def test_a_risky_request_mentions_the_language_skill_once_and_holds_nothing(agen
     agent.prompt("Cancellation gets swallowed in fetcher.py, please fix it")
     agent.load()
     first = agent.try_edit("fetcher.py")
-    assert decision(first) is None and "occam:occam-python" in added(first)
-    assert "occam:occam-python" not in added(agent.try_edit("fetcher.py"))
+    assert decision(first) is None and "/occam-python/SKILL.md" in added(first)
+    assert "/occam-python/SKILL.md" not in added(agent.try_edit("fetcher.py"))
 
 
 def test_risky_edit_content_mentions_the_skill_too(agent):
     agent.prompt("Tidy this up")
     agent.load()
     output = agent.send("pre-tool", tool_name="Edit", tool_input={"file_path": agent.path("a.js"), "new_string": "const n = limit ?? 0;"})
-    assert decision(output) is None and "occam:occam-typescript" in added(output)
+    assert decision(output) is None and "/occam-typescript/SKILL.md" in added(output)
 
 
 def test_loaded_language_skill_means_no_pause(agent):
@@ -580,9 +580,9 @@ def test_loaded_language_skill_means_no_pause(agent):
 def test_each_language_is_mentioned_once(agent):
     agent.prompt("Cancellation gets swallowed, please fix it")
     agent.load()
-    assert "occam:occam-python" in added(agent.try_edit("a.py"))
-    assert "occam:occam-go" in added(agent.try_edit("a.go")), "each language gets its own mention"
-    assert "occam:occam-python" not in added(agent.try_edit("b.py"))
+    assert "/occam-python/SKILL.md" in added(agent.try_edit("a.py"))
+    assert "/occam-go/SKILL.md" in added(agent.try_edit("a.go")), "each language gets its own mention"
+    assert "/occam-python/SKILL.md" not in added(agent.try_edit("b.py"))
 
 
 def test_language_skill_not_mentioned_once_loaded(agent):
@@ -650,8 +650,9 @@ def test_collaboration_guidance_mentioned_on_first_delegation(agent):
 
 # ------------------------------------------------------------ session and prompt context
 
-def test_session_start_announces_and_compaction_offers_reload(agent):
-    assert "occam:occam" in added(agent.send("session-start", source="startup"))
+def test_session_start_waits_and_compaction_offers_reload(agent):
+    """The rule card waits for the first tool call (the user's decision of 2026-11-08), so a plain start says nothing here."""
+    assert "occam:occam" not in added(agent.send("session-start", source="startup"))
     assert "compacted" in added(agent.send("session-start", source="compact"))
 
 

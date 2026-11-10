@@ -1,6 +1,7 @@
 ---
 name: occam-go
 description: Go guidance on error wrapping, goroutine lifetimes, context cancellation, nil pitfalls, cleanup, race testing, packages, naming, test results. Use alongside occam to write, debug or review Go where these matter.
+disable-model-invocation: true
 ---
 
 # Go

@@ -66,6 +66,19 @@ HIGH_CONSEQUENCE = re.compile(rf"(^|[/_.\-])({_SECURITY_CRITICAL_WORDS}|{_MONEY_
 ASKS_FOR_REVIEW = re.compile(r"\b(?:fresh|independent|second|separate|outside)[- ](?:review(?:er)?|look|opinion|pair of eyes)\b|\bcode[- ]?review(?:er|s)?\b"
                              r"|\bindependently reviewed\b|\b(?:a|the|another) reviewer\b|\breview(?:ed)?\s+(?:it\s+|this\s+|them\s+)?(?:with|by)\s+(?:a\s+|an\s+)?(?:sub)?agent\b"
                              r"|\b(?:get|have)\s+(?:it|this|that|them|the\s+(?:changes?|diff|code|fix|pr))\s+reviewed\b", re.I)
+# A request naming security or money work loads the core skill, by the owner's decision of 2026-11-09; other work runs without it,
+# and the edit hold still brings the core in for consequential files. Names count inside snake_case and CamelCase (`payment_service`,
+# PaymentService), so a word ends at anything but a lowercase letter. Left out on purpose: "tokens" and "sessions", as often an LLM's or a
+# terminal's as a login's; "checkout" after git; "migrate" for code or tools, as against a database migration; "subscriptions", as often
+# a websocket's as a customer's.
+_REQUEST_WORDS = (r"authenticat[a-z]*|authori[sz][a-z]*|o?auth(?:[nz]|2)?|jwt|sso|saml|mfa|2fa|log[ -]?ins?|sign[ -]?(?:ins?|ups?)|passwords?|secrets?"
+                  r"|credentials?|api[ _-]?keys?|permissions?|access control|rbac|acl|tenan[a-z]*|crypto[a-z]*|encrypt[a-z]*|decrypt[a-z]*"
+                  r"|billing|payments?|invoic[a-z]*|(?<!git )checkout|refunds?|ledgers?|money|currenc[a-z]*|prices?|pricing|tax|taxes|vat|wallets?"
+                  r"|migrations?|alembic|(?:schema|database|db|data|table)s? migrat[a-z]*|migrat[a-z]* (?:the |a |our )?(?:schema|database|db|data|tables?)")
+CONSEQUENTIAL_REQUEST = re.compile(rf"(?<![A-Za-z])(?i:{_REQUEST_WORDS})(?![a-z])")
+# Paths an edit tool is held on that a shell command can write without a hold: the auth, money and migration words of scale_notes.NOT_SMALL_PATH.
+CONSEQUENTIAL_SHELL_PATH = re.compile(r"auth|login|logout|passw|secret|token|credential|permission|rbac|(^|[/_.\-])(acl|iam|sso)([/_.\-]|$)|tenan|crypto|encrypt"
+                                      r"|secur|jwt|saml|signature|billing|payment|invoice|checkout|refund|pricing|wallet|subscription|ledger|migrat|alembic|schema", re.I)
 SECURITY_PROMPT = re.compile(r"\b(authenticat\w*|authoriz\w*|tenant\w*|permissions?|credentials?|secrets?|vulnerab\w*|injection)\b", re.I)
 PERFORMANCE_PROMPT = re.compile(
     r"\b(p[59]\d|latency|throughput|slow(er|ness)?|performance|faster|speed up|scal(e|es|ing|able|ability)"
@@ -101,6 +114,29 @@ LANGUAGE_RISKS = {
     "occam-sql": ("NULL logic, join grain, time, money, collation or migrations",
                  r"\b(join|group by|null|not in|timestamp|datetime|date\(|alter|drop|migrat\w*|collate|sum|avg|decimal|real)\b"),
     "occam-shell": ("quoting, failure handling and portability", r"."),
+}
+# The language skills are routed, not listed (disable-model-invocation), so a review, which makes no edit to show its language, finds
+# its guidance from what the request names: the language, a tool only it uses, or a file's suffix. Bare "go" and "C" are ordinary
+# words, and so are "react" and "spring", so they need company or a capital. A wrong match costs one pointer, about 200 characters,
+# and adds to the project's languages rather than replacing them.
+LANGUAGE_PROMPTS = {
+    "occam-python": PYTHON_PROMPT,
+    "occam-typescript": re.compile(r"(?i:\b(?:typescript|javascript|node\.?js|deno|npm|pnpm)\b|\breact(?:\.js|[- ](?:app|apps|component|components|hooks?|native|router|query|frontend))\b)|\bReact\b|\.(?:[mc]?[jt]s|[jt]sx)\b"),
+    "occam-rust": re.compile(r"(?i:\brust\b)|\bcargo (?:build|test|run|check|clippy)\b|\bCargo\.toml\b|\.rs\b"),
+    "occam-go": re.compile(r"\b(golang|goroutines?|go (?:code|module|service|package|program)s?)\b|\.go\b|\bgo\.mod\b", re.I),
+    "occam-jvm": re.compile(r"(?i:\b(?:java|kotlin|gradle|jvm|maven)\b|\bspring[- ](?:boot|mvc|data|security)\b)|\.(?:java|kts?)\b"),
+    "occam-cpp": re.compile(r"(?<![\w+])(?i:c\+\+|cpp|cmake)(?![\w+])|\b[Ii]n C\b(?![#+\\/]|:[\\/])|\bC (?:code|library|extension|program)s?\b|\.(?:c|h|cc|cpp|cxx|hpp|hh)\b"),
+    "occam-sql": re.compile(r"\b(sql|postgres(?:ql)?|mysql|sqlite)\b|\.sql\b", re.I),
+    "occam-shell": re.compile(r"\b(bash|zsh|shell ?scripts?)\b|\.(?:sh|bash|zsh)\b", re.I),
+}
+# A review that names no language gets the project's, from the files that declare one.
+LANGUAGE_MARKERS = {
+    "occam-python": ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"),
+    "occam-typescript": ("package.json", "tsconfig.json"),
+    "occam-rust": ("Cargo.toml",),
+    "occam-go": ("go.mod",),
+    "occam-jvm": ("pom.xml", "build.gradle", "build.gradle.kts"),
+    "occam-cpp": ("CMakeLists.txt",),
 }
 
 

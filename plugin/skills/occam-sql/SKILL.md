@@ -1,6 +1,7 @@
 ---
 name: occam-sql
 description: SQL guidance on injection, dialect differences, NULL logic, join grain, time, money and collation semantics, transactions, query plans, migrations. Use alongside occam to write, debug or review SQL or schema changes where these matter.
+disable-model-invocation: true
 ---
 
 # SQL

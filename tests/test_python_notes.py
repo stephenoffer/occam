@@ -174,7 +174,7 @@ def test_a_one_line_edit_on_ordinary_code_adds_only_the_language_mention(agent):
     agent.prompt("Fix the typo")
     agent.load()
     first = added(try_write(agent, PLAIN))
-    assert first.startswith("`occam:occam-python` has Python guidance") and len(first.split()) <= 25, first
+    assert first.startswith("occam has guidance for Python") and "/occam-python/SKILL.md," in first and len(first.split()) <= 30, first
     assert len(added(try_write(agent, PLAIN, "b.py")).split()) == 0, "nothing further on later ordinary edits"
 
 

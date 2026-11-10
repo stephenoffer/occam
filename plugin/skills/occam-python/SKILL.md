@@ -1,6 +1,7 @@
 ---
 name: occam-python
 description: Python guidance on async and cancellation, shared mutable state, data-pipeline memory, time, money and text semantics, typing, packaging, modules, file size, large codebases, names, docstrings and comments, pytest and mocks, moved APIs, security sinks, notebooks. Use alongside occam to write, debug, audit or review Python where these matter.
+disable-model-invocation: true
 ---
 
 # Python
