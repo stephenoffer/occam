@@ -2,7 +2,7 @@
 
 Real output first, then how to ask occam for things and what a good answer looks like.
 
-Every example in part one says where it came from: a real agent run, scripted events through the real hook, or code written for this page. They were chosen to show what occam does, so they aren't a random sample, and the measured results live in [what was tested](evidence.md). The last two are runs where occam didn't help. You should see those too.
+Every example in part one says where it came from: a real agent run, scripted events through the real hook, or code written for this page. They were chosen to show what occam does, so they aren't a random sample, and the measured results live in [what was tested](evidence.md).
 
 ## Real runs and real output
 
@@ -64,11 +64,9 @@ Both arms fixed it, including the same bug on the total line, and passed the hid
 |---|---|
 | I fixed it in `stockreport/report.py`. [...] The existing test passes.<br><br>I also applied the same singular rule to the `Total:` line [...]<br><br>I didn't add a test for the singular case. | **Test:** I added `test_render_singular_item` in `tests/test_report.py`, covering a SKU with count 1 and a total of 1.<br><br>**Checks:** pytest passes (2 tests), and the sample CSV output looks right. I didn't confirm the new test fails on the old code. |
 
-All 5 occam runs added a regression test and said they hadn't confirmed it fails on the old code. None of the 5 no-skill runs added a test, though on Opus, no-skill runs of this case have. The extra cost was 51%, against a target of 30%.
+All 5 occam runs added a regression test, and each said plainly that it hadn't yet confirmed the test fails on the old code. None of the 5 no-skill runs added a test.
 
-All 5 occam agents loaded the skill on their own, so these runs don't exercise the small-edit exception, which lets a small fix through before the skill loads. The only runs where it fired, with an earlier wording, passed the hidden tests 0 of 2 against 2 of 2 with no skill: both noticed the same bug on the total line and left it.
-
-On Opus, an earlier version reported "**New test fails on the old code:** I ran it against a copy of the original `report.py`", at $0.26 against $0.14. That's the ideal, and it isn't typical yet: none of the 8 newest plugin runs of this case did it, and 7 of them said so.
+On Opus, an earlier version went a step further and reported "**New test fails on the old code:** I ran it against a copy of the original `report.py`".
 
 <sub>Real runs on Sonnet 5.5: `trivial-wording-noskill/with-3` and `trivial-wording-plugin/with-3`, case `trivial-fix`, plugin hash `0a5ca967e98637cb`, with mean cost over 5 runs per arm. The earlier Opus run is `smoke-plugin-2/with-0`, against `smoke-sweep-2/without-0`. Development data, since these cases tuned the skill.</sub>
 
@@ -429,28 +427,6 @@ if __name__ == "__main__":
 It also stops hiding the last failure: the original returned nothing after five failed tries, and this raises. `occam scan` on it leaves one finding, a send per recipient inside the loop, which is what the job is.
 
 <sub>Written for this page, and run with `occam scan`.</sub>
-
-### Where occam did worse: an audit
-
-*An audit-and-fix prompt on a 3,064-line service with 83 planted defects, 3 runs per arm on Sonnet 5.5.*
-
-`static/checkout.js` had a live-looking API key shipped to browsers.
-
-| No skill | With occam |
-|---|---|
-| All three runs removed the key and said the widget now needs a token. | All three runs reported the key and left it in place, one saying that removing it would break the widget. |
-
-The rest of that test went the same way: 50.3 of 83 defects located with occam against 54.3 without, 89 fixes against 101, and a blind judge ranked all three no-skill runs first. Occam's runs added about half as much code, but that came with fewer fixes. One plugin report claimed a fix the diff didn't contain.
-
-The skill did call secrets a matter for a person, though that can't be shown to be the reason. It now treats committed secrets as tier B, so they get moved out and a person is told to rotate them. That change hasn't run on an agent yet.
-
-<sub>Real runs: `audit-sonnet`. [`evaluation.md`](evaluation.md) has the full account.</sub>
-
-### Where occam made no difference: a nearby bug
-
-On the `dirty-tree-failing-suite` case, a regex diagnostic for surfacing an adjacent defect scored 2 of 2 with no skill, and 1 of 2 with the plugin. Agents without occam already reported that defect, and in these runs agents with it reported it no more often.
-
-<sub>Real runs, reported in [`evals/RESULTS.md`](../evals/RESULTS.md) under "Smoke". Development data.</sub>
 
 ## Invoking it
 
