@@ -361,6 +361,23 @@ def test_an_unexpected_failure_is_exit_2_not_a_clean_answer(repo, monkeypatch, c
     assert "Nothing was checked" in capsys.readouterr().out
 
 
+def test_a_query_run_in_this_process_leaves_no_alarm_behind(repo, monkeypatch):
+    """A query arms an alarm whose handler ends the process with exit 2. Left set after a call from this process, it ended pytest itself
+    15 minutes later on Linux CI, in whichever test was running then."""
+    import signal
+    from occam_tools import cli
+    monkeypatch.chdir(repo.path)
+    handlers = {number: signal.getsignal(number) for number in (signal.SIGALRM, signal.SIGTERM, signal.SIGHUP)}
+    try:
+        assert cli.main(["query", "size"]) in (0, 2)
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0
+        assert {number: signal.getsignal(number) for number in handlers} == handlers
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)  # so a failure here can't end the rest of the run
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+
+
 def test_outline_is_bounded_across_files_and_in_json(repo):
     for index in range(12):
         repo.write(f"many/m{index}.py", "".join(f"def f{i}():\n    pass\n" for i in range(5)))

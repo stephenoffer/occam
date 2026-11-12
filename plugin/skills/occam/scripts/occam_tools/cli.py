@@ -551,6 +551,23 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str]) -> int:
+    """A caller in this same process, such as a test, gets its signal handlers and timer back afterwards: a query's alarm left set would end
+    that process with exit 2 minutes later, in the middle of whatever it was doing then."""
+    names = ("SIGTERM", "SIGHUP", "SIGALRM")
+    saved = {number: signal.getsignal(number) for number in (getattr(signal, name) for name in names if hasattr(signal, name))}
+    remaining, interval = signal.getitimer(signal.ITIMER_REAL) if hasattr(signal, "getitimer") else (0.0, 0.0)
+    started = time.monotonic()
+    try:
+        return _main(argv)
+    finally:
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, max(remaining - (time.monotonic() - started), 0.01) if remaining else 0, interval)
+        for number, handler in saved.items():
+            if handler is not None:  # None: set outside Python, which can't be put back from here
+                signal.signal(number, handler)
+
+
+def _main(argv: list[str]) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")  # a document or a path can hold what this terminal can't show
     parser = _parser()

@@ -62,11 +62,15 @@ def in_project(file_path: str, event: dict) -> bool:
     return is_under(path, cwd) or is_under(path, os.environ.get("CLAUDE_PROJECT_DIR"))
 
 
-def inside_project(path: str, event: dict) -> bool:
-    """Under the project or the working directory, and not one of them, so deleting it can't take the whole thing."""
+def inside_project(path: str, event: dict) -> bool | None:
+    """Under the project or the working directory, and not one of them, so deleting it can't take the whole thing.
+
+    None for one of them or a folder holding one, wherever that is: a project made in a temp folder is still the whole project.
+    """
     roots = [os.path.realpath(root) for root in (event.get("cwd"), os.environ.get("CLAUDE_PROJECT_DIR")) if root]
     real = os.path.realpath(path)
-    return real not in roots and in_project(path, event)
+    holds = real.rstrip(os.sep) + os.sep
+    return None if any(root == real or root.startswith(holds) for root in roots) else in_project(path, event)
 
 
 def project_path(word: str, event: dict) -> bool:

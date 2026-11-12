@@ -810,6 +810,9 @@ BOUNDARIES = (
     ("crypto", 1, False, r"hashlib\.|hmac\.|bcrypt|argon2|scrypt|cryptography\.|crypto\.(createHash|createCipher|randomBytes)|Cipher\.getInstance"),
 )
 BOUNDARY_NAMES = tuple(row[0] for row in BOUNDARIES)
+# What git looks for where the exact expression is slow in Linux's regex engine, which retries `open\([^)]*` from every `open(` of a long
+# line: over 30 s on one of 280,000. Each line found is still held to the exact expression below, so only the search is looser.
+_GIT_SEARCH = {"file-write": dict((row[0], row[3]) for row in BOUNDARIES)["file-write"].replace(r"open\([^)]*[\"'][rwax]?[wax+]b?t?[\"']", r"open\(", 1)}
 
 
 def _means_it_here(name: str, hit: Hit, match: re.Match, language: str | None) -> bool:
@@ -833,7 +836,7 @@ def boundaries(root: Path, targets: list[str] | None, kind: str | None, include_
     weights = {name: weight for name, weight, _, _ in BOUNDARIES}
     allowed = {name: ("code", "string") if strings_count else ("code",) for name, _, strings_count, _ in BOUNDARIES}
     wanted = [row for row in BOUNDARIES if not kind or row[0] == kind]
-    rows, stopped = hits_by_file([(name, pattern, *search(root, pattern, targets)) for name, _, _, pattern in wanted])
+    rows, stopped = hits_by_file([(name, pattern, *search(root, _GIT_SEARCH.get(name, pattern), targets)) for name, _, _, pattern in wanted])
     for hit, name, compiled in rows:
         if is_test_path(hit.path) and not include_tests:
             continue

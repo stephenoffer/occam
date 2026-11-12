@@ -32,8 +32,10 @@ jobs:
 
   test:
     name: test (ubuntu, python ${{ matrix.python }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Not ubuntu-latest: from 26.04, setup-python has no 3.9, the floor below.
+    runs-on: ubuntu-24.04
+    # The suite took 64% of 45 minutes here on 2026-11-12, so a full run needs about 70.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +61,7 @@ jobs:
     # repository runs this on request only. Going public turns it on with no edit here.
     if: ${{ !github.event.repository.private || github.event_name == 'workflow_dispatch' }}
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -5,7 +5,7 @@
 # The same promises as occam.py: read-only, runs nothing from the repository, bounded output, and
 # exit 2 when nothing could be checked. Bash 3.2 and both GNU and BSD tools, so stock macOS works.
 # It's far past the length occam-shell asks about. It stays shell because it's for where nothing else is.
-# shellcheck disable=SC2329  # every function here is called; shellcheck 0.11 doesn't see calls made from inside other functions
+# shellcheck disable=SC2317,SC2329  # every function here is called; shellcheck doesn't see calls made from inside other functions (SC2317 before 0.11, SC2329 from it)
 
 set -euo pipefail
 export LC_ALL=C

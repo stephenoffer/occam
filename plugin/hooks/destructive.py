@@ -57,7 +57,12 @@ def deletes_too_much(word: str, inside_project=lambda _: False) -> bool:
     path = os.path.normpath(word)
     if word in ("*", "./*", "../*", "/*") or path in (".", "..", "/") or path.startswith("../"):
         return True
-    if not path.startswith("/") or path.startswith(("/tmp/", "/private/tmp/", "/var/folders/")) or inside_project(path):
+    if not path.startswith("/"):
+        return False
+    place = inside_project(path)
+    if place is None:  # the project or a folder holding it, even in a temp folder
+        return True
+    if place or path.startswith(("/tmp/", "/private/tmp/", "/var/folders/")):
         return False
     return not is_generated(path)
 

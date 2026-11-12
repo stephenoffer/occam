@@ -3,7 +3,12 @@
 import subprocess
 import time
 
+import pytest
+
 import grade_workspaces as grade
+
+# Grading goes through run_hidden, which refuses to run without macOS's sandbox-exec, so a job without it leaves these out (`-m "not sandbox"`).
+needs_sandbox = pytest.mark.sandbox
 
 MARKER = "31337.0"
 
@@ -22,6 +27,7 @@ def make_case(tmp_path, body):
     return case, workspace
 
 
+@needs_sandbox
 def test_a_child_left_running_by_a_check_does_not_outlive_grading(tmp_path):
     case, workspace = make_case(tmp_path, f"""
 import subprocess
@@ -36,6 +42,7 @@ def test_starts_a_child_and_abandons_it():
     assert stray_processes() == []
 
 
+@needs_sandbox
 def test_timeout_also_kills_children(tmp_path):
     case, workspace = make_case(tmp_path, f"""
 import subprocess
