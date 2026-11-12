@@ -19,7 +19,9 @@ _SCANS_FOR = {"grep", "rg", "ag"}
 FIXTURE_FOLDER = re.compile(r"(?:^|/)(?:tests?|testdata|fixtures|__fixtures__|node_modules|vendor|examples?)/")
 # Files that hold credentials. Reading one puts the values in the conversation and its logs, so a person confirms it, by the owner's decision of 2026-11-07.
 SECRET_FILE = re.compile(r"(^|/)(\.env(?![^/]*(?:example|sample|template|dist))(\.[^/]+|[*?])?|\.envrc|\.netrc|\.pypirc|\.pgpass|\.git-credentials|\.kube/config|id_rsa|id_ed25519"
-                         r"|credentials(\.json)?|\.aws/credentials|[^/]*(?:private|secret)[^/]*\.(?:pem|key)|service[-_]account[^/]*\.json)$")
+                         r"|credentials(\.json)?|\.aws/credentials|[^/]*(?:private|secret)[^/]*\.(?:pem|key)|service[-_]account[^/]*\.json"
+                         # Plain `.key` is also a Keynote deck and plain `.pem` usually a public certificate, so only key-named ones.
+                         r"|\.npmrc|\.docker/config\.json|id_ecdsa|id_dsa|secrets?\.(?:ya?ml|json|toml)|[^/]*(?:server|tls|ssl|client|priv)[^/]*\.key|[^/]*key[^/]*\.pem)$")
 _PRINTS_A_FILE = {"cat", "less", "more", "head", "tail", "grep", "rg", "ag", "bat", "xxd", "strings", "nl", "od", "jq", "sed", "awk", "Get-Content", "get-content", "gc", "type"}
 _COUNTS_ONLY = {"--quiet", "--count", "--files-with-matches", "--files-without-match"}  # grep's and rg's, which print no lines
 

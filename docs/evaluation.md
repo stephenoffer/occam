@@ -25,7 +25,7 @@ Before this work, occam was a careful skill for making a change and reviewing a 
 | Agent-written defects | Described in prose only | Deterministic rules. The plugin mentions what an edit just introduced, and sends the agent back at stop |
 | Goal-based work and plan drift | A sentence about a table in working notes | `goal`: requirements with checks, constraints, scope, stale evidence, drift |
 | Other agents | Guidance only | `coord` |
-| Codex | Skills only, no tools or hooks | The same tools, plus plugin manifest and hooks, written to the docs and **not run under Codex** |
+| Codex | Skills only, no tools or hooks | The same tools, plus plugin manifest and hooks, written to the docs and **run once under Codex, hooks only** (see [evidence](evidence.md)) |
 | Docs | The README and results the docs pointed at were missing when this review began. Another session has since restored them | Present |
 
 The earlier evaluation still stands, and it applies here: the full plugin cost 57% more on the holdout and tied on acceptance. Nothing below shows these additions make agents' output better. It shows the tools work, and how far they can be trusted.
@@ -311,7 +311,7 @@ Two known problems are left. With a blanked filter that isn't marked required, `
 
 - **Whether changes after the second large test help.** No agent has run them. A fair retest needs a new fixture, and enough runs to detect a small gap.
 - **Very large code.** The largest agent test is 28,070 lines. Nothing tests an agent with these tools on code too large to split among readers.
-- **Codex.** The manifest, hooks and marketplace entry follow the docs, and were tested by feeding the script documented events. Codex wasn't available here. Whether skills in `.agents/skills` can reach sibling `scripts/` on every host hasn't been observed.
+- **Codex.** The manifest, hooks and marketplace entry follow the docs, and were tested by feeding the script documented events, then the hooks ran once under Codex on 2026-11-11 ([evidence](evidence.md)). Whether skills in `.agents/skills` can reach sibling `scripts/` on every host hasn't been observed.
 - **Audits of real AI-generated repositories.** The scanner has run on 15, with leads judged by a model. One agent has audited one, without running its tests, most of the hooks or a comparison. No person has reviewed any of this.
 - **Languages other than Python.** They get text and brace-level rules, with no parser, so treat them as weak. Real code was scanned for false positives: npm's own source (14,000 lines of JavaScript), 40 Rust crates (278,000 lines) and 3 Go modules (32,000 lines). That found and fixed whole classes of false alarm, such as doc-comment examples reported as dead code, a crate's own name reported as phantom, and Go's `interface{}` return type read as an empty body. Java, Kotlin, C, C++, C#, Ruby, PHP and Swift have only the rule tests.
 - **Third-party tool entries.** `tools` lists analyzers from their documentation. Only ruff and mypy are installed here, so most invocations haven't been run.

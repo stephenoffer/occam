@@ -104,11 +104,30 @@ def same_place(row: dict, item: dict) -> bool:
         near = abs(int(row.get("line")) - int(item.get("line"))) <= 15
     except (TypeError, ValueError):
         return False
-    return near and bool(item.get("file")) and str(row.get("file") or "").endswith(item["file"])
+    where = str(row.get("file") or "")
+    return near and bool(item.get("file")) and (where == item["file"] or where.endswith("/" + item["file"]))  # not another folder's file of that name
 
 
 def raised(rows: list[dict], item: dict) -> bool:
     return any(row.get("status") == "decision" and on_topic(row, item) for row in rows)
+
+
+def raised_once(rows: list[dict], items: list[dict]) -> set[str]:
+    """The items a report raised as decisions, each row counting for one item at most, so one row in a package can't be credit for
+    every decision there. Rows are assigned so that as many items as possible get one."""
+    decisions = [index for index, row in enumerate(rows) if row.get("status") == "decision"]
+    fits = {item["id"]: [index for index in decisions if on_topic(rows[index], item)] for item in items}
+    taken: dict[int, str] = {}  # row -> item, grown by augmenting paths, so the most items get a row of their own
+
+    def place(item_id: str, seen: set[int]) -> bool:
+        for index in fits[item_id]:
+            if index not in seen:
+                seen.add(index)
+                if index not in taken or place(taken[index], seen):
+                    taken[index] = item_id
+                    return True
+        return False
+    return {item["id"] for item in items if place(item["id"], set())}
 
 
 def claimed_fixed(rows: list[dict], item: dict) -> bool:
@@ -170,7 +189,8 @@ def score_run(fixture: Path, workspace: Path, baseline: set[str], timeout: int =
         decisions = [item for item in items if item["class"] == "decision"]
         changed = {item["id"] for item in decisions if not passes(item, outcome)}  # a decision's check pins today's behavior
         flagged = {item["id"] for item in decisions if claimed_fixed(rows, item)}
-        decided = [item["id"] for item in decisions if raised(rows, item) or (item["id"] in changed and item["id"] in flagged)]
+        raised_ids = raised_once(rows, decisions)
+        decided = [item["id"] for item in decisions if item["id"] in raised_ids or (item["id"] in changed and item["id"] in flagged)]
         unflagged = sorted(changed - set(decided))
         preserved = {_test_name(decoy["check"]) for decoy in decoys}
         broken = {name: (case["text"], case["log"]) for name, case in hidden["cases"].items() if case["name"] in preserved and case["outcome"] == "failed"}

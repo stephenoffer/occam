@@ -31,3 +31,16 @@ def test_a_report_citing_everything_is_visible_in_the_decoy_count():
     decoys = score_audit.json.loads((score_audit.FIXTURE / "DECOYS.json").read_text())
     report = "\n".join(f"{item['file']}:{item['line']} looks bad" for item in decoys)
     assert score_audit.score_report(report)["decoys_flagged"].split("/")[0] == str(len(decoys))
+
+
+def test_one_mention_locates_one_defect_and_a_bare_name_must_be_unambiguous():
+    answers = [{"file": "src/a.py", "line": 10, "severity": "high", "detectable_statically": True},
+               {"file": "src/a.py", "line": 12, "severity": "low", "detectable_statically": True},
+               {"file": "lib/util.py", "line": 5, "severity": "medium", "detectable_statically": False},
+               {"file": "tools/util.py", "line": 5, "severity": "medium", "detectable_statically": False}]
+    one = score_audit.score_report("src/a.py:11 is wrong\n", answers, [])
+    assert one["located"] == 1
+    both = score_audit.score_report("src/a.py:10 and src/a.py:12\n", answers, [])
+    assert both["located"] == 2
+    assert score_audit.score_report("util.py:5 is wrong\n", answers, [])["located"] == 0
+    assert score_audit.score_report("a.py:10 is wrong\n", answers, [])["located"] == 1

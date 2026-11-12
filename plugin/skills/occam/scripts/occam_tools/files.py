@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -302,17 +303,19 @@ def _is_writable(folder: Path) -> bool:
         return False
 
 
-def state_dir(root: Path) -> Path:
+def state_dir(root: Path, shared: bool = False) -> Path:
     """Local state, kept outside the repository so nothing dirties the tree and a repository can't plant commands or verdicts here.
 
-    Keyed on the git common directory when there is one, so worktrees of one repository share it.
+    Each worktree has its own, keyed on its git folder, so a goal, baseline or golden recording in one isn't another's. `shared` is the
+    repository's, keyed on the git common directory, for what worktrees coordinate on: claims. In the main checkout the two are one
+    folder, as before. OCCAM_STATE_DIR is where these folders go, not a folder every repository shares.
     """
     override = os.environ.get("OCCAM_STATE_DIR")
-    if override and _is_writable(Path(override)):
-        return Path(override)
-    common = run_git(root, "rev-parse", "--git-common-dir")
-    identity = (Path(root) / common.strip()).resolve() if common else Path(root).resolve()
+    folder = run_git(root, "rev-parse", "--git-common-dir" if shared else "--git-dir")
+    identity = (Path(root) / folder.strip()).resolve() if folder else Path(root).resolve()
     digest = hashlib.sha1(str(identity).encode()).hexdigest()[:16]
+    if override and _is_writable(Path(override) / digest):
+        return Path(override) / digest
     cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     candidates = [cache_home / "occam" / digest, Path(tempfile.gettempdir()) / f"occam-{getattr(os, 'getuid', lambda: 'user')()}" / digest]
     for candidate in candidates:
@@ -330,6 +333,29 @@ def load_config(root: Path) -> dict:
         return parse_config(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def config_warnings(root: Path, known_rules) -> list[str]:
+    """What load_config dropped from .occam.json, which would otherwise quietly mean scanning with the defaults or disabling nothing."""
+    path = root / CONFIG_NAME
+    if not path.is_file() or path.is_symlink():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8").lstrip("\ufeff"))
+    except (OSError, ValueError) as error:
+        return [f"{CONFIG_NAME} isn't valid JSON ({error}), so none of it applies."]
+    if not isinstance(raw, dict):
+        return [f"{CONFIG_NAME} isn't a JSON object, so none of it applies."]
+    warnings = [f"{CONFIG_NAME}: \"{key}\" isn't a list of strings, so it's ignored." for key in ("ignore", "disable") if key in raw and not isinstance(raw[key], list)]
+    warnings += [f"{CONFIG_NAME}: \"{key}\" holds something other than strings, which is ignored." for key in ("ignore", "disable")
+                 if isinstance(raw.get(key), list) and not all(isinstance(item, str) for item in raw[key])]
+    unknown_keys = sorted(set(raw) - {"ignore", "disable"})
+    if unknown_keys:
+        warnings.append(f"{CONFIG_NAME} has keys occam doesn't read, so they do nothing: {', '.join(unknown_keys[:5])}. It reads \"ignore\" and \"disable\".")
+    unknown = [rule for rule in raw.get("disable") or [] if isinstance(rule, str) and rule not in known_rules] if isinstance(raw.get("disable"), list) else []
+    if unknown:
+        warnings.append(f"{CONFIG_NAME} disables rules that don't exist, so they disable nothing: {', '.join(unknown[:5])}. `occam rules` lists them.")
+    return warnings
 
 
 def parse_config(text: str | None) -> dict:
@@ -364,30 +390,73 @@ def _stays_inside(name: str) -> bool:
 
 
 def marked_unchanged(root: Path) -> list[str]:
-    """Tracked files git has been told not to look at, so an edit to one shows up in neither status nor diff."""
+    """Tracked files git has been told not to look at, so an edit to one shows up in neither status nor diff. In a sparse checkout,
+    skip-worktree marks the files left out of it, which aren't there to edit, so only assume-unchanged counts."""
     listed = run_git(root, "ls-files", "-v", "-z") or ""
-    return [entry[2:] for entry in listed.split("\0") if entry[:2] == "S " or (entry[:1].islower() and entry[1:2] == " ")]
+    sparse = (run_git(root, "config", "--bool", "core.sparseCheckout") or "").strip() == "true"
+    return [entry[2:] for entry in listed.split("\0") if (entry[:2] == "S " and not sparse) or (entry[:1].islower() and entry[1:2] == " ")]
 
 
-def run_bounded(command: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Bytes in, and at the time limit everything it started stops too. `subprocess.run` kills only the direct child, so a grandchild could go on writing to the project."""
-    process = subprocess.Popen(command, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, start_new_session=hasattr(os, "killpg"))
+def run_bounded(command: list[str], cwd: Path, timeout: int, env: dict | None = None, input: bytes | None = None, keep: int = 8 << 20) -> subprocess.CompletedProcess:
+    """Bytes in, and at the time limit everything it started stops too. `subprocess.run` kills only the direct child, so a grandchild could go on writing to the project.
+
+    Each stream keeps at most `keep` bytes, its start and its end, around a line saying how much was cut, so endless output can't fill memory.
+    It's listed in `_running` meanwhile, where a SIGTERM to occam finds its process group.
+    """
+    process = subprocess.Popen(command, cwd=str(cwd), stdin=subprocess.PIPE if input is not None else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                               start_new_session=hasattr(os, "killpg"))
+    _running.add(process)  # at once, so a SIGTERM from here on finds it
+    captured: dict[str, bytes] = {}
+    cut_any = [False]
+
+    def drain(name: str, pipe) -> None:
+        head, tail, total = bytearray(), bytearray(), 0
+        for chunk in iter(lambda: os.read(pipe.fileno(), 1 << 16), b""):
+            total += len(chunk)
+            room = keep // 2 - len(head)
+            head += chunk[:max(room, 0)]
+            tail += chunk[max(room, 0):]
+            del tail[:max(len(tail) - keep // 2, 0)]
+        pipe.close()  # only this thread reads it
+        cut = total - len(head) - len(tail)
+        cut_any[0] = cut_any[0] or bool(cut)
+        captured[name] = bytes(head) + (f"\n[occam cut {cut:,} bytes here, keeping the first and last {keep // 2:,}]\n".encode() if cut else b"") + bytes(tail)
+
+    def feed() -> None:
+        try:
+            with process.stdin:
+                process.stdin.write(input)
+        except OSError:  # it stopped reading, which is its own business
+            pass
+
+    workers = [threading.Thread(target=drain, args=(name, getattr(process, name)), daemon=True) for name in ("stdout", "stderr")]
+    workers += [threading.Thread(target=feed, daemon=True)] if input is not None else []
+    finished = False
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        if hasattr(os, "killpg"):
+        deadline = time.monotonic() + timeout
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        if any(worker.is_alive() for worker in workers):
+            raise subprocess.TimeoutExpired(command, timeout)
+        process.wait(max(0.0, deadline - time.monotonic()))
+        finished = True
+    finally:
+        _running.discard(process)
+        if hasattr(os, "killpg"):  # whatever it left running in the background goes too, finished or not, so it can't touch the next run
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except OSError:
                 pass
-        process.kill()
-        try:
-            process.communicate(timeout=2)
-        except subprocess.TimeoutExpired:  # something in its own session still holds the pipe, and it won't stop for this
-            for pipe in (process.stdout, process.stderr):
-                pipe.close()
-        raise
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        if not finished:  # out of time or interrupted
+            process.kill()
+            process.wait()
+            for worker in workers:
+                worker.join(2)  # one that's still reading has a pipe held open by something in a session of its own, which this can't stop, so it's left behind
+    done = subprocess.CompletedProcess(command, process.returncode, captured["stdout"], captured["stderr"])
+    done.cut = cut_any[0]  # the middle of a stream was dropped, so it isn't the whole output
+    return done
 
 
 def _through_a_link(root: Path, name: str, linked: dict[str, bool]) -> bool:
@@ -403,12 +472,15 @@ class OutsideProject(ValueError):
     """A named path isn't in this project. Dropping it silently would look like a clean result."""
 
 
-def list_files(root: Path, targets: list[str] | None = None, config: dict | None = None) -> list[str]:
-    """Project files to scan, relative to root. Vendored and generated files are left out unless named, since naming one is a request to read it."""
+def list_files(root: Path, targets: list[str] | None = None, config: dict | None = None, left_out: list | None = None) -> list[str]:
+    """Project files to scan, relative to root. Vendored and generated files are left out unless named, since naming one is a request to read
+    it, and `left_out` gets those, so a report can say how many it didn't read."""
     ignore = (config or {}).get("ignore", [])
     names = tracked_files(root)
     if names is None:
         names = _walk_files(root)
+    if left_out is not None and (not targets or "." in [str(Path(target)) for target in targets]):
+        left_out += [name for name in names if VENDORED.search(name)]  # folders; generated names such as lockfiles are said elsewhere
     if not targets:
         return [name for name in names if not _skip_path(name, ignore)]
     prefixes = []
@@ -696,11 +768,11 @@ def is_plain_file(path: Path) -> bool:
         return False
 
 
-def read_text(path: Path) -> str | None:
+def read_text(path: Path, limit: int = MAX_FILE_BYTES) -> str | None:
     if not is_plain_file(path):
         return None
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
+        if path.stat().st_size > limit:
             return None
         raw = path.read_bytes()
     except OSError:

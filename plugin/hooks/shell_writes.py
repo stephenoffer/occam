@@ -14,10 +14,11 @@ from typing import Any, NamedTuple
 import occam_evidence as evidence
 import scan_notes
 from destructive import MAX_MAKEFILE_BYTES, is_generated, make_deletes_through_unset, names_production, production_target, restore_reason, set_in_environment
-from occam_commands import (INSTALLERS, RUNS_A_FILE, golden_command, head, is_check, nbconvert_target, option_value, rewrites_in_place, run_by, settings_of,
+from occam_commands import (INSTALLERS, RUNS_A_FILE, golden_command, head, is_check, nbconvert_target, option_value, output_text, rewrites_in_place, run_by, settings_of,
                              unquote, writes_project_files)
 from printed_secrets import SECRET_FILE, secret_printed
 from python_reading import python_prints_a_secret_file, python_runs_a_download, python_writes
+from session_state import Session, record
 from shell_reading import expand_variables, git_commands, home_expanded, parse_shell, read_steps, without_heredoc_bodies
 
 TEMP_VARIABLES = {"TMPDIR", "TMP", "TEMP"}
@@ -738,3 +739,52 @@ def runs_unchecked_downloads(command: str, event: dict, entries: list) -> str | 
     """The owner's ask for running downloaded code (2026-11-07), across calls: a file an earlier call fetched, an image build running a new
     `curl | sh` step, and a build wrapper this work pointed at another host. Each is asked on every attempt, as the other asks are."""
     return runs_an_earlier_download(command, event, entries) or wrapper_moved(command, event) or build_runs_a_new_download(command, event)
+
+
+# What a check prints when it ran: a count, or a checker's own summary. Not a bare "ok", which `; echo ok` prints whether or not the
+# check ran. `go vet` and `tsc` print nothing when they pass, which is fine when nothing could have skipped them.
+_RAN = re.compile(r"\b(?:passed|passing|all checks passed|no (?:issues|errors|problems) found|success: no issues|0 (?:errors|failures|problems))\b", re.I)
+# What an `&&` chain is built to stop at: a test that's expected to fail sometimes. `cd x && pytest` or `source env && pytest` is setup,
+# which normally succeeds, so what follows it ran.
+_GUARDS = {"test", "[", "[[", "false", "command", "which", "type", "hash"}
+
+
+def _guards(words: list[str]) -> bool:
+    name = os.path.basename(words[0]) if words else ""
+    return name in _GUARDS or (name in ("grep", "egrep", "fgrep", "rg") and any(word in ("-q", "--quiet", "-s") for word in words)) or (
+        name == "git" and any(word in ("--quiet", "-q", "--exit-code") for word in words))
+
+
+def may_have_skipped(step: Any, steps: list, event: dict) -> bool:
+    """A check in an if, case or loop body or a function, after `||`, or after a test in an `&&` chain that something else runs after,
+    may not have run however the command ended. Unless its output shows it did, it isn't evidence: `if false; then pytest; fi` exits 0."""
+    output = output_text(event.get("tool_response")) + "\n" + str(event.get("error") or "")
+    if evidence.shows_a_count(output) or _RAN.search(output[-8000:]):
+        return False
+    if step.branch or step.joined == "||":
+        return True
+    index = next(index for index, each in enumerate(steps) if each is step)
+    return step.joined == "&&" and index > 0 and _guards(steps[index - 1].words) and any(each.joined not in ("&&", "|") for each in steps[index + 1:])
+
+
+def _state_of(event: dict, path: str) -> list | None:
+    try:
+        info = os.stat(os.path.join(event.get("cwd") or "", path))
+    except OSError:
+        return None
+    return [info.st_size, info.st_mtime_ns]
+
+
+def note_targets(event: dict, edits: list[str]) -> None:
+    """Before a command runs, the state of the files it may write. Exiting nonzero undoes nothing, so `printf x > app.py; false`
+    has changed app.py, and comparing afterwards shows which writes happened."""
+    if event.get("tool_use_id") and any(edits):
+        record(event, kind="before_shell", id=event["tool_use_id"], files={path: _state_of(event, path) for path in edits if path})
+
+
+def written_anyway(event: dict, paths: list[str]) -> list[str]:
+    """Of the paths a failed command may have written, the ones that changed while it ran. Without a note from before, none."""
+    before = next((entry["files"] for entry in reversed(Session(event).turn) if entry.get("kind") == "before_shell" and entry.get("id") == event.get("tool_use_id")), None)
+    if not event.get("tool_use_id") or not isinstance(before, dict):
+        return []
+    return [path for path in paths if path in before and _state_of(event, path) != before[path]]

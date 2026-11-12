@@ -460,7 +460,7 @@ def functions(root: Path, targets: list[str] | None, sort: str, include_tests: b
     """The biggest and most tangled functions, by what the scanner already read. The cache makes this cheap after any scan."""
     files = [path for path in selected_files(root, targets) if include_tests or not is_test_path(path)]
     try:
-        cache = Cache(filesystem.state_dir(root))
+        cache = Cache(filesystem.state_dir(root, shared=True))
     except OSError:
         cache = Cache(None)
     records = _analyze_all(root, files, cache, None, light=True)
@@ -518,14 +518,24 @@ def render_functions(data: dict) -> str:
 # ---------------------------------------------------------------- public surface
 
 def _gone_params(old: dict, new: dict) -> list[str]:
-    kept = {p["name"] for p in new["params"]}
-    gone = [p["name"] for p in old["params"] if p["name"] not in kept]
-    return [f"parameter removed or renamed: {', '.join(gone)}"] if gone and not new["double_star"] else []
+    """A name no longer there. `**kwargs` still takes it by keyword and `*args` by position, and a positional-only one is gone only when its place is."""
+    kept, places = {p["name"] for p in new["params"]}, len(_positional(new))
+
+    def lost(index: int, param: dict) -> bool:
+        if param["kind"] == "positional-only":
+            return index >= places and not new["star"]
+        return not new["double_star"] or (param["kind"] == "positional" and not new["star"])
+
+    gone = [p["name"] for index, p in enumerate(old["params"]) if p["name"] not in kept and lost(index, p)]
+    return [f"parameter removed or renamed: {', '.join(gone)}"] if gone else []
 
 
 def _new_required(old: dict, new: dict) -> list[str]:
-    before = {p["name"] for p in old["params"]}
-    added = [p["name"] for p in new["params"] if p["required"] and p["name"] not in before]
+    """A required one no caller passes yet. A positional-only one in a place the old one held is that one renamed."""
+    before, places = {p["name"] for p in old["params"]}, len(_positional(old))
+    old_kinds = [p["kind"] for p in old["params"]]
+    added = [p["name"] for index, p in enumerate(new["params"]) if p["required"] and p["name"] not in before and not (p["kind"] == "positional-only" and index < places)
+             and not (index < len(old_kinds) and old_kinds[index] == "positional-only")]  # in a slot no caller could name: that one, renamed
     return [f"new required parameter: {', '.join(added)}"] if added else []
 
 
@@ -543,7 +553,7 @@ def _changed_defaults(old: dict, new: dict) -> list[str]:
     for param in old.get("params") or []:
         before, after = param.get("default"), now.get(param["name"])
         try:
-            differs = before is not None and after is not None and ast.literal_eval(before) != ast.literal_eval(after)
+            differs = before is not None and after is not None and not _same_literal(ast.literal_eval(before), ast.literal_eval(after))
         except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
             continue
         if differs:
@@ -551,8 +561,19 @@ def _changed_defaults(old: dict, new: dict) -> list[str]:
     return changed
 
 
+def _same_literal(before: object, after: object) -> bool:
+    """Equal, with a bool apart from the number it equals: `True == 1`, but code that checks `is True` or prints it can tell."""
+    if isinstance(before, bool) or isinstance(after, bool):
+        return type(before) is type(after) and before == after
+    if isinstance(before, (list, tuple)) and type(before) is type(after):
+        return len(before) == len(after) and all(map(_same_literal, before, after))
+    if isinstance(before, dict) and isinstance(after, dict):
+        return before.keys() == after.keys() and all(_same_literal(value, after[key]) for key, value in before.items())
+    return before == after
+
+
 def _positional(entry: dict) -> list[str]:
-    return [p["name"] for p in entry["params"] if p["kind"] == "positional"]
+    return [p["name"] for p in entry["params"] if p["kind"] != "keyword"]
 
 
 def _reordered(old: dict, new: dict) -> list[str]:
@@ -560,22 +581,73 @@ def _reordered(old: dict, new: dict) -> list[str]:
     return ["positional parameters reordered"] if [n for n in before if n in after] != [n for n in after if n in before] else []
 
 
+def _inserted(old: dict, new: dict) -> list[str]:
+    """A new parameter ahead of ones a caller passes by position, which then each get the argument meant for the one before."""
+    before, after = _positional(old), _positional(new)
+    moved = [after.index(name) for index, name in enumerate(before) if name in after and after.index(name) > index]
+    added = [name for name in after[:max(moved, default=0)] if name not in before]
+    return [f"positional parameter inserted before existing ones: {', '.join(added)}"] if added else []
+
+
 def _made_keyword_only(old: dict, new: dict) -> list[str]:
     before = _positional(old)
     return ["positional parameter became keyword-only"] if any(p["kind"] == "keyword" and p["name"] in before for p in new["params"]) else []
+
+
+def _made_positional_only(old: dict, new: dict) -> list[str]:
+    named = {p["name"] for p in old["params"] if p["kind"] != "positional-only"}
+    moved = [p["name"] for p in new["params"] if p["kind"] == "positional-only" and p["name"] in named]
+    return [f"parameter became positional-only: {', '.join(moved)}"] if moved else []
 
 
 def _lost_star_args(old: dict, new: dict) -> list[str]:
     return [*(["*args removed"] if old["star"] and not new["star"] else []), *(["**kwargs removed"] if old["double_star"] and not new["double_star"] else [])]
 
 
+def _kind(entry: dict) -> str:
+    return entry.get("descriptor") or {"value": "variable"}.get(entry["shape"], entry["shape"])
+
+
+def _kind_changed(old: dict, new: dict) -> list[str]:
+    """Python's class, function, method by descriptor, or plain value. One read from a name or a call could be any of them, so it's left alone."""
+    return [f"kind changed: {_kind(old)} → {_kind(new)}"] if old.get("shape") and new.get("shape") and _kind(old) != _kind(new) else []
+
+
+def _called_differently(old: dict, new: dict) -> list[str]:
+    reasons = []
+    for trait, became, stopped in (("async", "became async", "no longer async"), ("generator", "became a generator", "no longer a generator")):
+        if trait in old and trait in new and old[trait] != new[trait]:
+            reasons.append(became if new[trait] else stopped)
+    return reasons
+
+
+def _decorators_changed(old: dict, new: dict) -> list[str]:
+    if "decorators" not in old or "decorators" not in new:
+        return []
+    return ([f"decorator added: {name}, may change how it's called" for name in new["decorators"] if name not in old["decorators"]]
+            + [f"decorator removed: {name}, may change how it's called" for name in old["decorators"] if name not in new["decorators"]])
+
+
+def _bases_changed(old: dict, new: dict) -> list[str]:
+    return [f"base classes changed: {old['bases'] or '()'} → {new['bases'] or '()'}"] if "bases" in old and "bases" in new and old["bases"] != new["bases"] else []
+
+
+def _lost_accessors(old: dict, new: dict) -> list[str]:
+    return [f"property {name} removed" for name in old.get("accessors", []) if "accessors" in new and name not in new["accessors"]]
+
+
 def _breaking_reasons(old: dict, new: dict) -> list[str]:
     """What about a changed signature can break a caller. Without parsed parameters, all that can be said is that the text changed."""
+    kind = _kind_changed(old, new)
+    if kind and old["shape"] != new["shape"]:
+        return kind  # a class's parameters and a function's don't compare
+    reasons = kind + [reason for check in (_called_differently, _decorators_changed, _bases_changed, _lost_accessors) for reason in check(old, new)]
     if "params" not in old or "params" not in new:
         before, after = _squeezed(_shape(old)), _squeezed(_shape(new))
         read_whole = all(text.count("(") == text.count(")") for text in (before, after))  # a signature over several lines is read as its first
-        return ["signature text changed"] if read_whole and before != after else []
-    return [reason for check in (_gone_params, _new_required, _lost_defaults, _reordered, _made_keyword_only, _lost_star_args) for reason in check(old, new)]
+        return reasons + (["signature text changed"] if read_whole and before != after else [])
+    checks = (_gone_params, _new_required, _lost_defaults, _reordered, _inserted, _made_keyword_only, _made_positional_only, _lost_star_args)
+    return reasons + [reason for check in checks for reason in check(old, new)]
 
 
 def api(root: Path, targets: list[str] | None, base: str | None, top: int) -> dict:
@@ -628,8 +700,9 @@ def api(root: Path, targets: list[str] | None, base: str | None, top: int) -> di
                 continue
             gone, fresh = _unmatched(_forms(item), _forms(after[name])), _unmatched(_forms(after[name]), _forms(item))
             for old, new in zip(gone, fresh):  # as many of each as can pair up changed, and what's left of one side went or came
-                signature.append({"where": f"{path}:{new['line']}", "name": name, "before": _shown(old), "after": _shown(new), "breaking": _breaking_reasons(old, new),
-                                  "defaults": _changed_defaults(old, new)})
+                breaking, defaults = _breaking_reasons(old, new), _changed_defaults(old, new)
+                if breaking or defaults or _shown(old) != _shown(new):  # a value that became a name read from elsewhere, say, shows nothing to compare
+                    signature.append({"where": f"{path}:{new['line']}", "name": name, "before": _shown(old), "after": _shown(new), "breaking": breaking, "defaults": defaults})
             removed += _removed_rows(path, name, gone[len(fresh):], overload=True)
             added += [{"where": f"{path}:{new['line']}", "name": name + (new.get("signature") or ""), "kind": new["kind"]} for new in fresh[len(gone):]]
         added += [{"where": f"{path}:{form['line']}", "name": name, "kind": form["kind"]} for name, item in after.items() if name not in before for form in _forms(item)]
@@ -655,13 +728,23 @@ def _forms(entry: dict) -> list[dict]:
     return [entry, *entry.get("overloads", [])]
 
 
+_TRAITS = ("shape", "descriptor", "async", "generator", "decorators", "accessors", "bases")
+
+
+def _identity(form: dict) -> str:
+    """What two forms share when they're the same. Python's text is rebuilt from its syntax, so it has no layout to remove and the space inside a string stays."""
+    if "shape" not in form:
+        return _squeezed(_shape(form))
+    return repr([_shape(form), *(form.get(trait) for trait in _TRAITS)])
+
+
 def _unmatched(forms: list[dict], others: list[dict]) -> list[dict]:
     """Those of `forms` with no equal among `others`, each matched once."""
-    left = Counter(_squeezed(_shape(form)) for form in others)
+    left = Counter(_identity(form) for form in others)
     found = []
     for form in forms:
-        if left[_squeezed(_shape(form))] > 0:
-            left[_squeezed(_shape(form))] -= 1
+        if left[_identity(form)] > 0:
+            left[_identity(form)] -= 1
         else:
             found.append(form)
     return found

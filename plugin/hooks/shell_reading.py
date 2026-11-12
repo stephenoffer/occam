@@ -380,6 +380,8 @@ class Step(NamedTuple):
     elsewhere: bool  # a `cd` before it certainly left the project
     folder: str  # where a `cd` went, relative to where the command started, or absolute. "" if unknown or unmoved
     code: str | None  # the Python it runs from the command line, if it does
+    branch: bool = False  # inside an if, case or loop body, so it may not have run however the command ended
+    joined: str = ""  # the operator before it: after `||` it ran only if what came before failed
 
 
 class _Reader:
@@ -399,6 +401,8 @@ class _Reader:
         self.outer: list[tuple[tuple[bool, str], bool, str]] = []
         self.fragile = False
         self.groups = 0  # inside if, for, a brace group or a function body, whether a `cd` runs or lasts can't be told
+        self.branches = 0  # inside an if, case or loop body or a function body, which may not run at all. A plain `{ ...; }` always runs
+        self.braces: list[bool] = []  # for each open `{`, whether it opened a function body
         self.before = ";"
         self.feed: str | None = None
         self.bodies: dict[str, deque] = {}
@@ -421,9 +425,13 @@ class _Reader:
                 self._read_substitutions(token)
                 if token == "{" and (not words or words[0] == "function"):
                     self.groups += 1
+                    body = bool(words) or tokens[max(0, index - 2):index] == ["(", ")"]  # `function f {` or `f() {`
+                    self.braces.append(body)
+                    self.branches += body
                     words = []
                 elif token == "}" and not words:
                     self.groups = max(0, self.groups - 1)
+                    self.branches = max(0, self.branches - (self.braces.pop() if self.braces else False))
                 else:
                     words.append(token)
                 index += 1
@@ -496,13 +504,15 @@ class _Reader:
             return
         given = stdin if stdin is not None else (self.feed if self.before == "|" else None)
         elsewhere, folder = self.places[-1]
-        self.steps.append(Step(words, targets, elsewhere, folder, inline_code(words, given) if words else None))
+        self.steps.append(Step(words, targets, elsewhere, folder, inline_code(words, given) if words else None, self.branches > 0, self.before))
         first = next((word for word in words if not re.match(r"^\w+=", word)), "")
         program = os.path.basename(unquote(first)).lstrip("\\")
         if program in BRANCH_OPENERS:
             self.groups += 1
+            self.branches += 1
         elif program in BRANCH_CLOSERS:
             self.groups = max(0, self.groups - 1)
+            self.branches = max(0, self.branches - 1)
         name, args = head(words)
         if program in ("cd", "pushd") and name == program and not self.groups and self.before in (";", "&&") and after not in ("|", "&", "||"):
             self._move(next((arg for arg in args if arg not in CD_OPTIONS), ""))

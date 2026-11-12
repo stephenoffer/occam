@@ -226,7 +226,10 @@ def test_the_ask_says_why_a_variable_delete_is_risky(agent):
 
 
 @pytest.mark.parametrize("name, asked", [(".env", True), ("config/.env.production", True), (".aws/credentials", True), ("keys/deploy-private.pem", True),
-                                         (".env.example", False), ("src/app.py", False), ("docs/credentials-howto.md", False)])
+                                         (".env.example", False), ("src/app.py", False), ("docs/credentials-howto.md", False),
+                                         (".npmrc", True), (".docker/config.json", True), ("deploy/secrets.yaml", True), (".ssh/id_ecdsa", True),
+                                         ("certs/server.key", True), ("certs/privkey.pem", True),
+                                         ("talks/deck.key", False), ("certs/cert.pem", False), ("deploy/secrets.example.yaml", False)])
 def test_reading_a_credential_file_is_asked_first(agent, name, asked):  # F263, the owner's decision
     said = agent.send("pre-tool", tool_name="Read", tool_input={"file_path": agent.path(name)})
     assert (decision(said) == "ask") is asked

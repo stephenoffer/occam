@@ -94,7 +94,7 @@ def test_commands_that_write_nothing_are_allowed_on_a_read_only_turn(agent, comm
     "papermill in.ipynb out.ipynb", "python -m unittest", "python -m pytest", "python -B -m pytest", "python manage.py test",
     "uv run python -m pytest", "uv run python script.py", "ruff check --fix .", "python cli.py --help", "./cli --help",
     "timeout 60 python -m pytest", "timeout 5m pytest -q", "nice -n 10 pytest", "pants test ::", "tach check", "mutmut run",
-    "psql -h localhost -c 'select 1'",
+    "psql -h localhost -d app_test -f tests/schema_checks.sql", "psql -c 'select count(*) from orders'", "make", "make test lint", "npm run build",
 ])
 def test_python_checks_are_recognized(agent, command):
     agent.prompt("Fix it")
@@ -109,6 +109,9 @@ def test_python_checks_are_recognized(agent, command):
     "coverage erase", "mkdocs serve", "hatch shell", "black .", "python -m black .", "uv run isort .", "ruff format .",
     "pytest --version", "pytest --collect-only -q", "python --version", "uv run python --version", "uvx ruff --help",
     "uv run echo hi", "ruff rule F401", "pytest --markers", "command -v pytest", "ruff format -", "ruff format --check .",
+    # Tidying, installing and formatting targets, a database ping and a no-op one-liner run none of the code.
+    "make clean", "make install", "make -C sub fmt", "npm run format", "yarn run clean", "psql -h localhost -c 'select 1'",
+    "mysql -e 'SELECT VERSION()'", "python3 -c pass", "python -c ''",
 ])
 def test_setup_formatting_and_information_are_not_checks(agent, command):
     agent.prompt("Fix it")
@@ -505,3 +508,62 @@ def test_a_command_with_tens_of_thousands_of_options_is_classified_quickly(words
     occam_commands.writes_project_files(name, words[1:])
     assert time.monotonic() - started < 1, "a rebuilt list per option makes this quadratic"
     assert name == "pytest"
+
+
+@pytest.mark.parametrize("command, output", [
+    ("if false; then pytest; fi", ""),
+    ("false && pytest; echo done", "done"),
+    ("check() { pytest; }", ""),
+    ("pytest --version || pytest", ""),
+    ("for f in $(ls tests); do pytest $f; done", ""),
+    ("test -d tests && pytest -q; echo ok", "ok"),  # what `echo` printed isn't the check's output
+    ("if [ -n \"$CI\" ]; then pytest -q; fi; echo 'build OK'", "build OK"),
+])
+def test_a_check_that_may_have_been_skipped_and_shows_nothing_isnt_one(agent, command, output):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit()
+    agent.bash(command, output=output)
+    assert "No check has run" in added(agent.stop())
+
+
+@pytest.mark.parametrize("command, output", [
+    ("if [ -d tests ]; then pytest -q; fi", "3 passed in 0.1s"),
+    ("false || ruff check .", "All checks passed!"),
+    ("cd sub && go vet ./...", ""),
+    ("pytest -q && echo ok", "3 passed in 0.1s\nok"),
+    ("{ go vet ./...; } 2>&1 | tee vet.log", ""),  # a brace group always runs
+    ("source .venv/bin/activate && python app.py; deactivate", "served"),  # setup before `&&` normally succeeds
+    ("cd web && npx tsc --noEmit; cd ..", ""),
+    ("psql -c 'select app.check_invariants()'", "t"),
+])
+def test_a_check_that_ran_still_counts(agent, command, output):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit()
+    agent.bash(command, output=output)
+    assert "No check has run" not in (added(agent.stop()) or "")
+
+
+def test_a_write_before_a_failure_still_needs_a_check(agent):
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit()
+    agent.bash("pytest -q", output="3 passed in 0.1s")
+    command = "printf broken > app.py; false"
+    agent.send("pre-tool", tool_name="Bash", tool_input={"command": command}, tool_use_id="t9")
+    (agent.project / "app.py").write_text("broken")
+    agent.send("post-failure", tool_name="Bash", tool_input={"command": command}, tool_use_id="t9", error="Exit code 1")
+    assert "No check has run" in added(agent.stop())
+
+
+def test_a_failed_command_that_wrote_nothing_isnt_an_edit(agent):
+    (agent.project / "app.py").write_text("x = 1\n")
+    agent.prompt("Fix it")
+    agent.load()
+    agent.edit()
+    agent.bash("pytest -q", output="3 passed in 0.1s")
+    command = "sed -i '' s/x/y/ missing.py app.py"
+    agent.send("pre-tool", tool_name="Bash", tool_input={"command": command}, tool_use_id="t8")
+    agent.send("post-failure", tool_name="Bash", tool_input={"command": command}, tool_use_id="t8", error="sed: missing.py: No such file")
+    assert "No check has run" not in (added(agent.stop()) or "")

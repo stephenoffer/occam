@@ -8,6 +8,7 @@ import json
 import multiprocessing
 import os
 import re
+import signal
 import sqlite3
 import sys
 import tempfile
@@ -36,7 +37,10 @@ LARGE_REPOSITORY_FILES = 50_000
 _BATCH_FILES = 1024
 _BATCH_BYTES = 6_000_000  # the limit is checked between batches, and analysis runs at very roughly 400 KB per CPU second
 _MAX_CACHE_BYTES = 2_000_000_000  # about 22 million lines. It can always be rebuilt, and nothing else ever shrinks it
-_CACHE_SCHEMA = f"{VERSION}-15-py{sys.version_info.major}.{sys.version_info.minor}"  # what parses, and what the standard library has, varies by interpreter
+# What parses, and what the standard library has, varies by interpreter. The digest of the analyzer's own source means an edited rule
+# can't read results cached before the edit, whether or not anyone remembered to bump the number.
+_CACHE_SCHEMA = f"{VERSION}-16-py{sys.version_info.major}.{sys.version_info.minor}-" + hashlib.sha1(b"".join(path.read_bytes() for path in sorted(Path(__file__).parent.glob("*.py")))).hexdigest()[:12]
+IDENTITY_VERSION = 2  # how finding ids are made; baselines record it, so a change of scheme is said, not taken for new findings
 _PARSER_LANGUAGES = {"python", "notebook"}
 
 
@@ -44,9 +48,16 @@ def _normal_line(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()[:240]
 
 
+def _identity_text(text: str) -> str:
+    """The text an id is made from: whitespace aside, all of it, with what's past 240 characters as a digest, so two lines or messages
+    that differ only late don't share an id, and ids of shorter ones are as they were."""
+    normal = re.sub(r"\s+", " ", text).strip()
+    return normal if len(normal) <= 240 else normal[:240] + "\0" + hashlib.sha1(normal.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def fingerprint(rule: str, path: str, evidence: str, ordinal: int = 0) -> str:
     """Stable across line moves: rule, file, and the text of the line."""
-    key = f"{rule}\0{path}\0{_normal_line(evidence)}\0{ordinal}"
+    key = f"{rule}\0{path}\0{_identity_text(evidence)}\0{ordinal}"
     return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
@@ -60,16 +71,36 @@ def _safe_evidence(rule: str, text_line: str) -> str:
 def _shape(rule: str, path: str, line: int, message: str | None, overrides: dict, text_line: str, cell: int | None = None) -> dict:
     definition = BY_ID[rule]
     finding = {"rule": rule, "path": path, "line": line, "message": message or definition.title, "evidence": _safe_evidence(rule, text_line)}
+    if len(_identity_text(text_line)) > 240 and not finding["evidence"].startswith("withheld:"):
+        finding["evidence_digest"] = _identity_text(text_line)[-16:]  # the shown evidence stops at 240 characters, and the id mustn't
     if cell is not None:
         finding["cell"] = cell
     finding.update({key: value for key, value in overrides.items() if key in ("severity", "confidence", "related", "owner")})
     return finding
 
 
+_COMMENT_OPENER = re.compile(r"(?:#|//|--|<!--|/\*|;)\s*occam:")
+
+
+def _directive_text(source: src.Source, line: int) -> str:
+    """Where an `occam:` directive on this line is: in a comment, not a string, so `s = "occam: ignore"` silences nothing. The comments
+    the language reading found come first; a comment syntax it doesn't model, such as Terraform's // or PHP's #, still counts once
+    quoted text is set aside, while a docstring line saying it doesn't."""
+    text = source.line_text(line)
+    if "occam:" not in text:
+        return ""
+    comments = " ".join(comment for at, comment in source.comments if at == line) if src.reads_comments(source.language) else ""
+    if "occam:" in comments:
+        return comments
+    unquoted = src.blank_one_line_strings(text)
+    opener = _COMMENT_OPENER.search(unquoted)
+    return unquoted[opener.start():] if opener else ""
+
+
 def _suppressed(source: src.Source, rule: str, line: int) -> bool:
     for candidate in (line, line - 1):
-        text = source.line_text(candidate)
-        if "occam:" in text:
+        text = _directive_text(source, candidate)
+        if text:
             match = _IGNORE.search(text)
             if match and (match.group(1) is None or rule in [part.strip() for part in match.group(1).split(",")]):
                 return True
@@ -90,8 +121,9 @@ def analyze_text(path: str, text: str, language: str | None = None) -> dict:
         elif rules_config.PROSE.search(path) and not is_test:
             _analyze_for_secrets(path, text, record, secrets=False)
         return record
-    if src.looks_generated(text):
+    if src.looks_generated(text, language):
         record["generated"] = True
+        _analyze_for_secrets(path, text, record)  # a key in a bundle is as live as one anywhere else
         return record
     source = src.load(path, text, language)
     raw: list[tuple] = list(rules_text.text_findings(source, is_test, is_script))
@@ -137,9 +169,32 @@ def _analyze_for_secrets(source_path: str, text: str, record: dict, secrets: boo
             record["findings"].append(_shape(rule, source_path, line, message, overrides, source.line_text(line)))
 
 
+# A definition line, in the languages scanned: what its name is, so a finding can say which definition holds it.
+_DEFINITION = re.compile(r"^(\s*)(?:(?:export|public|private|protected|internal|static|async|pub|default|abstract|final|override)\s+)*"
+                         r"(?:def|class|function|func|fn|sub|module|impl|interface|struct|trait|object)\s+(?:\([^)]{0,200}\)\s*)?([A-Za-z_$][\w$]*)")
+
+
+def _scopes(text: str) -> list[str]:
+    """For each line, the definitions it sits in, outermost first, by indentation: `Billing/charge`. One pass over the lines."""
+    names: list[str] = []
+    open_: list[tuple[int, str]] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped:
+            indent = len(line) - len(line.lstrip())
+            while open_ and open_[-1][0] >= indent:
+                open_.pop()
+        names.append("/".join(name for _, name in open_))
+        definition = _DEFINITION.match(line) if stripped else None
+        if definition:
+            open_.append((len(definition.group(1)), definition.group(2)))
+    return names
+
+
 def _finish_record(record: dict, source: src.Source, raw: list[tuple], cell_of=None) -> None:
     path = record["path"]
     seen = set()
+    scopes = _scopes(source.text)
     for rule, line, message, overrides in raw:
         if _suppressed(source, rule, line):
             record["suppressed"] = record.get("suppressed", 0) + 1
@@ -149,6 +204,7 @@ def _finish_record(record: dict, source: src.Source, raw: list[tuple], cell_of=N
             continue
         seen.add(key)
         finding = _shape(rule, path, line, message, overrides, source.line_text(line))
+        finding["scope"] = scopes[line - 1] if 1 <= line <= len(scopes) else ""
         if cell_of:
             cell, inner = cell_of(line)
             finding["cell"], finding["line"] = cell, inner
@@ -168,6 +224,7 @@ def _analyze_notebook(path: str, text: str, record: dict, is_test: bool, is_scri
         notebook = src.load_notebook(text)
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         record["parse_error"] = f"{type(error).__name__}: {error}"
+        record["findings"].append(_shape("unparseable", path, 1, f"This isn't a notebook that can be read ({record['parse_error'][:120]}), so nothing in it was checked.", {}, ""))
         return record
     source = src.load(path, notebook.python, "python")
     comment_lines = {line for line, _ in source.comments}
@@ -176,6 +233,9 @@ def _analyze_notebook(path: str, text: str, record: dict, is_test: bool, is_scri
     raw += found
     record["facts"] = facts
     record["parse_error"] = error
+    if error:  # at the cell that failed, from the line the parser names
+        at = re.search(r"\bline (\d+)", error)
+        raw.append(("unparseable", int(at.group(1)) if at else 1, f"A code cell doesn't parse on Python {sys.version_info.major}.{sys.version_info.minor}: {error[:120]}", {}))
 
     def cell_of(line: int) -> tuple[int, int]:
         if 1 <= line <= len(notebook.line_map):
@@ -355,12 +415,34 @@ class Cache:
             self.connection.close()
 
 
+NOTEBOOK_BYTES = 50_000_000  # only the code cells are read, and plots in the outputs make a notebook large
+FILE_SECONDS = 30  # one file taking longer is pathological input, and waiting on it would lose every other file's results at the hard stop
+
+
+class _FileTooSlow(BaseException):
+    """Not an Exception, so a rule's own `except Exception` can't swallow it."""
+
+
+def _too_slow(*_) -> None:
+    raise _FileTooSlow
+
+
 def _analyze_for_pool(item: tuple[str, str]) -> dict:
     path, text = item
+    # Only in a worker: in the command's own process the alarm is the command's whole time limit.
+    timed = multiprocessing.parent_process() is not None and hasattr(signal, "setitimer")
     try:
+        if timed:
+            signal.signal(signal.SIGALRM, _too_slow)
+            signal.setitimer(signal.ITIMER_REAL, FILE_SECONDS)
         return analyze_text(path, text)
+    except _FileTooSlow:
+        return {"path": path, "language": src.language_of(path), "findings": [], "facts": {}, "lines": text.count("\n") + 1, "unscanned": True, "too_slow": True, "why": "slow"}
     except Exception as error:  # one strange file mustn't stop a whole scan, and it's reported as unchecked
         return {"path": path, "language": src.language_of(path), "findings": [], "facts": {}, "lines": text.count("\n") + 1, "parse_error": f"{type(error).__name__}: {error}"}
+    finally:
+        if timed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def _exit_with_parent() -> None:
@@ -454,7 +536,7 @@ def _what_was_missed(records: dict, wanted: list[str], selected: list[str], narr
 
 def _cache_folder(root: Path) -> Path | None:
     try:
-        return filesystem.state_dir(root)
+        return filesystem.state_dir(root, shared=True)  # keyed by content, so one cache serves every worktree
     except OSError:
         return None
 
@@ -474,6 +556,8 @@ def _stats(root: Path, records: dict, selected: list[str], selected_set: set[str
     chosen = [record for record in records.values() if record["path"] in selected_set]
     languages = Counter(record["language"] for record in chosen if record["language"])
     return {"isolated": isolated, "unscanned": sorted(path for path in selected if records.get(path, {}).get("unscanned")),
+            # code left unread for its size or the time it took: a link is read where it points, and a UTF-16 file can't be read at all
+            "unread_code": sorted(path for path in selected if records.get(path, {}).get("why") in ("large", "slow") and src.language_of(path)),
             "generated": sorted(record["path"] for record in chosen if record.get("generated")),
             "secrets_only": sorted(record["path"] for record in chosen if record.get("secrets_only")),
             "suppressed_inline": sum(records.get(path, {}).get("suppressed", 0) for path in selected), "partial": partial,
@@ -499,9 +583,11 @@ def run_scan(root: Path, targets: list[str] | None = None, changed_only: bool = 
     started = time.time()
     deadline = time.monotonic() + seconds if seconds else None
     config = filesystem.load_config(root)
-    selected = filesystem.list_files(root, targets, config) if targets else filesystem.list_files(root, None, config)
+    left_out: list[str] = []
+    selected = filesystem.list_files(root, targets, config, left_out)
     all_files = filesystem.list_files(root, None, config) if targets else selected
     project_rules = not isolated
+    base = filesystem.fork_point(root, base)  # once, so the files chosen and the old versions they're compared with come from one commit, as gate does
     changed = filesystem.changed_lines(root, base) if (changed_only or base) else None
     if changed is not None:
         wanted = set(changed)
@@ -525,7 +611,32 @@ def run_scan(root: Path, targets: list[str] | None = None, changed_only: bool = 
     if changed is not None:
         findings = new_against_base(root, findings, base, filesystem.removed_and_renamed(root, base)[1])
     stats = _stats(root, records, selected, selected_set, config, isolated, partial, started)
+    stats["skipped_by_name"] = len(left_out)
+    stats["notes"] = project.notes  # checks that couldn't run, such as the standard-library probe
     return ScanResult(findings, stats, project)
+
+
+WORKER_BYTES = 500_000_000  # a worker on a large repository, measured roughly
+
+
+def default_workers() -> int:
+    """The CPUs this process may use, its container's CPU quota and room in memory for each worker, whichever is least. `os.cpu_count()`
+    counts the whole machine, which in a container can be far more than it may use, and each worker holds about 500 MB."""
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 2)
+    memory = None
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        cpus = cpus if quota == "max" else min(cpus, max(1, int(quota) // int(period)))
+        limit = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        memory = None if limit == "max" else int(limit)
+    except (OSError, ValueError):
+        pass
+    if memory is None and hasattr(os, "sysconf"):
+        try:
+            memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        except (ValueError, OSError):
+            memory = None
+    return max(1, min(cpus, memory // WORKER_BYTES) if memory else cpus)
 
 
 def _batches(root: Path, paths: list[str]):
@@ -549,7 +660,7 @@ def _analyze_all(root: Path, paths: list[str], cache: Cache, workers: int | None
     """Results go in the cache a batch at a time, because a scan killed by a shell tool's timeout must leave the next one further along."""
     root = Path(root).resolve()  # the workers' empty folder becomes the working directory
     records: dict[str, dict] = {}
-    with _Workers(workers if workers is not None else (os.cpu_count() or 2)) as pool:
+    with _Workers(workers if workers is not None else default_workers()) as pool:
         for batch in _batches(root, paths):
             if deadline is not None and time.monotonic() > deadline:
                 break
@@ -571,9 +682,10 @@ def _analyze_batch(root: Path, paths: list[str], cache: Cache, pool: _Workers, l
         if language is None and not src.reads_only_for_secrets(path) and not prose:
             records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0}
             continue
-        text = filesystem.read_text(root / path)
+        text = filesystem.read_text(root / path, NOTEBOOK_BYTES if language == "notebook" else filesystem.MAX_FILE_BYTES)  # a notebook's plots aren't its code
         if text is None:
-            records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0, "unscanned": not prose}  # a big log was never a promise
+            why = "link" if (root / path).is_symlink() else "large" if _size(root / path) > (NOTEBOOK_BYTES if language == "notebook" else filesystem.MAX_FILE_BYTES) else "binary"
+            records[path] = {"path": path, "language": None, "findings": [], "facts": {}, "lines": 0, "unscanned": not prose, "why": why}  # a big log was never a promise
             continue
         key = hashlib.sha1(f"{_CACHE_SCHEMA}\0{path}\0".encode() + text.encode("utf-8", "replace")).hexdigest()
         keys[path] = key
@@ -586,10 +698,17 @@ def _analyze_batch(root: Path, paths: list[str], cache: Cache, pool: _Workers, l
             pending.append((path, texts[path]))
     texts.clear()
     computed = pool.analyze(pending)
-    cache.put_many([(keys[record["path"]], record) for record in computed])
+    cache.put_many([(keys[record["path"]], record) for record in computed if not record.get("too_slow")])  # slow may have been the machine
     for record in computed:
         records[record["path"]] = _lightened(record) if light else record
     return records
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def _head(path: Path) -> str:
@@ -619,15 +738,26 @@ def new_against_base(root: Path, findings: list[dict], base: str | None, renamed
             continue
         if path not in known:
             before = filesystem.file_at(root, revision, (renamed or {}).get(path, path))
-            known[path] = {f["id"] for f in scan_text(path, before)} if before is not None else set()
+            known[path] = set(ids_of(scan_text(path, before))) if before is not None else set()
         if finding["id"] not in known[path]:
             kept.append(finding)
     return kept
 
 
+def _basis(finding: dict) -> str:
+    """What a finding's id is made from: its line, all of it, or for one with no line, its message with the numbers that move taken out."""
+    finding.setdefault("evidence", "")
+    return finding["evidence"] + "\0" + finding["evidence_digest"] if finding.get("evidence_digest") else finding["evidence"] or re.sub(r"\d+", "#", finding["message"])
+
+
 def _decorate(findings: list[dict]) -> None:
     """Fill in catalog fields, stable identity, and a rank."""
     ordinals: Counter = Counter()
+    # Lines alike in one file are told apart by the definition each sits in and their order there, not their order in the file, so a copy
+    # added in another function doesn't move the others' ids. A finding found once keeps the id it had, so renaming its function doesn't
+    # make it new. Each also carries the id it would have in the other case (`alias`), and what was there before is known by both
+    # (ids_of), so the first copy added, or the last copy removed, doesn't make the one already there look new.
+    alike = Counter(f"{f['rule']}\0{f['path']}\0{_identity_text(_basis(f))}" for f in findings)
     for finding in findings:
         rule = BY_ID[finding["rule"]]
         finding.setdefault("severity", rule.severity)
@@ -637,11 +767,23 @@ def _decorate(findings: list[dict]) -> None:
         finding["tier"] = rule.tier
         finding["fix"] = rule.fix
         finding.setdefault("evidence", "")
-        identity = f"{finding['rule']}\0{finding['path']}\0{finding['evidence'] or finding['message']}"
-        finding["id"] = fingerprint(finding["rule"], finding["path"], finding["evidence"] or finding["message"], ordinals[identity])
-        ordinals[identity] += 1
+        basis = _basis(finding)
+        identity = f"{finding['rule']}\0{finding['path']}\0{_identity_text(basis)}"
+        if finding.get("scope") is None:
+            finding["id"] = fingerprint(finding["rule"], finding["path"], basis, ordinals[identity])
+            ordinals[identity] += 1
+        else:
+            within = identity + "\0" + finding["scope"]
+            plain, scoped = fingerprint(finding["rule"], finding["path"], basis), fingerprint(finding["rule"], finding["path"], basis + "\0" + finding["scope"], ordinals[within])
+            ordinals[within] += 1
+            finding["id"], finding["alias"] = (plain, scoped) if alike[identity] == 1 else (scoped, plain)
         finding["score"] = SEVERITY_WEIGHT[finding["severity"]] * CONFIDENCE_WEIGHT[finding["confidence"]]
     findings.sort(key=lambda f: (-f["score"], f["path"], f["line"]))
+
+
+def ids_of(findings: list[dict]) -> list[str]:
+    """Every id these findings answer to, for remembering what was there before: a finding is the same one later if its id is among them."""
+    return [identity for finding in findings for identity in (finding["id"], finding.get("alias")) if identity]
 
 
 def filter_findings(findings: list[dict], min_confidence: str = "medium", rules: list[str] | None = None) -> list[dict]:
@@ -671,5 +813,6 @@ def scan_snippet(path: str, text: str, language: str | None = None) -> ScanResul
     stats = {"files": 1, "analyzed": 1, "lines": record["lines"], "languages": {record["language"] or "unknown": 1}, "seconds": 0.0,
              "parse_errors": [(path, record["parse_error"])] if record.get("parse_error") else [], "root": "(snippet)",
              "not_parsed_languages": []}
+    stats["notes"] = project.notes
     return ScanResult(findings, stats, project)
 

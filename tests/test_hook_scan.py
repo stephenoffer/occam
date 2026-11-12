@@ -394,3 +394,69 @@ def test_codex_hook_runs_no_program_the_repository_names(codex, route):
     (codex.project / "app.py").write_text(STUB)
     codex.send("post-tool", tool_name="apply_patch", tool_input={"command": PATCH}, tool_response="ok")
     assert not marker.exists()
+
+
+def test_codex_continue_keeps_a_review_only_turn_held(codex):
+    codex.send("user-prompt", prompt="Review only, don't change anything.")
+    codex.send("stop", last_assistant_message="Here is the first half.", stop_hook_active=False)
+    codex.send("user-prompt", prompt="Continue")
+    denied = codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_codex_a_renamed_file_and_one_above_the_working_folder_both_count(codex):
+    (codex.project / "pkg").mkdir()
+    rename = "*** Begin Patch\n*** Update File: app.py\n*** Move to: new.py\n@@\n-x\n+y\n*** End Patch\n"
+    codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": rename})
+    (codex.project / "new.py").write_text(STUB)
+    result = codex.send("post-tool", tool_name="apply_patch", tool_input={"command": rename}, tool_response="ok")
+    assert "new.py" in result["hookSpecificOutput"]["additionalContext"]
+    above = "*** Begin Patch\n*** Add File: ../above.py\n+x\n*** End Patch\n"
+    codex.send("pre-tool", cwd=str(codex.project / "pkg"), tool_name="apply_patch", tool_input={"command": above})
+    (codex.project / "above.py").write_text(STUB)
+    result = codex.send("post-tool", cwd=str(codex.project / "pkg"), tool_name="apply_patch", tool_input={"command": above}, tool_response="ok")
+    assert "above.py" in result["hookSpecificOutput"]["additionalContext"]
+
+
+def test_codex_state_it_didnt_write_doesnt_switch_it_off(codex, tmp_path):
+    folder = tmp_path / "data" / "sessions"
+    folder.mkdir(parents=True)
+    (folder / "s1.json").write_text("[1, 2]")
+    codex.send("user-prompt", prompt="Review only, don't change anything.")
+    denied = codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_codex_continue_after_asking_to_go_on_reviewing_keeps_the_hold(codex):
+    codex.send("user-prompt", prompt="Review only, don't change anything.")
+    codex.send("stop", last_assistant_message="That covers five files. Shall I continue with the rest?", stop_hook_active=False)
+    codex.send("user-prompt", prompt="Continue")
+    denied = codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize("response", ["apply_patch verification failed: Failed to find expected lines in app.py:\nx", "patch rejected by user",
+                                      "Exit code: 1\nWall time: 0.1 seconds\nOutput:\nInvalid patch: The first line of the patch must be '*** Begin Patch'"])
+def test_codex_a_patch_refused_before_writing_isnt_an_edit(codex, response):
+    # Codex sends a local tool's model-facing output as tool_response (its hooks page); these are its messages for a refused patch.
+    # On an audit, findings still raised in files it changed are sent back, so a file it never changed mustn't be among them.
+    (codex.project / "app.py").write_text(STUB)
+    codex.send("user-prompt", prompt="audit this repo and fix what you can")
+    codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    assert codex.send("post-tool", tool_name="apply_patch", tool_input={"command": PATCH}, tool_response=response) is None
+    assert codex.send("stop", last_assistant_message="done", stop_hook_active=False) is None
+    codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    codex.send("post-tool", tool_name="apply_patch", tool_input={"command": PATCH}, tool_response="Success. Updated the following files:\nM app.py")
+    assert "app.py" in codex.send("stop", last_assistant_message="done", stop_hook_active=False)["reason"]  # the same file, changed, is
+
+
+@pytest.mark.parametrize("response", ["Failed to apply patch", "Exit code: 1\nWall time: 0.1 seconds\nOutput:\nerror: permission denied",
+                                      # what Codex CLI 0.164 sent after a patch that applied, seen in a live run on 2026-11-11
+                                      "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nM app.py\n"])
+def test_codex_a_patch_that_may_have_written_still_counts(codex, response):
+    (codex.project / "app.py").write_text("x = 1\n")
+    codex.send("pre-tool", tool_name="apply_patch", tool_input={"command": PATCH})
+    (codex.project / "app.py").write_text(STUB)  # what the patch wrote
+    result = codex.send("post-tool", tool_name="apply_patch", tool_input={"command": PATCH}, tool_response=response)
+    assert "app.py" in result["hookSpecificOutput"]["additionalContext"]
+    assert "stub-body" in codex.send("stop", last_assistant_message="done", stop_hook_active=False)["reason"]

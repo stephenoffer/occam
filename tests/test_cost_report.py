@@ -96,3 +96,20 @@ def test_a_cheaper_arm_gets_shares_of_a_saving():
     line = cost_report.overhead_line(1, 4.0, extra)
     assert "-25% over no skill" in line
     assert "Share of the saving: write -30%, read -50%, output -20%, subagents 200%" in line
+
+
+def test_the_main_conversation_is_priced_at_its_own_model_not_the_costliest():
+    main = result(usage(read=0, write_1h=0, output=100_000), output=100_000, model="claude-sonnet-5-5")
+    opus = cost_report.PRICES["claude-opus-5-5"]
+    main["modelUsage"]["claude-opus-5-5"] = {"costUSD": 100_000 * opus[4] / 1e6 * 3, "inputTokens": 0, "outputTokens": 300_000, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}
+    rows = [{"type": "system", "subtype": "init", "model": "claude-sonnet-5-5"}, main]
+    cost = cost_report.run_cost(rows)
+    assert cost["model"] == "claude-sonnet-5-5"
+    assert abs(cost["subagents"] - 100_000 * opus[4] / 1e6 * 3) < 1e-6
+
+
+def test_an_unpriced_run_isnt_averaged_in_as_zero(tmp_path, monkeypatch):
+    priced = {"model": "m", "total": 2.0, "write": 1.0, "read": 0.5, "output": 0.5, "subagents": 0.0, "five_min": 2.0, "five_min_gaps": 2.0, "gaps_over": 0, "turns": 1}
+    runs = {"case": {"without": [priced], "with": [{**priced, "total": 3.0}, {"model": "x", "total": 9.0, "unpriced": True}]}}
+    monkeypatch.setattr(cost_report, "collect", lambda folder: runs)
+    assert "+50% over no skill" in cost_report.report(tmp_path)

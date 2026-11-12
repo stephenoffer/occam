@@ -31,7 +31,6 @@ def case_id(path: Path) -> str:
 
 # Cases with no stated Python floor whose hidden checks still need one. Stated here, since the cases themselves are frozen.
 HIDDEN_CHECKS_NEED = {"python/bikeshare-dock-usage": (3, 10)}  # sys.stdlib_module_names
-IMPORT_NAMES = {"pyyaml": "yaml", "scikit-learn": "sklearn", "pillow": "PIL", "python-dateutil": "dateutil", "beautifulsoup4": "bs4"}
 
 
 def skip_without_its_packages(case_dir: Path) -> None:
@@ -47,11 +46,15 @@ def skip_without_its_packages(case_dir: Path) -> None:
     lock = case_dir / "files" / "requirements.lock"
     if not lock.exists():
         return
-    names = [line.split("==")[0].strip().lower() for line in lock.read_text().splitlines() if "==" in line and not line.lstrip().startswith("#")]
-    modules = [IMPORT_NAMES.get(name, name.replace("-", "_")) for name in names]
-    probe = "import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(m) for m in sys.argv[1:]) else 1)"
-    if subprocess.run([grade.PYTHON, "-c", probe, *modules], capture_output=True, timeout=60).returncode:
-        pytest.skip(f"{case_id(case_dir)} needs {', '.join(names)}, which {grade.PYTHON} doesn't have: `pip install --group cases`, on Python 3.11 or later")
+    # The versions the lock pins, not just the packages: calibrating against others shows what the hidden checks catch there, not here.
+    pins = {name.strip().lower(): version.split(";")[0].strip() for name, version in
+            (line.split("==", 1) for line in lock.read_text().splitlines() if "==" in line and not line.lstrip().startswith("#"))}
+    probe = ("import importlib.metadata as md, json, sys\nwrong = []\nfor name, version in json.loads(sys.argv[1]).items():\n"
+             "    try:\n        found = md.version(name)\n    except md.PackageNotFoundError:\n        found = None\n"
+             "    if found != version:\n        wrong.append(f'{name}=={version} (found {found or \"none\"})')\nprint('; '.join(wrong))\nsys.exit(1 if wrong else 0)")
+    done = subprocess.run([grade.PYTHON, "-c", probe, json.dumps(pins)], capture_output=True, text=True, timeout=60)
+    if done.returncode:
+        pytest.skip(f"{case_id(case_dir)} needs {done.stdout.strip() or ', '.join(pins)} in {grade.PYTHON}: `pip install --group cases`, on Python 3.11 or later")
 
 
 def apply_solution(solution: Path, workspace: Path) -> tuple[str, Path | None]:
@@ -76,6 +79,12 @@ def case(request) -> Path:
     return request.param
 
 
+# Hidden checks run agent-written code, and the grader refuses on purpose to run it unconfined (grade_workspaces.require_sandbox),
+# so where macOS's sandbox-exec is missing these can't run at all. They're marked, and a job without it runs `-m "not sandbox"`.
+needs_sandbox = pytest.mark.sandbox
+
+
+@needs_sandbox
 def test_starter_fails(case, tmp_path):
     workspace = tmp_path / "ws"
     grade.build_starter(case, workspace)
@@ -84,6 +93,7 @@ def test_starter_fails(case, tmp_path):
     assert not result["passed"], "hidden checks pass on the untouched starter, so they detect nothing"
 
 
+@needs_sandbox
 def test_reference_passes(case, tmp_path):
     workspace = tmp_path / "ws"
     grade.build_starter(case, workspace)
@@ -114,6 +124,7 @@ def traps() -> list[Path]:
 
 
 @pytest.mark.parametrize("trap", traps(), ids=lambda t: f"{t.parents[2].name}/{t.parents[1].name}/{t.name}")
+@needs_sandbox
 def test_trap_fails_for_the_intended_reason(trap, tmp_path):
     case_dir = trap.parents[1]
     skip_without_its_packages(case_dir)

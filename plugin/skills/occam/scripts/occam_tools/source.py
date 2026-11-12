@@ -73,11 +73,22 @@ def says_it_is_generated(text: str) -> bool:
     return any(_COMMENT_START.match(line) and GENERATED_MARK.search(line) for line in head)
 
 
-def looks_generated(text: str) -> bool:
+# A quoted string on one line. Removed before measuring, since a long SQL query, certificate or fixture in a string doesn't make code minified.
+_ONE_LINE_STRING = re.compile(r'"(?:\\.|[^"\\\n]){0,100000}"|\'(?:\\.|[^\'\\\n]){0,100000}\'')
+
+
+def blank_one_line_strings(line: str) -> str:
+    return _ONE_LINE_STRING.sub(lambda quoted: " " * len(quoted.group(0)), line)
+
+
+def looks_generated(text: str, language: str | None = None) -> bool:
+    """Minified: a line of more than 1,500 characters of code. Strings and comments are blanked first, a triple-quoted or template
+    string too where the language is read, so a long SQL query, certificate or fixture doesn't make hand-written code generated."""
     if says_it_is_generated(text):
         return True
-    lines = text[:4000].split("\n")
-    return bool(lines) and max(map(len, lines)) > 1500  # minified
+    head = text[:20000]
+    code = load("x", head, language).code if language and reads_comments(language) else "\n".join(map(blank_one_line_strings, head.split("\n")))
+    return any(len(line) - line.count(" ") > 1500 for line in code.split("\n"))
 
 
 _DOUBLE = r'"(?:\\.|[^"\\\n])*"'
@@ -167,6 +178,10 @@ class Notebook(NamedTuple):
 
 
 _MAGIC = re.compile(r"^(\s*)([%!])")
+# IPython help, `obj?` or `??obj`, isn't Python either.
+_HELP = re.compile(r"^(\s*)(\?{1,2}[\w.]|[\w.\[\]()]+\?{1,2}\s*$)")
+# Cell magics whose body is still Python: the rest (%%bash, %%writefile, %%sql, %%html...) hold another language.
+_PYTHON_CELL_MAGICS = {"time", "timeit", "capture", "prun", "memit", "debug", "python", "python3", "pypy"}
 
 
 def load_notebook(text: str) -> Notebook:
@@ -187,7 +202,9 @@ def load_notebook(text: str) -> Notebook:
         stored = json.dumps(cell.get("outputs", []))
         sizes[number] = len(stored)
         outputs[number] = stored
+        first = body.lstrip().split("\n", 1)[0]
+        other_language = first.startswith("%%") and first[2:].split(" ", 1)[0].strip() not in _PYTHON_CELL_MAGICS
         for index, line in enumerate(body.split("\n"), start=1):
-            lines.append(_MAGIC.sub(lambda m: m.group(1) + "# " + m.group(2), line))
+            lines.append("# " + line if other_language else _HELP.sub(lambda m: m.group(1) + "# " + m.group(2), _MAGIC.sub(lambda m: m.group(1) + "# " + m.group(2), line)))
             line_map.append((number, index))
     return Notebook("\n".join(lines) + "\n", line_map, cells, sizes, outputs)

@@ -11,7 +11,7 @@ New here? The [README](../README.md) has the two-line install and the three comm
 | [Examples](examples.md) | What occam does in practice, with real runs, and what good output looks like |
 | [The `occam` CLI](tools.md) | What each command does, and how to read findings |
 | [Claude Code integration](claude-code.md) | What each hook does, when it fires and how firmly |
-| [Codex adapter](../adapters/codex/README.md) | How to install on Codex, where it hasn't been run yet |
+| [Codex adapter](../adapters/codex/README.md) | How to install on Codex, and what one live run of its hooks showed |
 
 ## Results and research
 

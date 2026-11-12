@@ -601,7 +601,8 @@ def test_a_local_module_shadowing_stdlib_cant_run_in_the_attribute_probe(tmp_pat
 def test_state_dir_override_is_respected(tmp_path, monkeypatch):
     from occam_tools.files import state_dir
     monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
-    assert state_dir(tmp_path) == tmp_path / "state"
+    # A root holding one folder per repository, so one exported for a CI worker can't merge unrelated repositories' goals and baselines.
+    assert state_dir(tmp_path).parent == tmp_path / "state"
 
 
 @pytest.mark.parametrize("name, text", [

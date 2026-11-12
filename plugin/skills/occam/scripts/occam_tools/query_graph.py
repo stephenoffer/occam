@@ -8,6 +8,7 @@ where a link is only a guess from a shared name.
 from __future__ import annotations
 
 import ast
+import html
 import json
 import re
 from collections import Counter, defaultdict, deque
@@ -61,7 +62,7 @@ class Graph(NamedTuple):
 def _load(root: Path, named: list[str]) -> tuple[Project, dict[str, dict]]:
     """Facts for every file, from the scan's cache when it has them, without the parts of a record nothing here reads."""
     try:
-        cache = Cache(filesystem.state_dir(root))
+        cache = Cache(filesystem.state_dir(root, shared=True))
     except OSError:
         cache = Cache(None)
     records = _analyze_all(root, list(dict.fromkeys([*selected_files(root, None), *named])), cache, None, light=True)  # naming a vendored file is a request to read it
@@ -872,33 +873,49 @@ def render_impact(data: dict) -> str:
 
 # ---------------------------------------------------------------- tests
 
-_COBERTURA_FILE = re.compile(r'\bfilename="([^"]+)"')
-_COBERTURA_RATE = re.compile(r'\bline-rate="(\d+(?:\.\d+)?)"')
+# Either quote, spaces around `=`, an exponent, and a namespace prefix are all valid XML a coverage tool may write.
+_COBERTURA_CLASS = re.compile(r"<(?:[\w.-]+:)?class\s")
+_COBERTURA_FILE = re.compile(r"""\bfilename\s*=\s*(["'])(.*?)\1""", re.S)
+_COBERTURA_RATE = re.compile(r"""\bline-rate\s*=\s*(["'])\s*(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*\1""")
+_COBERTURA_SOURCE = re.compile(r"<(?:[\w.-]+:)?source>\s*([^<]{1,4096}?)\s*</(?:[\w.-]+:)?source>")
 _COVERAGE_FILES = ("coverage.xml", "cobertura.xml", "coverage/cobertura-coverage.xml", "coverage.json", "lcov.info", "coverage/lcov.info", "cover.out", "coverage.out")
 
 
 def _read_coverage(root: Path) -> dict | None:
-    """Line rates from a report an earlier run left behind. This is data from the repository, and it can be stale, so its age comes with it."""
+    """Line rates from a report an earlier run left behind. This is data from the repository, and it can be stale, so its age comes with
+    it. Of several, the newest, since an old coverage.xml beside a fresh lcov.info describes code that has changed since."""
+    found = []
     for name in _COVERAGE_FILES:
         path = root / name
         text = filesystem.read_text(path)
         if text is None:
             continue
-        rates = _coverage_rates(name, text)
+        rates = _coverage_rates(name, text, root)
         if rates:
-            return {"file": name, "modified": int(path.stat().st_mtime), "rates": rates}
-    return None
+            found.append({"file": name, "modified": int(path.stat().st_mtime), "rates": rates})
+    return max(found, key=lambda report: report["modified"]) if found else None
 
 
-def _coverage_rates(name: str, text: str) -> dict[str, float]:
-    if name.endswith(".xml"):  # by hand, since parsing a repository's XML invites entity expansion. Each tag gets a bounded look
-        rates = {}
-        for tag in text.split("<class ")[1:]:
-            head = tag[:2000]
-            filename, rate = _COBERTURA_FILE.search(head), _COBERTURA_RATE.search(head)
-            if filename and rate:
-                rates[filename.group(1)] = float(rate.group(1))
-        return rates
+def _cobertura_rates(text: str, root: Path | None) -> dict[str, float]:
+    """By hand, since parsing a repository's XML invites entity expansion. Each tag gets a bounded look. Cobertura names files from its
+    <source> folders, so a folder inside the project gives the path from the project too."""
+    prefixes = [""]
+    for source in _COBERTURA_SOURCE.findall(text[:200_000]):
+        try:
+            inside = str(Path(html.unescape(source)).resolve().relative_to(Path(root).resolve())) if root is not None else "."
+        except (ValueError, OSError):
+            inside = "."
+        prefixes += [inside.replace("\\", "/") + "/"] if inside != "." else []
+    rates = {}
+    for tag in _COBERTURA_CLASS.split(text)[1:]:
+        filename, rate = _COBERTURA_FILE.search(tag[:2000]), _COBERTURA_RATE.search(tag[:2000])
+        rates.update({prefix + html.unescape(filename.group(2)): float(rate.group(2)) for prefix in prefixes} if filename and rate else {})
+    return rates
+
+
+def _coverage_rates(name: str, text: str, root: Path | None = None) -> dict[str, float]:
+    if name.endswith(".xml"):
+        return _cobertura_rates(text, root)
     if name.endswith(".json"):
         try:
             files = json.loads(text).get("files") or {}

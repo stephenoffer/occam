@@ -7,11 +7,13 @@ requires-python = ">=3.9"  # the stock macOS python3, which runs the hooks
 [dependency-groups]
 dev = ["pytest", "pyyaml"]
 # What eval cases' own code imports, so their calibration runs instead of skipping. These versions need Python 3.11 or later.
-cases = ["click>=8.3,<9; python_version >= '3.11'", "numpy>=2.4,<3; python_version >= '3.11'", "pandas>=3.0,<4; python_version >= '3.11'"]
+cases = ["click==8.3.3; python_version >= '3.11'", "numpy==2.4.3; python_version >= '3.11'", "pandas==3.0.1; python_version >= '3.11'"]  # the versions requirements.lock pins for the cases
 
 [tool.pytest.ini_options]
 # Eval cases hold hidden tests that fail on purpose, so a bare `pytest` mustn't collect them.
 testpaths = ["tests"]
+# The grader runs agent-written code only inside macOS sandbox-exec, so where that's missing, `-m "not sandbox"` leaves these out.
+markers = ["sandbox: needs macOS sandbox-exec, which the grader uses to confine agent-written code"]
 
 [tool.ruff]
 target-version = "py39"

@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import ast
-import difflib
 import json
-import math
 import os
-import platform
+import random
 import re
 import shlex
 import shutil
 import sqlite3
-import statistics
+import stat
 import subprocess
 import tempfile
 import time
@@ -20,7 +18,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from . import change_checks, design, docs, files as filesystem, manifests, report, reuse, scan as scanner, surgical
-from .source import is_test_path, language_of
+from .measure import bench as bench, golden_check as golden_check, golden_record as golden_record  # `occam golden` and `occam bench` reach these through here
+from .rules_text import has_secret_assignment, has_secret_shape
+from .source import is_test_path, language_of, reads_only_for_secrets
 from .workflow import NEEDS_A_SHELL, active_claims, claim_holder, database, needs_a_shell, new_dependencies, scope_problems
 from .zero_tests import ran_no_tests
 
@@ -48,93 +48,19 @@ _JUDGMENT = [
 ]
 
 
-# ---------------------------------------------------------------- golden master
-
-
-def _golden_path(root: Path, name: str) -> Path:
-    folder = filesystem.state_dir(root) / "golden"
-    folder.mkdir(exist_ok=True)
-    return folder / (re.sub(r"[^\w.-]", "_", name) + ".json")
-
-
-class CommandFailed(Exception):
-    """The command couldn't run at all, which is different from running and failing."""
-
-
-def _run_for_golden(root: Path, command: list[str], timeout: int) -> dict:
-    try:
-        done = filesystem.run_bounded(command, root, timeout)
-    except subprocess.TimeoutExpired as error:
-        raise CommandFailed(f"It didn't finish in {timeout}s.") from error
-    except OSError as error:
-        raise CommandFailed(f"It couldn't start: {error}.") from error
-    # Exact bytes, so `\\r\\n` becoming `\\n` or one invalid byte becoming another still reads as a change.
-    return {"exit": done.returncode, "stdout": done.stdout.decode("utf-8", "backslashreplace"), "stderr": done.stderr.decode("utf-8", "backslashreplace")}
-
-
-def _normalize(output: dict, patterns: list[str]) -> dict:
-    cleaned = dict(output)
-    for key in ("stdout", "stderr"):
-        for pattern in patterns:
-            cleaned[key] = re.sub(pattern, "<normalized>", cleaned[key])
-    return cleaned
-
-
-def golden_record(root: Path, name: str, command: list[str], timeout: int, patterns: list[str]) -> tuple[str, int]:
-    if not command:
-        return "Give the command after --.", 2
-    try:
-        for pattern in patterns:
-            re.compile(pattern)
-    except re.error as error:
-        return f"--normalize {pattern!r} isn't a valid expression: {error}.", 2
-    try:
-        first = _normalize(_run_for_golden(root, command, timeout), patterns)
-        second = _normalize(_run_for_golden(root, command, timeout), patterns)
-    except CommandFailed as error:
-        return f"Not recorded. {error}", 2
-    if first != second:
-        return ("This command isn't deterministic: two runs differ. Fix the seed or clock, or blank the varying parts with --normalize. Not recorded.", 1)
-    _golden_path(root, name).write_text(json.dumps({"command": command, "patterns": patterns, "result": first}))
-    caution = ""
-    if first["exit"]:
-        caution = f" It exits {first['exit']}, so this records a failure, and a later match won't show it works."
-    elif not first["stdout"] and not first["stderr"]:
-        caution = " It prints nothing, so a later match will say very little."
-    elif ran_no_tests(first["stdout"] + "\n" + first["stderr"]):
-        caution = " It ran zero tests, so a later match won't show anything works."
-    return f"Recorded '{name}': exit {first['exit']}, {len(first['stdout'])} bytes of output, identical across two runs.{caution}", 0
-
-
-def golden_check(root: Path, name: str, timeout: int) -> tuple[str, int]:
-    path = _golden_path(root, name)
-    if not path.exists():
-        return f"No recording named '{name}'.", 2
-    recorded = json.loads(path.read_text())
-    try:
-        current = _normalize(_run_for_golden(root, recorded["command"], timeout), recorded.get("patterns", []))
-    except CommandFailed as error:
-        return f"'{name}' couldn't be checked. {error}", 2
-    if current == recorded["result"]:
-        failing = f" It was already exiting {current['exit']} when recorded, so this doesn't show it works." if current["exit"] else ""
-        return f"'{name}' unchanged: same exit code and output.{failing}", 0
-    lines = [f"'{name}' CHANGED."]
-    if current["exit"] != recorded["result"]["exit"]:
-        lines.append(f"Exit {recorded['result']['exit']} became {current['exit']}.")
-    for stream in ("stdout", "stderr"):
-        diff = list(difflib.unified_diff(recorded["result"][stream].splitlines(), current[stream].splitlines(), "recorded", "current", lineterm="", n=1))
-        lines += diff[:40]
-    if len(lines) == 1:
-        lines.append("Only line endings or other invisible characters differ.")
-    return "\n".join(lines), 1
-
-
 # ---------------------------------------------------------------- mutation
 
 
+COPIES: set[str] = set()  # copies `mutate` is using. cli's SIGTERM handler removes them, since it exits without unwinding
 _FLIPS = {ast.Eq: "!=", ast.NotEq: "==", ast.Lt: ">=", ast.LtE: ">", ast.Gt: "<=", ast.GtE: "<", ast.Is: "is not", ast.IsNot: "is", ast.In: "not in", ast.NotIn: "in"}
 _OP_TEXT = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">=", ast.Is: "is", ast.IsNot: "is not", ast.In: "in", ast.NotIn: "not in"}
 _ARITHMETIC = {ast.Add: ("+", "-"), ast.Sub: ("-", "+"), ast.Mult: ("*", "+"), ast.Div: ("/", "*")}
+_OUTCOMES = {"failed": "killed", "passed": "survived", "timeout": "timed out", "invalid": "invalid"}  # what a test run says about a breakage. Anything else is an error
+
+
+def _written(source_lines: list[str], node: ast.AST) -> str:
+    """The node's own text. Its columns count UTF-8 bytes."""
+    return source_lines[node.lineno - 1].encode()[node.col_offset:node.end_col_offset].decode("utf-8", "replace")
 
 
 def _mutation_of(node: ast.AST, source_lines: list[str]) -> tuple[int, str, str, str] | None:
@@ -151,11 +77,10 @@ def _mutation_of(node: ast.AST, source_lines: list[str]) -> tuple[int, str, str,
     if isinstance(node, ast.Constant) and node.end_lineno == node.lineno:
         if isinstance(node.value, bool):
             return node.col_offset, str(node.value), str(not node.value), f"{node.value} to {not node.value}"
-        if isinstance(node.value, int) and node.value in (0, 1):
+        if isinstance(node.value, int) and _written(source_lines, node) in ("0", "1"):  # not 0x0 or 0b1, where a new first digit isn't Python
             return node.col_offset, str(node.value), str(node.value + 1), f"{node.value} to {node.value + 1}"
     if isinstance(node, ast.Return) and node.value is not None and node.end_lineno == node.lineno and not (isinstance(node.value, ast.Constant) and node.value.value is None):
-        value = source_lines[node.lineno - 1].encode()[node.value.col_offset:node.value.end_col_offset].decode("utf-8", "replace")
-        return node.value.col_offset, value, "None", "return None instead"
+        return node.value.col_offset, _written(source_lines, node.value), "None", "return None instead"
     return None
 
 
@@ -185,12 +110,77 @@ def _char_offset(line: str, byte_offset: int) -> int:
 
 
 def _copy_project(root: Path, destination: Path) -> None:
+    """A link is copied as a link, and nothing is copied through a linked folder, so nothing outside the project is read or written."""
+    linked: dict[str, bool] = {}
+    real_root = os.path.realpath(root)
     for name in filesystem.tracked_files(root) or filesystem.list_files(root):
         source = root / name
+        if filesystem._through_a_link(root, name, linked) or not (source.is_symlink() or source.is_file()):
+            continue
         target = destination / name
-        if source.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            # One into the project points at that file's place in the copy, so a test writing through it can't reach the project. One
+            # outside it points where it did, as the tests reach it when they run in the project itself.
+            pointed = os.path.realpath(source)
+            inside = pointed == real_root or pointed.startswith(real_root + os.sep)
+            target.symlink_to(os.path.relpath(destination / os.path.relpath(pointed, real_root), target.parent) if inside else pointed)
+            continue
+        shutil.copy2(source, target, follow_symlinks=False)
+
+
+def _listing(copy: Path) -> dict[str, tuple]:
+    """Everything in the copy, with what shows a file changed. A folder's own times change with what it holds, so only its kind is kept."""
+    found = {}
+    for folder, folders, names in os.walk(copy):
+        for name in folders + names:
+            path = os.path.join(folder, name)
+            try:
+                info = os.lstat(path)
+            except OSError:
+                continue
+            kind = stat.S_IFMT(info.st_mode)
+            found[os.path.relpath(path, copy)] = (kind,) if kind == stat.S_IFDIR else (kind, info.st_size, info.st_mtime_ns)
+    return found
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+    elif os.path.lexists(path):
+        path.unlink()
+
+
+def _undo_side_effects(root: Path, copy: Path, before: dict[str, tuple], mutated: str) -> list[str]:
+    """Puts the copy back as `before` listed it, after a test run: what the run made goes, and what it changed comes back from the project.
+
+    Returns what couldn't come back, because the project's own file has changed since it was copied. The mutated file restores itself.
+    """
+    after = _listing(copy)
+    lost = []
+    for name in sorted(set(before) | set(after)):  # a folder sorts before what it holds
+        target, was, now = copy / name, before.get(name), after.get(name)
+        if now == was or name == os.path.normpath(mutated) or (was is None and not os.path.lexists(target)):
+            continue
+        try:
+            if now is not None and (was is None or now[0] != was[0]):
+                _remove(target)
+            if was is None:
+                continue
+            if was[0] == stat.S_IFDIR:
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            source = root / name
+            info = os.lstat(source)
+            if (stat.S_IFMT(info.st_mode), info.st_size, info.st_mtime_ns) != was:
+                raise OSError("changed since it was copied")
+            if os.path.lexists(target):
+                target.unlink()
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, target, follow_symlinks=False)
+        except OSError:
+            lost.append(name)
+    return lost
 
 
 def _run_tests(command: str, cwd: Path, timeout: int) -> tuple[str, str]:
@@ -201,48 +191,106 @@ def _run_tests(command: str, cwd: Path, timeout: int) -> tuple[str, str]:
         done = filesystem.run_bounded(shlex.split(command), cwd, timeout, env=environment)
     except subprocess.TimeoutExpired:
         return "timeout", ""
-    except (OSError, ValueError) as error:
-        return "failed", str(error)
+    except (OSError, ValueError) as error:  # it never ran, so it said nothing about the code
+        return "error", str(error)
     return ("passed" if done.returncode == 0 else "failed"), done.stdout.decode("utf-8", "replace") + done.stderr.decode("utf-8", "replace")
 
 
-def _tests_really_use(copy: Path, path: str, command: str, timeout: int) -> bool:
-    """Make the file impossible to import. If the tests still pass, they aren't testing this copy of it, whether from an editable install or by not importing it."""
+def _tests_really_use(copy: Path, path: str, command: str, timeout: int) -> bool | None:
+    """Make the file impossible to import. If the tests still pass, they aren't testing this copy of it, whether from an editable install or by not importing it.
+
+    None if the run said neither, by timing out or not starting.
+    """
     target = copy / path
     original = target.read_bytes()
     target.write_text("raise ImportError('occam: is this the file the tests import?')\n")
     outcome, _ = _run_tests(command, copy, timeout)
     target.write_bytes(original)
-    return outcome != "passed"
+    return outcome == "failed" if outcome in ("passed", "failed") else None
 
 
-def _choose_mutants(root: Path, targets, changed: bool, base, limit: int) -> list[tuple[str, dict]]:
+def _choose_mutants(root: Path, targets, changed: bool, base, limit: int) -> tuple[list[tuple[str, dict]], int, int]:
+    """Candidates from enough files to sample `limit` evenly, and how many files were read of how many there were.
+
+    Files are read in a fixed shuffled order, so a rerun breaks the same things, and stopping early doesn't favour one folder.
+    """
     changed_map = filesystem.changed_lines(root, base) if (changed or base) else None
     candidates = filesystem.list_files(root, targets, filesystem.load_config(root))
     if changed_map is not None:
         candidates = [path for path in candidates if path in changed_map]
+    sources = sorted(path for path in candidates if language_of(path) == "python" and not is_test_path(path))
+    random.Random(0).shuffle(sources)
     mutants: list[tuple[str, dict]] = []
     untracked = set((filesystem.run_git(root, "ls-files", "-o", "--exclude-standard", "-z") or "").split("\0")) if changed_map is not None else set()
-    for path in candidates:
-        if language_of(path) == "python" and not is_test_path(path):
-            text = filesystem.read_text(root / path) or ""
-            lines = changed_map.get(path) if changed_map is not None else None
-            # An untracked file is all new, which an empty set marks. On a tracked file it means the change only deleted lines, so there's nothing to mutate.
-            if changed_map is None or lines or path in untracked:
-                mutants += [(path, mutant) for mutant in _mutants(text, lines or None)]
-    return mutants
+    read = 0
+    for path in sources:
+        if len(mutants) >= limit * 10:
+            break
+        read += 1
+        text = filesystem.read_text(root / path) or ""
+        lines = changed_map.get(path) if changed_map is not None else None
+        # An untracked file is all new, which an empty set marks. On a tracked file it means the change only deleted lines, so there's nothing to mutate.
+        if changed_map is None or lines or path in untracked:
+            mutants += [(path, mutant) for mutant in _mutants(text, lines or None)]
+    return mutants, read, len(sources)
 
 
 def _try_mutant(copy: Path, path: str, mutant: dict, command: str, timeout: int) -> str:
+    """Runs the tests on the file with this one change. 'invalid' if the change can't be made exactly, or the result isn't Python, and then nothing runs."""
     target = copy / path
-    original = target.read_bytes()  # the mutant's columns came from filesystem.read_text, which is how this reads the file again
-    lines = original.decode("utf-8", "replace").split("\n")
-    line = lines[mutant["line"] - 1]
-    lines[mutant["line"] - 1] = line[:mutant["start"]] + mutant["new"] + line[mutant["start"] + len(mutant["old"]):]
-    target.write_text("\n".join(lines), encoding="utf-8")
-    outcome, _ = _run_tests(command, copy, timeout)
-    target.write_bytes(original)
+    original = target.read_bytes()
+    prefix = 0
+    while original.startswith(b"\xef\xbb\xbf", prefix):  # the mutant's columns came from filesystem.read_text, which drops these
+        prefix += 3
+    lines = original[prefix:].split(b"\n")
+    number, start, old = mutant["line"] - 1, mutant["start"], mutant["old"]
+    try:
+        line = lines[number].decode("utf-8")  # strictly, since rewriting a line that isn't UTF-8 would change more than this
+    except (IndexError, UnicodeDecodeError):
+        return "invalid"
+    if line[start:start + len(old)] != old:
+        return "invalid"
+    lines[number] = (line[:start] + mutant["new"] + line[start + len(old):]).encode("utf-8")
+    changed = original[:prefix] + b"\n".join(lines)
+    try:
+        ast.parse(changed)
+    except (SyntaxError, ValueError):
+        return "invalid"
+    target.write_bytes(changed)
+    try:
+        outcome, _ = _run_tests(command, copy, timeout)
+    finally:
+        target.write_bytes(original)
     return outcome
+
+
+def _shown(source: str) -> str:
+    """The line as it was when mutated, unless it looks like it holds a secret, which output that gets pasted mustn't repeat."""
+    return "(line withheld: it looks like it holds a secret)" if has_secret_shape(source) or has_secret_assignment(source) else source.strip()[:90]
+
+
+def _report(results: list[tuple[str, str, dict]], possible: str, timeout: int) -> tuple[list[str], int]:
+    """Lines and exit code for what each breakage's run said: only a failing run counts as caught, and anything unexplained leaves the measure incomplete."""
+    found: dict[str, list[tuple[str, dict]]] = {}
+    for outcome, path, mutant in results:
+        found.setdefault(outcome, []).append((path, mutant))
+    killed, survived, slow, invalid, errors = (found.pop(kind, []) for kind in ("killed", "survived", "timed out", "invalid", "error"))
+    errors += [item for items in found.values() for item in items]
+    measured = len(results) - len(invalid)
+    out = [f"{len(killed)} of {measured} deliberate breakages were caught ({possible}, sampled evenly). Ran in a temporary copy, and your files weren't touched."]
+    if slow:
+        out.append(f"{len(slow)} timed out after {timeout}s, so they aren't counted as caught. A breakage that loops forever looks the same as a slow test, and a larger --timeout tells them apart: "
+                   + ", ".join(f"{path}:{m['line']} {m['what']}" for path, m in slow[:10]))
+    if invalid:
+        out.append(f"{len(invalid)} weren't valid Python once changed, so they weren't run or counted.")
+    if errors:
+        out.append(f"INCOMPLETE: {len(errors)} couldn't be run, or their run gave no answer occam can read, so this isn't a full measure: "
+                   + ", ".join(f"{path}:{m['line']} {m['what']}" for path, m in errors[:10]))
+    if survived:
+        out.append("The tests still pass with these changes, so nothing protects this behavior:")
+        out += [f"  {path}:{m['line']}  {m['what']}  ->  {_shown(m['source'])}" for path, m in survived[:25]]
+        out.append("Some survivors are equivalent or unimportant. Judge each, and add a test for those that matter.")
+    return out, 2 if errors or not measured else 1 if survived or slow else 0
 
 
 def mutate(root: Path, command: str, targets: list[str] | None, changed: bool, base: str | None, limit: int, timeout: int) -> tuple[str, int]:
@@ -251,162 +299,59 @@ def mutate(root: Path, command: str, targets: list[str] | None, changed: bool, b
         return "Give the test command with --cmd.", 2
     if needs_a_shell(command):
         return f"That test command {NEEDS_A_SHELL}", 2
-    mutants = _choose_mutants(root, targets, changed, base, limit)
+    mutants, read, readable = _choose_mutants(root, targets, changed, base, limit)
     if not mutants:
         return "No mutation points in Python source there. For other languages: Stryker (JS/TS), cargo-mutants (Rust), go-mutesting (Go), PIT (JVM).", 2
+    possible = f"{len(mutants)} possible" if read == readable else f"{len(mutants)} possible in the {read} of {readable} files read"
     chosen = mutants[::max(1, len(mutants) // limit)][:limit]
-    survivors = []
     with tempfile.TemporaryDirectory(prefix="occam-mutate-") as folder:
-        copy = Path(folder)
-        _copy_project(root, copy)
-        baseline, output = _run_tests(command, copy, timeout)
-        if baseline != "passed":
-            return f"The tests don't pass on an unmodified copy ({baseline}), so mutation would mean nothing.\n{output[-800:]}", 2
-        if ran_no_tests(output):
-            return "That command ran zero tests.", 2
-        usable = {path: _tests_really_use(copy, path, command, timeout) for path in {path for path, _ in chosen}}
-        unused = sorted(path for path, used in usable.items() if not used)
-        chosen = [item for item in chosen if usable[item[0]]]
-        again, _ = _run_tests(command, copy, timeout)
-        if again != "passed":  # the copy is reused, so a test that leaves something behind or is flaky would look like it caught every breakage
-            return f"The tests passed once on an unmodified copy, then {again} when run again. They leave something behind or they're flaky, so a failure couldn't be told from a caught breakage. Nothing was measured.", 2
-        for path, mutant in chosen:
-            if _try_mutant(copy, path, mutant, command, timeout) == "passed":
-                survivors.append((path, mutant))
-    caught = len(chosen) - len(survivors)
-    out = [f"{caught} of {len(chosen)} deliberate breakages were caught ({len(mutants)} possible, sampled evenly). Ran in a temporary copy, and your files weren't touched."]
+        COPIES.add(folder)
+        try:
+            return _mutate_in(root, Path(folder), command, chosen, possible, timeout)
+        finally:
+            COPIES.discard(folder)
+
+
+def _mutate_in(root: Path, copy: Path, command: str, chosen: list[tuple[str, dict]], possible: str, timeout: int) -> tuple[str, int]:
+    _copy_project(root, copy)
+    listing = _listing(copy)  # before any run, so what the tests make, such as .pytest_cache, goes after each breakage
+    baseline, output = _run_tests(command, copy, timeout)
+    if baseline != "passed":
+        return f"The tests don't pass on an unmodified copy ({baseline}), so mutation would mean nothing.\n{output[-800:]}", 2
+    if ran_no_tests(output):
+        return "That command ran zero tests.", 2
+    _undo_side_effects(root, copy, listing, "")  # every run starts from the copy as it was made, so no run's leftovers decide another's
+    usable = {}
+    for path in sorted({path for path, _ in chosen}):
+        usable[path] = _tests_really_use(copy, path, command, timeout)
+        _undo_side_effects(root, copy, listing, path)  # what a canary's failing run left behind mustn't reach the next run
+    chosen = [item for item in chosen if usable[item[0]] is True]
+    notes = []
+    unused = [path for path, used in usable.items() if used is False]
     if unused:
-        out.append("Not measured, because the tests still pass when these can't even be imported. Either no test imports them, or the tests import an installed copy: " + ", ".join(unused[:10]))
+        notes.append("Not measured, because the tests still pass when these can't even be imported. Either no test imports them, or the tests import an installed copy: " + ", ".join(unused[:10]))
+    unknown = [path for path, used in usable.items() if used is None]
+    if unknown:
+        notes.append(f"Not measured, because the tests timed out or didn't start when these couldn't be imported, so it isn't known whether they test them: {', '.join(unknown[:10])}")
+    again, _ = _run_tests(command, copy, timeout)
+    _undo_side_effects(root, copy, listing, "")
+    if again != "passed":  # a test that leaves something behind or is flaky would look like it caught every breakage
+        return f"The tests passed once on an unmodified copy, then {again} when run again. They leave something behind or they're flaky, so a failure couldn't be told from a caught breakage. Nothing was measured.", 2
     if not chosen:
-        return "\n".join(out[1:]), 2
-    if survivors:
-        out.append("The tests still pass with these changes, so nothing protects this behavior:")
-        # The line as it was when mutated, since a run can take minutes and someone may have edited the file since.
-        out += [f"  {path}:{m['line']}  {m['what']}  ->  {m['source'].strip()[:90]}" for path, m in survivors[:25]]
-        out.append("Some survivors are equivalent or unimportant. Judge each, and add a test for those that matter.")
-    return "\n".join(out), 1 if survivors else 0
-
-
-# ---------------------------------------------------------------- bench
-
-
-def _measure(command: list[str], timeout: int) -> tuple[float, float, int]:
-    """Wall seconds, peak RSS in MB and exit code of one fresh process."""
-    started = time.perf_counter()
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = started + timeout
-    while True:
-        pid, status, usage = os.wait4(process.pid, os.WNOHANG)
-        if pid:
-            break
-        if time.perf_counter() > deadline:
-            process.kill()
-            os.wait4(process.pid, 0)
-            raise subprocess.TimeoutExpired(command, timeout)
-        time.sleep(0.005)
-    elapsed = time.perf_counter() - started
-    process.returncode = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
-    divisor = 1024 * 1024 if platform.system() == "Darwin" else 1024
-    return elapsed, usage.ru_maxrss / divisor, process.returncode
-
-
-def _slope(xs: list[float], ys: list[float]) -> float | None:
-    """Least-squares exponent of y = a + b * x^k, trying several startup costs `a` and keeping the straightest fit in log space.
-
-    Assuming nearly all of the smallest run is startup would make plain linear work with none read as quadratic.
-    """
-    if sum(1 for x, y in zip(xs, ys) if x > 0 and y - 0.95 * min(ys) > 0.02) < 2:
-        return None
-    best: tuple[float, float] | None = None
-    for share in (0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95):
-        floor = share * min(ys)
-        pairs = [(math.log(x), math.log(y - floor)) for x, y in zip(xs, ys) if x > 0 and y - floor > 0.02]
-        if len(pairs) < 2:
-            continue
-        mean_x = statistics.mean(p[0] for p in pairs)
-        mean_y = statistics.mean(p[1] for p in pairs)
-        across = sum((p[0] - mean_x) ** 2 for p in pairs)
-        spread = sum((p[1] - mean_y) ** 2 for p in pairs)
-        if not across:
-            continue
-        slope = sum((p[0] - mean_x) * (p[1] - mean_y) for p in pairs) / across
-        straightness = round(slope ** 2 * across / spread, 3) if spread else 1.0
-        if best is None or straightness > best[0]:  # a tie keeps the smaller startup cost, the plainer reading
-            best = (straightness, slope)
-    return best[1] if best else None
-
-
-def _bench_rows(template: str, sizes: list[int], repeat: int, timeout: int) -> list[tuple]:
-    """(size, median seconds, spread, peak MB, status) for each size, stopping at the first that fails."""
-    rows = []
-    for size in sorted(sizes):
-        command = shlex.split(template.replace("{n}", str(size)))
-        times, memory = [], []
-        status = "ok"
-        for _ in range(repeat):
-            try:
-                elapsed, rss, code = _measure(command, timeout)
-            except subprocess.TimeoutExpired:
-                status = "timed out"
+        return "\n".join(notes), 2
+    results: list[tuple[str, str, dict]] = []
+    for path, mutant in chosen:
+        results.append((_OUTCOMES.get(_try_mutant(copy, path, mutant, command, timeout), "error"), path, mutant))
+        lost = _undo_side_effects(root, copy, listing, path)
+        if lost:  # the copy can't be put back exactly, so the unmodified tests have to pass on it again before anything else counts
+            again, _ = _run_tests(command, copy, timeout)
+            notes.append(f"Breaking {path}:{mutant['line']} let the tests change {', '.join(lost[:5])}, which couldn't be copied back, so the unmodified tests ran again: {again}.")
+            if again != "passed":
+                results += [("error", *item) for item in chosen[len(results):]]  # what's left would run on a copy the tests fail on
                 break
-            except OSError as error:
-                status = f"couldn't start: {error.strerror}"
-                break
-            if code != 0:
-                status = f"exit {code}"
-                break
-            times.append(elapsed)
-            memory.append(rss)
-        if status != "ok":
-            rows.append((size, None, None, None, status))
-            break
-        rows.append((size, statistics.median(times), max(times) - min(times), max(memory), status))
-    return rows
-
-
-def _growth_line(done: list[tuple]) -> tuple[str, bool]:
-    """Describe how time grew. True if it's worse than linear."""
-    sizes = [float(r[0]) for r in done]
-    time_growth = _slope(sizes, [r[1] for r in done])
-    if time_growth is None:
-        return f"Not enough signal to fit growth: the largest run took {done[-1][1]:.3f}s, mostly startup. Use larger sizes.", False
-    memory_growth = _slope(sizes, [r[3] for r in done])
-    shape = "about linear or better" if time_growth < 1.25 else "superlinear" if time_growth < 1.8 else "about quadratic or worse"
-    memory = f" Peak memory grows like n^{memory_growth:.2f}." if memory_growth is not None else " Peak memory stayed about flat."
-    return f"Time grows like n^{time_growth:.2f}: {shape}.{memory}", time_growth >= 1.25
-
-
-def _limit_line(limit: float, value: float, size: int) -> tuple[str, bool]:
-    if value > limit:
-        return f"Time limit {limit}s EXCEEDED: {value:.2f}s at n={size}.", True
-    headroom = limit / value if value else float("inf")
-    return f"Time limit {limit}s: measured {value:.2f}s at n={size}, {headroom:.1f}x headroom.", False
-
-
-def bench(template: str, sizes: list[int], repeat: int, limit_seconds: float | None, timeout: int) -> tuple[str, int]:
-    if "{n}" not in template:
-        return "The command needs {n} where the size goes.", 2
-    try:
-        shlex.split(template)
-    except ValueError as error:
-        return f"That command can't be read: {error}.", 2
-    rows = _bench_rows(template, sizes, repeat, timeout)
-    done = [r for r in rows if r[4] == "ok"]
-    out = [f"{os.cpu_count()} CPUs, {platform.system()} {platform.machine()}, Python {platform.python_version()}. Each row: {repeat} fresh processes, median time and largest peak RSS.",
-           f"{'size':>12}{'seconds':>10}{'spread':>9}{'peak MB':>10}  status"]
-    for size, seconds, spread, rss, status in rows:
-        out.append(f"{size:>12}" + (f"{seconds:>10.3f}{spread:>9.3f}{rss:>10.1f}" if status == "ok" else f"{'-':>10}{'-':>9}{'-':>10}") + f"  {status}")
-    failed = len(done) != len(rows)
-    if len(done) >= 2:
-        line, worse = _growth_line(done)
-        out.append(line)
-        failed = failed or worse
-    if done and limit_seconds is not None:
-        line, exceeded = _limit_line(limit_seconds, done[-1][1], done[-1][0])
-        out.append(line)
-        failed = failed or exceeded
-    out.append("Evidence label: local measurement, this machine and this data. It says how it grew here, not what production capacity is. Check the output is still correct too.")
-    return "\n".join(out), 2 if any(row[4].startswith("couldn't start") for row in rows) else 1 if failed else 0
+            listing = _listing(copy)
+    out, code = _report(results, possible, timeout)
+    return "\n".join([out[0], *notes, *out[1:]]), 2 if unknown else code
 
 
 # ---------------------------------------------------------------- gate
@@ -692,11 +637,12 @@ def _breakage_elsewhere(root: Path, base: str | None, findings: list[dict], chan
     return blamed
 
 
-def _staged_findings(root: Path, changed: dict, base: str | None, renamed: dict[str, str]) -> list[dict]:
-    """What a commit would contain may not be what's on disk, so read the staged version of files where the two differ. Only what the change added, as for what's on disk."""
+def _staged_findings(root: Path, changed: dict, base: str | None, renamed: dict[str, str], only: set[str] | None = None) -> list[dict]:
+    """What a commit would contain may not be what's on disk, so read the staged version of files where the two differ, the files the
+    scanner reads for secrets alone included. Only what the change added, as for what's on disk, and with paths named, only theirs."""
     found = []
     for path in filesystem.staged_differently(root):
-        if not language_of(path):
+        if not (language_of(path) or reads_only_for_secrets(path)) or (only is not None and path not in only):
             continue
         text = filesystem.file_at(root, "", path)
         if text is None:
@@ -765,14 +711,19 @@ def _gate_findings(root: Path, base, changed, deleted, renamed, paths, result) -
     if filesystem.in_git(root) and filesystem.parse_config(filesystem.file_at(root, base or "HEAD", filesystem.CONFIG_NAME)) != filesystem.load_config(root):
         findings.append({"rule": "gate-config-changed", "path": ".occam.json", "line": 1, "message": "This change edits .occam.json, which decides what the scanner and this gate read, so their result here can't be taken at face value. A person should see this.",
                          "severity": "high", "confidence": "high", "category": "testing", "tier": "C", "score": 8.0, "layer": "test", "fix": "", "evidence": "", "id": ""})
-    if not paths:
-        findings += _staged_findings(root, changed, base, renamed)
-    return findings
+    return findings + _staged_findings(root, changed, base, renamed, set(changed) if paths else None)
 
 
 def _unread(changed, result) -> list[str]:
     analyzed = set(result.project.languages) - set(result.stats["unscanned"]) - set(result.stats["generated"])
     return [path for path in changed if language_of(path) and path not in analyzed]
+
+
+def _unwatched(root: Path, paths) -> list[str]:
+    """Files git was told not to watch, among the named paths when there are some."""
+    hidden = filesystem.marked_unchanged(root)
+    named = [str(Path(path).resolve().relative_to(root.resolve())).replace(os.sep, "/") for path in paths or []]
+    return [name for name in hidden if not named or any(name == path or name.startswith(path.rstrip("/") + "/") or path == "." for path in named)]
 
 
 def _not_checked(root: Path, paths, unread: list[str], result) -> list[str]:
@@ -785,7 +736,7 @@ def _not_checked(root: Path, paths, unread: list[str], result) -> list[str]:
     submodules = filesystem.submodule_paths(root)
     if submodules:
         lines += ["", "NOT CHECKED: nothing inside submodules was read, because a submodule's git config could run programs: " + ", ".join(submodules[:8])]
-    unwatched = [] if paths else filesystem.marked_unchanged(root)
+    unwatched = _unwatched(root, paths)
     if unwatched:
         lines += ["", "NOT CHECKED: git has been told not to watch " + ", ".join(unwatched[:8]) + ", so edits there don't show."]
     return lines
@@ -811,7 +762,7 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
             return (f"Nothing matched {', '.join(paths)}, so nothing was checked. A folder git ignores isn't read unless its files are named.", 2)
         unwatched = filesystem.marked_unchanged(root)
         return (f"No changes to gate, compared with {base or 'HEAD'}. If the work is already committed, pass --base with where it started." +
-                (f" NOT CHECKED: git has been told not to watch {', '.join(unwatched[:5])}, so edits there don't show." if unwatched else ""), 0)
+                (f" NOT CHECKED: git has been told not to watch {', '.join(unwatched[:5])}, so edits there don't show." if unwatched else ""), 1 if strict and unwatched else 0)
     result = scanner.run_scan(root, paths or None, seconds=seconds, focus=sorted(changed))
     findings = _gate_findings(root, base, changed, deleted, renamed, paths, result)
     whole = not result.stats.get("partial")
@@ -840,9 +791,12 @@ def gate(root: Path, base: str | None = None, strict: bool = False, paths: list[
     if goal_line:
         lines += ["", goal_line]
     goal_broken = "  VIOLATED: " in goal_line  # a constraint the user stated, broken, isn't ready whatever else passes
+    # Strict also stops on what couldn't be seen: drift from the goal's scope, a goal check that didn't run (except the API, which
+    # `goal verify` compares), and files git was told not to watch.
+    goal_open = any(marker in goal_line for marker in ("  DRIFT: ", "  NOT CHECKED: ", "Goal constraints NOT CHECKED"))
     if extras["others"]:
         lines += ["", extras["others"]]
-    failed = bool(blockers) or goal_broken or (strict and bool(warnings or unread))
+    failed = bool(blockers) or goal_broken or (strict and bool(warnings or unread or goal_open or _unwatched(root, paths)))
     lines += ["", "NOT READY: fix these, or escalate each with a reason." if failed else "Automated checks are clear for what they could read. Finish the questions above, then report what you checked and what you didn't."]
     return "\n".join(lines), 1 if failed else 0
 

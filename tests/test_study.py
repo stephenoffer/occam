@@ -124,3 +124,22 @@ def test_regressions_count_packages_not_tests_or_frames():
     assert study.regressions(causes) == 3
     assert study.regressions([]) == 0
 
+
+
+def test_one_report_row_raises_one_decision_at_most():
+    items = [{"id": "d1", "topic": [["cache"]], "packages": ["pkg"]}, {"id": "d2", "topic": [["cache"]], "packages": ["pkg"]}]
+    one = [{"status": "decision", "what": "should the cache expire?", "file": "pkg/a.py"}]
+    assert study.raised_once(one, items) == {"d1"}
+    assert study.raised_once(one * 2, items) == {"d1", "d2"}
+
+
+def test_a_row_in_another_folder_isnt_at_the_items_place():
+    item = {"file": "app.py", "line": 10, "functions": []}
+    assert study.same_place({"file": "src/app.py", "line": 12}, item) and study.same_place({"file": "app.py", "line": 12}, item)
+    assert not study.same_place({"file": "src/myapp.py", "line": 12}, item)
+
+
+def test_rows_are_shared_out_so_the_most_decisions_get_one():
+    items = [{"id": "D1", "topic": [["retry"]], "packages": []}, {"id": "D2", "topic": [["timeout"]], "packages": []}]
+    rows = [{"status": "decision", "what": "retry and timeout policy"}, {"status": "decision", "what": "retry count"}]
+    assert study.raised_once(rows, items) == {"D1", "D2"}

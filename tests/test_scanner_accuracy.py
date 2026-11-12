@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import imports, scan, source  # noqa: E402
+from occam_tools import imports, manifests, report, scan, source  # noqa: E402
 
 # Built here, so that no credential shape sits in the repository.
 AWS_KEY = "AKIA" + "IOSFODNN7ABCDEFG"
@@ -462,6 +462,164 @@ def test_google_needs_some_google_distribution():
 def test_a_node_subpath_import_is_not_a_package(tmp_path):
     result = scan_repo(tmp_path, {"package.json": '{"dependencies": {"react": "1"}}', "a.js": 'import z from "#internal/z";\nimport y from "left-pad-super";\nuse(z, y);\n'})
     assert [f["message"].split("'")[1] for f in result.findings if f["rule"] == "phantom-import"] == ["left-pad-super"]
+
+
+def rules_at(result, path: str) -> list[str]:
+    return [f["rule"] for f in result.findings if f["path"] == path and f["rule"] in ("phantom-import", "undeclared-dependency")]
+
+
+def test_a_section_heading_with_a_comment_still_opens_its_section():
+    declared = manifests._pyproject('[project] # meta\nname = "x"\ndependencies = ["flask_superauth"]\n[project.optional-dependencies] # extras\naws = ["boto_superauth"]\n')
+    assert set(declared) == {"flask-superauth", "boto-superauth"}
+    assert "serde" in manifests._cargo('[package]\nname = "demo"\n[dependencies] # runtime\nserde = "1"\n')
+
+
+def test_a_quoted_name_in_a_comment_or_a_marker_is_not_a_dependency():
+    assert set(manifests._pyproject('[project]\ndependencies = [\n  "httpx",  # not "requests"\n]\n')) == {"httpx"}
+    assert set(manifests._pyproject('[project]\ndependencies = ["httpx"]  # not "requests"\n')) == {"httpx"}
+    assert set(manifests._pyproject('[project]\ndependencies = ["tomli>=1; python_version < \'3.11\'"]\n')) == {"tomli"}
+
+
+def test_an_included_dependency_group_is_followed_not_read_as_a_package():
+    declared = manifests._pyproject('[dependency-groups]\ntest = ["pytest"]\ndev = [{include-group = "test"}, "mypy"]\nlint = [\n  {include-group = "dev"},\n]\n')
+    assert set(declared) == {"pytest", "mypy"}
+
+
+DEV_ONLY = {"pyproject.toml": '[project]\nname = "x"\ndependencies = []\n[build-system]\nrequires = ["boto_superauth"]\n[dependency-groups]\ndev = ["flask_superauth"]\n'
+                              '[tool.poetry.dev-dependencies]\nzork_superauth = "*"\n',
+            "app/a.py": "import flask_superauth\nimport boto_superauth\nimport zork_superauth\nprint(flask_superauth, boto_superauth, zork_superauth)\n",
+            "app/typed.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    import flask_superauth\ndef f():\n    import boto_superauth\n    return boto_superauth\n",
+            "tests/test_a.py": "import flask_superauth\nprint(flask_superauth)\n", "scripts/build.py": "import boto_superauth\nprint(boto_superauth)\n"}
+
+
+def test_a_development_dependency_doesnt_satisfy_a_runtime_import(tmp_path):
+    result = scan_repo(tmp_path, DEV_ONLY)
+    found = [f for f in result.findings if f["path"] == "app/a.py" and f["rule"] in ("phantom-import", "undeclared-dependency")]
+    assert len(found) == 3 and {f["rule"] for f in found} == {"undeclared-dependency"}
+    assert all(f["severity"] == "low" and "only as a development/build dependency" in f["message"] for f in found)
+    assert rules_at(result, "tests/test_a.py") == [] and rules_at(result, "scripts/build.py") == []
+    typed = [f["message"].split("'")[1] for f in result.findings if f["path"] == "app/typed.py" and f["rule"] == "undeclared-dependency"]
+    assert typed == ["boto_superauth"]  # a type checker's import needs no runtime install, and a lazy one does when it runs
+
+
+def test_an_optional_extra_is_a_runtime_dependency(tmp_path):
+    result = scan_repo(tmp_path, {"pyproject.toml": '[project]\nname = "x"\n[project.optional-dependencies]\naws = ["flask_superauth"]\n', "app/a.py": "import flask_superauth\nprint(flask_superauth)\n"})
+    assert rules_at(result, "app/a.py") == []
+
+
+def test_a_node_dev_dependency_doesnt_satisfy_shipped_code(tmp_path):
+    result = scan_repo(tmp_path, {"package.json": '{"dependencies": {"react": "1"}, "devDependencies": {"left-pad-super": "1"}}',
+                                  "src/a.js": "import x from 'left-pad-super';\nimport r from 'react';\nuse(x, r);\n", "src/a.test.js": "import x from 'left-pad-super';\nuse(x);\n",
+                                  "vite.config.js": "import x from 'left-pad-super';\nuse(x);\n"})
+    found = [f for f in result.findings if f["rule"] in ("phantom-import", "undeclared-dependency")]
+    assert [(f["path"], f["rule"], f["severity"]) for f in found] == [("src/a.js", "undeclared-dependency", "low")]
+    assert "only as a development/build dependency" in found[0]["message"]
+
+
+def test_a_sibling_packages_manifest_doesnt_cover_another_package(tmp_path):
+    files = {"a/pyproject.toml": '[project]\nname = "a"\ndependencies = ["flask_superauth"]\n', "b/pyproject.toml": '[project]\nname = "b"\ndependencies = []\n',
+             "a/app.py": "import flask_superauth\nprint(flask_superauth)\n", "b/app.py": "import flask_superauth\nprint(flask_superauth)\n"}
+    result = scan_repo(tmp_path / "split", files)
+    assert rules_at(result, "a/app.py") == [] and rules_at(result, "b/app.py") == ["phantom-import"]
+    shared = scan_repo(tmp_path / "shared", {**files, "pyproject.toml": '[project]\nname = "all"\ndependencies = ["flask_superauth"]\n'})
+    assert rules_at(shared, "b/app.py") == []  # the root's manifest is above both
+
+
+def test_a_go_or_node_manifest_covers_only_the_code_below_it(tmp_path):
+    result = scan_repo(tmp_path, {"web/package.json": '{"dependencies": {"left-pad-super": "1"}}', "api/package.json": '{"dependencies": {"react": "1"}}',
+                                  "web/a.js": "import x from 'left-pad-super';\nuse(x);\n", "api/a.js": "import x from 'left-pad-super';\nuse(x);\n"})
+    assert rules_at(result, "web/a.js") == [] and rules_at(result, "api/a.js") == ["phantom-import"]
+
+
+@pytest.mark.parametrize("declared, top, expected", [
+    ({"flask-login"}, "flask", False), ({"django"}, "django_extensions", False), ({"requests-mock"}, "requests", False), ({"flask"}, "flask_login", False),
+    ({"flask-login"}, "flask_login", True), ({"opentelemetry-sdk"}, "opentelemetry", True), ({"azure-storage-blob"}, "azure", True), ({"zope-interface"}, "zope", True),
+    ({"jaraco-text"}, "jaraco", True), ({"sphinxcontrib-napoleon"}, "sphinxcontrib", True), ({"backports-zoneinfo"}, "backports", True),
+    ({"opencv-python-headless"}, "cv2", True), ({"psycopg2"}, "psycopg2", True), ({"pyyaml"}, "yaml", True),
+])
+def test_a_distribution_covers_only_its_own_import_name(declared, top, expected):
+    assert imports._declares(declared, top) is expected
+
+
+def test_requirement_files_follow_their_includes(tmp_path):
+    (tmp_path / "libs").mkdir()
+    (tmp_path / "requirements.txt").write_text("-r base.txt\n--requirement=more.txt\n-c constraints/pins.txt\n-r ../outside.txt\n-r /etc/hosts\n"
+                                               "-e ./libs/my-lib\n-e ../shared_lib\n-e git+https://github.com/x/y.git#egg=super_lib\nrequests  # pinned elsewhere\n"
+                                               "hg+https://hg.example/repo#egg=hg_lib\nnamed_lib @ https://example.com/a.whl#egg=other\n")
+    (tmp_path / "base.txt").write_text("flask_superauth\n-r requirements.txt\n")  # a cycle
+    (tmp_path / "more.txt").write_text("--requirement more.txt\nboto_superauth\n")
+    (tmp_path / "constraints").mkdir()
+    (tmp_path / "constraints" / "pins.txt").write_text("zork_superauth==1\n")
+    (tmp_path.parent / "outside.txt").write_text("leaked_superauth\n")
+    found = manifests.read_manifests(tmp_path, ["requirements.txt"])
+    assert set(found["python"]) == {"requests", "flask-superauth", "boto-superauth", "zork-superauth", "super-lib", "hg-lib", "named-lib"}
+    assert found["python_local"] == {"my-lib", "shared-lib"}
+    assert found["python"]["flask-superauth"] == "base.txt" and found["python"]["requests"] == "requirements.txt"  # so a frozen include reads as frozen
+
+
+def test_an_editable_local_install_is_not_a_phantom_import(tmp_path):
+    result = scan_repo(tmp_path, {"requirements.txt": "-e ../shared_lib\nrequests\n", "app/a.py": "import shared_lib\nprint(shared_lib)\n"})
+    assert rules_at(result, "app/a.py") == []
+
+
+def test_a_manifest_is_read_only_as_a_plain_file_inside_the_repository(tmp_path):
+    root, outside = tmp_path / "repo", tmp_path / "elsewhere"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "requirements.txt").write_text("flask_superauth\n")
+    (root / "requirements.txt").symlink_to(outside / "requirements.txt")
+    assert manifests.read_manifests(root, ["requirements.txt"])["python"] == {}
+    (root / "pkg").mkdir()
+    (outside / "dependencies.py").write_text("install_requires = ['flask_superauth']\n")
+    (root / "pkg" / "dependencies.py").symlink_to(outside / "dependencies.py")
+    (root / "pkg" / "setup.py").write_text("import runpy\ndeps = runpy.run_path('dependencies.py')\nsetup(install_requires=deps['install_requires'])\n")
+    assert manifests.read_manifests(root, ["pkg/setup.py"])["python"] == {}
+    (outside / "frozen.txt").write_text("".join(f"pkg{i}==1.0\n" for i in range(40)))
+    (root / "requirements-frozen.txt").symlink_to(outside / "frozen.txt")
+    assert not manifests.looks_frozen(root, "requirements-frozen.txt")
+
+
+def test_an_oversized_manifest_is_skipped_but_a_large_lockfile_is_read(tmp_path):
+    (tmp_path / "requirements.txt").write_text("flask_superauth\n" + "# padding\n" * 200_000)
+    assert manifests.read_manifests(tmp_path, ["requirements.txt"])["python"] == {}
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "pyproject.toml").write_text('[project]\nname = "x"\n')
+    (tmp_path / "pkg" / "uv.lock").write_text("# padding\n" * 200_000 + 'name = "sse-starlette"\n')
+    assert "sse-starlette" in manifests.read_manifests(tmp_path, ["pkg/pyproject.toml"])["python_locked"]
+
+
+def test_an_attribute_newer_than_this_python_doesnt_block_a_project_that_needs_a_newer_one(tmp_path, monkeypatch):
+    files = {"pyproject.toml": '[project]\nname = "x"\nrequires-python = ">=3.99"\n', "app/a.py": "import json\nprint(json.parse('1'))\n"}
+    real, asked = manifests.shutil.which, []
+
+    def which(found):
+        return lambda name: (asked.append(name), found)[1] if name.startswith("python") else real(name)
+    monkeypatch.setattr(manifests.shutil, "which", which(None))
+    found = [f for f in scan_repo(tmp_path / "none", files).findings if f["rule"] == "phantom-attribute"]
+    here = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert [f["confidence"] for f in found] == ["low"] and f"on Python {here}, older than the 3.99 this project requires" in found[0]["message"]
+    monkeypatch.setattr(manifests.shutil, "which", which(sys.executable))
+    found = [f for f in scan_repo(tmp_path / "found", files).findings if f["rule"] == "phantom-attribute"]
+    assert asked == ["python3.99", "python3.99"] and [f["confidence"] for f in found] == ["high"] and "on Python 3.99." in found[0]["message"]
+
+
+@pytest.mark.parametrize("failure", ["oserror", "timeout", "exit", "json"])
+def test_an_attribute_check_that_couldnt_run_says_so(monkeypatch, failure):
+    import subprocess as sp
+
+    def broken(*args, **kwargs):
+        if failure == "oserror":
+            raise OSError("no such interpreter")
+        if failure == "timeout":
+            raise sp.TimeoutExpired("python", 30)
+        return sp.CompletedProcess(args, 1 if failure == "exit" else 0, stdout="not json", stderr="boom")
+    monkeypatch.setattr(manifests.subprocess, "run", broken)
+    found, problem = manifests.missing_stdlib_attributes({"json": [["parse"]]})
+    assert found == [] and problem
+    result = scan.scan_snippet("app/a.py", "import json\nprint(json.parse('1'))\n")
+    assert any("standard library attributes" in note for note in result.project.notes)
+    stats = {**result.stats, "notes": result.project.notes}  # where run_scan's stats carry them, the report shows them
+    assert "standard library attributes" in report.render_text([], 0, stats, 10) and "standard library attributes" in report.render_markdown([], stats)
 
 
 # ---------------------------------------------------------------- 6. what was missed

@@ -134,7 +134,7 @@ Occam has been through preregistered evaluations with real Claude Code sessions,
 
 **How do I turn it off?** `OCCAM_HOOKS=off` for a session, `OCCAM_HOOKS=guard` to keep only the safety guards, or `claude plugin uninstall occam@occam`. It's a safety net, not a security boundary.
 
-**Does it work outside Claude Code?** It needs Python 3.9 or later. Codex has [its own adapter](adapters/codex) with the hooks, untested there. Other agents can take the skills alone, also untested: `npx skills add stephenoffer/occam --skill '*'`.
+**Does it work outside Claude Code?** It needs Python 3.9 or later. Codex has [its own adapter](adapters/codex) with the hooks, which have run once under Codex; the skills haven't been tried there. Other agents can take the skills alone, also untested: `npx skills add stephenoffer/occam --skill '*'`.
 
 **Can I use the scanner without the plugin?** Yes. Run `git clone https://github.com/stephenoffer/occam.git ~/occam`, then `python3 ~/occam/plugin/skills/occam/scripts/occam.py scan .` in any project. It reads the code without running or importing it. [All 16 commands.](docs/tools.md)
 

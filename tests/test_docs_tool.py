@@ -269,6 +269,23 @@ def test_a_hung_linter_is_reported_rather_than_waited_for(project, monkeypatch):
     assert code == 1 and "voice: FAILED to run, timed out after 1s" in text
 
 
+def test_a_hung_linter_takes_what_it_started_with_it(project, monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(OCCAM.parent))
+    from occam_tools import docs
+    marker = tmp_path / "grandchild-ran"
+    target = project.home / ".claude/skills" / LINTER_PATH
+    target.parent.mkdir(parents=True)
+    target.write_text(f"import subprocess, time\nsubprocess.Popen(['sh', '-c', 'sleep 1.5; touch {marker}'])\ntime.sleep(30)\n")
+    project.write("README.md", "Plain text.\n")
+    monkeypatch.setenv("HOME", str(project.home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(docs, "_LINT_SECONDS", 1)
+    text, _ = docs.check(project.path, paths=[str(project.path / "README.md")])
+    assert "timed out after 1s" in text
+    time.sleep(2)
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("name, text", [
     ("open brackets", "[" * 400_000),
     ("unclosed backticks of every length", "".join("`" * length + "a" for length in range(1, 880))),

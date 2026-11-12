@@ -1,6 +1,6 @@
 # Codex adapter
 
-**Status: untested.** No Codex run has happened, so everything here comes from the docs alone.
+**Status: hooks run once, skills untested.** On 2026-11-11 the hooks ran in five short live Codex CLI 0.164.0-alpha sessions, through a logging wrapper, and [What was tested](../../docs/evidence.md) says what was seen. Everything else here comes from the docs.
 
 Everything here is optional. The skill works with no adapter: copy one folder and you are done. Nothing in this directory activates by itself.
 
@@ -23,7 +23,7 @@ No `agents/openai.yaml` is shipped, because the defaults (implicit invocation on
 
 `plugin/.codex-plugin/plugin.json` makes `plugin/` a Codex plugin, and `.agents/plugins/marketplace.json` at the repository root lists it, per the plugin docs. It adds hooks in `plugin/hooks/codex-hooks.json`: edits are held on a request that reads as audit-only, review-only or plan-only, or that only says no to a final message asking whether to go ahead with work, and from the shell any write except one plain command naming a path that isn't there yet; after an edit, the scanner mentions serious findings the edit introduced; and before stopping, the agent is sent back once if any remain, except on a turn where edits are held. None of this has run on Codex yet. What's new is judged against a record made just before the edit.
 
-Codex skips plugin hooks until you review and trust them in `/hooks`, and a changed script needs trusting again. Plugins with hooks can't go in the public plugin directory, which is one more reason the skills work alone. **None of this has run under Codex:** the protocol is written from the docs and tested locally by feeding the script the documented events.
+Codex skips plugin hooks until you review and trust them in `/hooks`, and a changed script needs trusting again. Plugins with hooks can't go in the public plugin directory, which is one more reason the skills work alone. The protocol was written from the docs and tested locally with the documented events, then run once under Codex, where the hold, the note after an edit and the send-back at Stop all fired. To try the hooks without installing anything, put `plugin/hooks/codex-hooks.json`'s entries, with the script's full path, in a repository's `.codex/hooks.json` and run `codex exec --dangerously-bypass-hook-trust` there. An edit made with a shell command isn't scanned afterwards, since PostToolUse here covers patches and file writes.
 
 ## The audit tools
 

@@ -911,7 +911,8 @@ def import_facts(source: Source) -> list[dict]:
         for match in _JS_IMPORT.finditer(source.text):
             if source.code[match.start()] not in ("i", "e", "r"):
                 continue
-            found.append({"module": match.group(1), "line": source.line_of(match.start())})
+            found.append({"module": match.group(1), "line": source.line_of(match.start()),
+                          **({"type_only": True} if re.match(r"(?:import|export)\s+type\b", match.group(0)) else {})})  # erased when it's built
     elif language == "go":
         block = re.search(r"^import\s*\((.*?)^\)", source.text, re.M | re.S)
         region = block.group(1) if block else "\n".join(m for m in re.findall(r"^import\s+.*$", source.text, re.M))

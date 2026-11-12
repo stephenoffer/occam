@@ -74,7 +74,7 @@ def run_cost(rows):
         usage["w5"] += creation.get("ephemeral_5m_input_tokens", 0) or 0
         usage["w1"] += creation.get("ephemeral_1h_input_tokens", 0) or 0
     models = results[-1]["modelUsage"]
-    model = max(models, key=lambda name: models[name]["costUSD"])
+    model = _main_model(rows, models)
     total = sum(entry["costUSD"] for entry in models.values())
     if model not in PRICES:
         return {"model": model, "total": total, "unpriced": True, "segments": len(results)}
@@ -90,6 +90,16 @@ def run_cost(rows):
             "subagents": max(0.0, total - write - read - output - main_input), "five_min": total - cheaper,
             "five_min_gaps": total - cheaper + rewrite, "gaps_over": missed_gaps, "turns": results[-1].get("num_turns") or 0,
             "w1": usage["w1"], "w5": usage["w5"]}
+
+
+def _main_model(rows, models):
+    """The model the main conversation ran on, as the run's init row or first top-level message says. A costlier subagent model
+    would otherwise price the main conversation's tokens, and the split between them would be wrong. The costliest is a last resort."""
+    for row in rows:
+        named = row.get("model") if row.get("type") == "system" else (row.get("message") or {}).get("model") if row.get("type") == "assistant" and not row.get("parent_tool_use_id") else None
+        if named in models:
+            return named
+    return max(models, key=lambda name: models[name]["costUSD"])
 
 
 def collect(folder):
@@ -126,7 +136,9 @@ def report(folder):
         if costs:
             lines.append(f"| {arm} | {len(costs)} | " + " | ".join(f"{mean(costs, key):.3f}" for key in ("total", "write", "read", "output", "subagents"))
                          + f" | {mean(costs, 'turns'):.1f} | {mean(costs, 'five_min'):.3f} | {mean(costs, 'five_min_gaps'):.3f} | {mean(costs, 'gaps_over'):.2f} |")
-    paired = [case for case in runs.values() if case.get("with") and case.get("without")]
+    # An unpriced run has no parts, and averaging it in would count them as zero, so paired means use priced runs only.
+    priced = [{arm: [cost for cost in costs if not cost.get("unpriced")] for arm, costs in case.items()} for case in runs.values()]
+    paired = [case for case in priced if case.get("with") and case.get("without")]
     if paired:
         base = sum(mean(case["without"], "total") for case in paired)
         extra = {key: sum(mean(case["with"], key) - mean(case["without"], key) for case in paired) for key in ("total", "write", "read", "output", "subagents")}

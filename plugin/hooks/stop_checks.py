@@ -178,12 +178,16 @@ def left_unnamed(turn: Turn) -> str | None:
 
 
 def scanner_sees_new_findings(turn: Turn) -> str | None:
-    found = [finding for path in scan_notes.within_budget(sorted(turn.files)) for finding in scan_notes.introduced(
+    left: list = []
+    found = [finding for path in scan_notes.within_budget(sorted(turn.files), left=left) for finding in scan_notes.introduced(
         absolute_path(turn.event, path), path, scan_notes.known_findings(turn.event, turn.session, path))]
+    if left or any(entry.get("kind") == "scan_skipped" for entry in turn.session.turn):  # a later scan that read everything clears it
+        record(turn.event, kind="scan_skipped", paths=left[:20], count=len(left))  # so the person hears of it even if nothing is sent back
     if not found:
         return None
+    skipped = f" {len(left)} more changed files weren't scanned in the time a hook has ({', '.join(left[:3])}), so `occam gate` reads them." if left else ""
     return ("The scanner sees these in what you changed, and they weren't there before: " + scan_notes.describe(found) +
-            ". Fix each one, or say in the report why it's fine.")
+            ". Fix each one, or say in the report why it's fine." + skipped)
 
 
 def scanner_still_raises(turn: Turn) -> str | None:
@@ -283,7 +287,17 @@ def listed_item_left_out(turn: Turn) -> str | None:
 
 # The owner chose these to ride along with a send-back that something else causes, so they never cost a turn of their own.
 RIDERS = (security_claim_unchecked, done_with_goal_unverified, left_running, race_detector_not_run)
-FOR_THE_PERSON = (listed_item_left_out,)
+def scan_left_files_unread(turn: Turn) -> str | None:
+    """The end-of-turn scan ran out of time, and nothing it read sent the agent back: the person hears what it didn't read."""
+    skipped = [entry for entry in Session(turn.event).turn if entry.get("kind") == "scan_skipped"]
+    if not skipped or not skipped[-1].get("count"):
+        return None
+    last = skipped[-1]
+    return (f"The end-of-turn scan ran out of time and didn't read {last.get('count')} changed files ({', '.join((last.get('paths') or [])[:3])}). "
+            "`occam gate` reads them all.")
+
+
+FOR_THE_PERSON = (listed_item_left_out, scan_left_files_unread)
 
 
 def _safely(check, turn: Turn) -> str | None:

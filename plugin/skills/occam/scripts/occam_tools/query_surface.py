@@ -7,8 +7,9 @@ import re
 from collections.abc import Iterator
 from typing import Callable
 
+from .py_helpers import _decorator_names
 from .query import MAX_LINE_READ, credential_in, go_block_names, rust_use_paths, rust_use_trees
-from .source import Source, is_script_path, is_test_path, load
+from .source import SCRIPT_PATH, Source, is_test_path, load
 
 MAX_SIGNATURE = 120
 
@@ -60,7 +61,9 @@ API_LIMITS = ("Python is read from syntax and the rest by pattern, so these aren
 
 
 def _private_module(path: str) -> bool:
-    return is_test_path(path) or is_script_path(path) or any(part.startswith("_") and part != "__init__.py" and part != "__main__.py" for part in path.split("/"))
+    """Tests and underscore modules anywhere. A folder of scripts, tools or docs only at the top or just under `src/`, since inside a package `tools/` is part of it."""
+    top = path[len("src/"):] if path.startswith("src/") else path
+    return is_test_path(path) or bool(SCRIPT_PATH.match(top)) or any(part.startswith("_") and part != "__init__.py" and part != "__main__.py" for part in path.split("/"))
 
 
 def _flat_statements(body: list) -> Iterator[ast.AST]:
@@ -106,38 +109,115 @@ def _reexported(node: ast.ImportFrom, alias: ast.alias, path: str) -> bool:
 
 
 def _python_public(text: str, path: str = "") -> dict[str, dict]:
-    """Public names with their parameters. __all__ decides when it's a plain list, and otherwise the leading underscore does."""
+    """Public names with their parameters. __all__ decides when it's a plain list, and otherwise the leading underscore does.
+    Each entry has a `shape`, which other languages' entries don't, and `@overload` declarations are kept beside the definition."""
     tree = ast.parse(text)
     exported, computed = _dunder_all(tree)
     surface: dict[str, dict] = {}
+    declared: dict[str, list[dict]] = {}
 
     def public(name: str) -> bool:
         return name in exported if exported is not None else not name.startswith("_")
 
+    def define(key: str, node: ast.AST, method: bool = False) -> None:
+        descriptor, decorators, overload, accessor = _decorated(node, method)
+        held = surface.get(key)
+        if accessor and held and held.get("descriptor") == "property":
+            held["accessors"] = sorted({*held["accessors"], accessor})
+            return
+        entry = {**_python_entry(node, method, descriptor), "decorators": decorators, **({"accessors": []} if descriptor == "property" else {})}
+        if overload:
+            declared.setdefault(key, []).append(entry)
+            surface.setdefault(key, entry)  # holds the place for the definition that follows, if one does
+        else:
+            surface[key] = entry
+
     for node in _flat_statements(tree.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and public(node.name):
-            surface[node.name] = _python_entry(node)
+            define(node.name, node)
         elif isinstance(node, ast.ClassDef) and public(node.name):
-            surface[node.name] = {"kind": "class", "line": node.lineno, "signature": ""}
+            surface[node.name] = {"kind": "class", "line": node.lineno, "signature": "", "shape": "class", "bases": _bases(node), "decorators": _decorated(node, False)[1]}
             for inner in _flat_statements(node.body):
                 if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)) and (not inner.name.startswith("_") or inner.name in ("__init__", "__call__")):
-                    surface[f"{node.name}.{inner.name}"] = _python_entry(inner, method=True)
+                    define(f"{node.name}.{inner.name}", inner, method=True)
                 elif isinstance(inner, (ast.Assign, ast.AnnAssign)):
-                    surface.update({f"{node.name}.{name}": {"kind": "attribute", "line": inner.lineno, "signature": ""} for name in _assigned_names(inner) if not name.startswith("_")})
+                    surface.update({f"{node.name}.{name}": {"kind": "attribute", "line": inner.lineno, "signature": "", "shape": _value_shape(inner)} for name in _assigned_names(inner) if not name.startswith("_")})
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            surface.update({name: {"kind": "variable", "line": node.lineno, "signature": ""} for name in _assigned_names(node) if name != "__all__" and public(name) and name not in surface})
+            surface.update({name: {"kind": "variable", "line": node.lineno, "signature": "", "shape": _value_shape(node)} for name in _assigned_names(node) if name != "__all__" and public(name) and name not in surface})
         elif isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 name = alias.asname or alias.name
                 if name == "*":
-                    surface[f"* from {'.' * node.level}{node.module or ''}"] = {"kind": "re-export", "line": node.lineno, "signature": ""}
+                    surface[f"* from {'.' * node.level}{node.module or ''}"] = {"kind": "re-export", "line": node.lineno, "signature": "", "shape": None}
                 elif name not in surface and (name in exported if exported is not None else not name.startswith("_") and _reexported(node, alias, path)):
-                    surface[name] = {"kind": "re-export", "line": node.lineno, "signature": ""}
+                    surface[name] = {"kind": "re-export", "line": node.lineno, "signature": "", "shape": None}
+    for key, forms in declared.items():
+        head = surface.get(key)
+        if head is forms[0]:
+            head["overloads"] = forms[1:]
+        elif head is not None and head.get("shape") == "function":
+            head["overloads"] = forms
     for name in sorted(exported or ()):  # `__all__` can name what's made some other way, and dropping it from the list still breaks `import *`
-        surface.setdefault(name, {"kind": "name", "line": 1, "signature": ""})
+        surface.setdefault(name, {"kind": "name", "line": 1, "signature": "", "shape": None})
     if computed is not None:
         surface["__all__"] = {"kind": "computed", "line": computed, "signature": ""}
     return surface
+
+
+_DESCRIPTORS = {"staticmethod": "static method", "classmethod": "class method", "property": "property", "cached_property": "cached property"}
+_TYPING_ONLY = {"override", "final", "deprecated"}  # they change nothing about how it's called
+# Decorators whose arguments change how the result is built: @dataclass(frozen=True) makes assignment fail, kw_only changes the constructor.
+_ARGUMENTS_COUNT = {"dataclass", "define", "frozen", "attrs", "dataclass_transform"}
+_VALUES = (ast.Constant, ast.JoinedStr, ast.List, ast.Tuple, ast.Dict, ast.Set, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _decorated(node: ast.AST, method: bool) -> tuple[str | None, list[str], bool, str | None]:
+    """What a definition's decorators make of it: the descriptor a method is, the other decorators by name, whether it's an `@overload`, and which accessor of a property it is."""
+    descriptor, others, overload, accessor = "method" if method else None, [], False, None
+    for decorator, name in zip(node.decorator_list, _decorator_names(node)):
+        last = name.rsplit(".", 1)[-1]
+        if method and last in _DESCRIPTORS:
+            descriptor = _DESCRIPTORS[last]
+        elif last == "overload":
+            overload = True
+        elif method and name in (f"{node.name}.setter", f"{node.name}.deleter", f"{node.name}.getter"):
+            accessor = last
+        elif last not in _TYPING_ONLY:  # by its own name, so `@cache` and `@functools.cache` read alike
+            counts = last in _ARGUMENTS_COUNT or name in ("attr.s", "attr.attrs", "attr.define", "attr.frozen", "attrs.define", "attrs.frozen")
+            arguments = _arguments(decorator) if isinstance(decorator, ast.Call) and counts else ""
+            others.append((last or _source_of(decorator) or "?") + arguments)
+    return descriptor, sorted(others), overload, accessor
+
+
+def _arguments(call: ast.Call) -> str:
+    """A decorator's arguments in one spelling: keywords in name order, and none at all the same as `()`."""
+    given = [_source_of(arg) or "?" for arg in call.args] + sorted(f"{keyword.arg}={_source_of(keyword.value)}" for keyword in call.keywords)
+    return f"({', '.join(given)})" if given else ""
+
+
+def _bases(node: ast.ClassDef) -> str:
+    listed = [_source_of(item) or "?" for item in [*node.bases, *node.keywords]]
+    return f"({', '.join(listed)})" if listed else ""
+
+
+def _value_shape(node: ast.AST) -> str | None:
+    """`value` for what can't be called, `function` for a lambda, and None for a name or a call, which could be either."""
+    value = node.value
+    if isinstance(value, ast.UnaryOp) and isinstance(value.operand, ast.Constant):
+        value = value.operand
+    return "value" if isinstance(value, _VALUES) else "function" if isinstance(value, ast.Lambda) else None
+
+
+def _yields(node: ast.AST) -> bool:
+    """A `yield` of its own, not one in a function or class defined inside it."""
+    stack = list(node.body)
+    while stack:
+        item = stack.pop()
+        if isinstance(item, (ast.Yield, ast.YieldFrom)):
+            return True
+        if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(item))
+    return False
 
 
 def _whole_signature(node: ast.AST) -> str:
@@ -155,16 +235,16 @@ def _source_of(node: ast.AST | None) -> str | None:
         return None
 
 
-def _python_entry(node: ast.AST, method: bool = False) -> dict:
+def _python_entry(node: ast.AST, method: bool = False, descriptor: str | None = None) -> dict:
     args = node.args
-    positional = [*args.posonlyargs, *args.args]
-    if method and positional and positional[0].arg in ("self", "cls"):
-        positional = positional[1:]
-    defaults_from = len(positional) - len(args.defaults)
-    params = [{"name": arg.arg, "required": index < defaults_from, "kind": "positional", "default": _source_of(args.defaults[index - defaults_from]) if index >= defaults_from else None}
-              for index, arg in enumerate(positional)]
+    positional = [(arg, "positional-only") for arg in args.posonlyargs] + [(arg, "positional") for arg in args.args]
+    slots = list(zip(positional, [None] * (len(positional) - len(args.defaults)) + list(args.defaults)))
+    if method and descriptor != "static method" and slots and slots[0][0][0].arg in ("self", "cls"):
+        slots = slots[1:]
+    params = [{"name": arg.arg, "required": default is None, "kind": kind, "default": _source_of(default)} for (arg, kind), default in slots]
     params += [{"name": arg.arg, "required": default is None, "kind": "keyword", "default": _source_of(default)} for arg, default in zip(args.kwonlyargs, args.kw_defaults)]
-    return {"kind": "function", "line": node.lineno, "signature": _signature(node), "whole_signature": _whole_signature(node), "params": params, "star": bool(args.vararg), "double_star": bool(args.kwarg)}
+    return {"kind": "function", "line": node.lineno, "signature": _signature(node), "whole_signature": _whole_signature(node), "params": params, "star": bool(args.vararg),
+            "double_star": bool(args.kwarg), "shape": "function", "descriptor": descriptor, "async": isinstance(node, ast.AsyncFunctionDef), "generator": _yields(node)}
 
 
 def _keep(surface: dict[str, dict], name: str, kind: str, line: int, rest: str = "") -> None:

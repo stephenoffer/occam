@@ -610,6 +610,81 @@ def test_tools_run_really_narrows(repo):
     assert "ruff: exit 1, 1 results" in done.stdout
 
 
+def fake_tool(repo, tmp_path, name, body):
+    """A stand-in on PATH, outside the repository, so it runs without --allow-exec."""
+    folder = tmp_path / "bin"
+    folder.mkdir(exist_ok=True)
+    (folder / name).write_text(body)
+    (folder / name).chmod(0o755)
+    repo.env["PATH"] = f"{folder}{os.pathsep}{os.environ['PATH']}"
+    repo.write("a.py", "x = 1\n")
+
+
+@pytest.mark.parametrize("body, code, says", [
+    ("#!/bin/sh\necho '[]'\nexit 2\n", 1, "error"),  # ruff's own failure, which isn't a finding
+    ("#!/bin/sh\nkill -9 $$\n", 1, "signal"),
+    ("#!/nonexistent/interpreter\n", 1, "failed to start"),
+    ("#!/bin/sh\necho '[{}]'\nexit 1\n", 0, "exit 1, 1 results"),  # findings
+])
+def test_tools_run_exits_nonzero_only_when_a_tool_failed(repo, tmp_path, body, code, says):
+    fake_tool(repo, tmp_path, "ruff", body)
+    done = repo.occam("tools", "--run", "--only", "ruff")
+    assert done.returncode == code and says in done.stdout, done.stdout
+
+
+def test_a_tool_that_runs_out_of_time_stops_what_it_started(tmp_path, monkeypatch):
+    marker = tmp_path / "marker"
+    script = tmp_path / "slow.sh"
+    script.write_text(f"#!/bin/sh\n(sleep 2; touch {marker}) &\nwait\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(toolrun, "TIMEOUT_SECONDS", 1)
+    line, finished = toolrun._run_one(toolrun.CATALOG[0], [str(script)], tmp_path, None)
+    assert "timed out" in line.lower() and not finished
+    time.sleep(2.5)
+    assert not marker.exists()
+
+
+def test_an_unknown_only_name_is_refused(repo):
+    done = repo.occam("tools", "--run", "--only", "ruff", "--only", "nosuchtool")
+    assert done.returncode == 2 and "nosuchtool" in done.stdout and "golangci-lint" in done.stdout
+
+
+@pytest.mark.parametrize("name, sub, expected", [
+    ("golangci-lint", "pkg", "./pkg/..."), ("govulncheck", "pkg", "./pkg/..."), ("ruff", "pkg", "./pkg"), ("golangci-lint", "pkg/main.go", "./pkg"),
+])
+def test_each_tool_narrows_the_way_it_takes_paths(tmp_path, name, sub, expected):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "main.go").write_text("package main\n")
+    tool = next(tool for tool in toolrun.CATALOG if tool.name == name)
+    command, note = toolrun._invocation(tool, name, tmp_path, [str(tmp_path / sub)])
+    assert expected in command and note is None
+
+
+@pytest.mark.parametrize("name", ["tsc", "knip", "gitleaks", "deadcode", "cargo", "actionlint"])
+def test_a_tool_that_cant_be_narrowed_says_it_read_everything(tmp_path, name):
+    (tmp_path / "pkg").mkdir()
+    tool = next(tool for tool in toolrun.CATALOG if tool.name == name)
+    command, note = toolrun._invocation(tool, name, tmp_path, [str(tmp_path / "pkg")])
+    assert "./pkg" not in " ".join(command) and "whole repository" in note
+
+
+def test_the_whole_repository_note_reaches_the_report(repo, tmp_path):
+    fake_tool(repo, tmp_path, "actionlint", "#!/bin/sh\nexit 0\n")
+    (repo.path / "sub").mkdir()
+    done = repo.occam("tools", "--run", "--only", "actionlint", "sub")
+    assert "whole repository" in done.stdout
+
+
+def test_a_saved_tool_run_says_how_it_was_run(repo, tmp_path):
+    fake_tool(repo, tmp_path, "ruff", "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'ruff 9.9'; exit 0; fi\necho '[]'\n")
+    repo.occam("tools", "--run", "--only", "ruff")
+    [saved] = list((tmp_path / "state").rglob("tools/ruff.json"))
+    envelope = json.loads(saved.read_text())
+    assert envelope["exit"] == 0 and envelope["args"][-1] == "." and envelope["cwd"] == str(repo.path.resolve())
+    assert envelope["version"] == "ruff 9.9" and envelope["stdout"] == "[]\n" and envelope["seconds"] >= 0 and envelope["started"]
+    assert envelope["command"].endswith("ruff")
+
+
 def test_a_script_with_no_extension_is_told_by_its_shebang(tmp_path):
     (tmp_path / "x").write_text("#!/bin/bash\n")
     (tmp_path / "y").write_text("#!/usr/bin/env python3\n")

@@ -313,6 +313,26 @@ def test_api_reads_other_languages(repo):
     ("def f(a):\n    pass\n", "def f(*, a):\n    pass\n", "positional parameter became keyword-only"),
     ("def f(*args):\n    pass\n", "def f():\n    pass\n", "*args removed"),
     ("def f(**kw):\n    pass\n", "def f():\n    pass\n", "**kwargs removed"),
+    # How it's called, not only what it takes.
+    ("def f(a):\n    pass\n", "async def f(a):\n    pass\n", "became async"),
+    ("async def f(a):\n    pass\n", "def f(a):\n    pass\n", "no longer async"),
+    ("def f(a):\n    return [a]\n", "def f(a):\n    yield a\n", "became a generator"),
+    ("def f(a):\n    yield a\n", "def f(a):\n    return [a]\n", "no longer a generator"),
+    ("def f(a):\n    pass\n", "def f(a, /):\n    pass\n", "parameter became positional-only: a"),
+    ("def f(*, a):\n    pass\n", "def f(a, /):\n    pass\n", "parameter became positional-only: a"),
+    ("def f(a, /):\n    pass\n", "def f(*, a):\n    pass\n", "positional parameter became keyword-only"),
+    ("def f(a):\n    pass\n", "def f(**kwargs):\n    pass\n", "parameter removed or renamed: a"),
+    ("def f(*, a):\n    pass\n", "def f(*args):\n    pass\n", "parameter removed or renamed: a"),
+    ("def f(a, /):\n    pass\n", "def f():\n    pass\n", "parameter removed or renamed: a"),
+    ("def f(a=1, b=2):\n    pass\n", "def f(x=0, a=1, b=2):\n    pass\n", "positional parameter inserted before existing ones: x"),
+    ("def f(a):\n    pass\n", "@functools.lru_cache\ndef f(a):\n    pass\n", "decorator added: lru_cache, may change how it's called"),
+    ("@retry(3)\ndef f(a):\n    pass\n", "def f(a):\n    pass\n", "decorator removed: retry, may change how it's called"),
+    ("class f:\n    pass\n", "@dataclass\nclass f:\n    pass\n", "decorator added: dataclass, may change how it's called"),
+    ("class f(dict):\n    pass\n", "class f(list):\n    pass\n", "base classes changed: (dict) → (list)"),
+    ("class f(metaclass=A):\n    pass\n", "class f(metaclass=B):\n    pass\n", "base classes changed: (metaclass=A) → (metaclass=B)"),
+    ("class f:\n    pass\n", "f = 3\n", "kind changed: class → variable"),
+    ("f = 3\n", "class f:\n    pass\n", "kind changed: variable → class"),
+    ("def f(a):\n    pass\n", "f = [1]\n", "kind changed: function → variable"),
 ])
 def test_api_names_what_can_break_a_caller(repo, before, after, reason):
     repo.write("app/mod.py", before)
@@ -328,6 +348,10 @@ def test_api_names_what_can_break_a_caller(repo, before, after, reason):
     # The same value, and a name whose value can't be read here, aren't reported.
     ("def f(a, timeout=30):\n    pass\n", "def f(a, timeout=30.0):\n    pass\n", []),
     ("def f(a, timeout=30):\n    pass\n", "def f(a, timeout=TIMEOUT):\n    pass\n", []),
+    # Space inside a string is its value, not layout, and True equals 1 without being it.
+    ("def f(a, sep='a b'):\n    pass\n", "def f(a, sep='ab'):\n    pass\n", ["default of sep changed from 'a b' to 'ab'"]),
+    ("def f(a, flag=True):\n    pass\n", "def f(a, flag=1):\n    pass\n", ["default of flag changed from True to 1"]),
+    ("def f(a, pair=(True, 2)):\n    pass\n", "def f(a, pair=(1, 2)):\n    pass\n", ["default of pair changed from (True, 2) to (1, 2)"]),
 ])
 def test_api_names_a_changed_default_apart_from_what_breaks(repo, before, after, said):
     repo.write("app/mod.py", before)
@@ -351,6 +375,77 @@ def test_api_doesnt_call_a_compatible_change_breaking(repo):
     repo.write("app/mod.py", "def f(a, b=1, *, c=2):\n    pass\n\n\ndef g():\n    pass\n")
     data = repo.query("api", "--base", "HEAD")
     assert data["changed"][0]["breaking"] == [] and data["removed"] == [] and [row["name"] for row in data["added"]] == ["g"]
+
+
+@pytest.mark.parametrize("before, after", [
+    ("def f(a):\n    return 1\n", "def f(a):\n    def inner():\n        yield a\n    return inner\n"),  # the yield is the inner function's
+    ("async def f(a):\n    pass\n", "async def f(a):\n    return await a\n"),
+    ("def f(a, /):\n    pass\n", "def f(a):\n    pass\n"),
+    ("def f(*, a):\n    pass\n", "def f(a):\n    pass\n"),
+    ("def f(a, /):\n    pass\n", "def f(b, /):\n    pass\n"),  # no call can name a positional-only parameter
+    ("def f(*, a):\n    pass\n", "def f(**kwargs):\n    pass\n"),
+    ("def f(a):\n    pass\n", "def f(*args, **kwargs):\n    pass\n"),
+    ("def f(a=1, b=2):\n    pass\n", "def f(a=1, b=2, x=0):\n    pass\n"),
+    ("def f(a, b='x y'):\n    pass\n", "def f(\n    a,\n    b='x y',  # spaced\n):\n    pass\n"),
+    ("def f(a):\n    pass\n", "@override\ndef f(a):\n    pass\n"),
+    ("class f:\n    pass\n", "f = _Impl\n"),
+])
+def test_api_doesnt_call_a_compatible_python_change_breaking(repo, before, after):
+    repo.write("app/mod.py", before)
+    repo.commit()
+    repo.write("app/mod.py", after)
+    data = repo.query("api", "--base", "HEAD")
+    assert [row for row in data["changed"] if row["breaking"] or row["defaults"]] == [] and data["removed"] == []
+
+
+@pytest.mark.parametrize("before, after, reason", [
+    ("    @staticmethod\n    def fetch(x):\n", "    def fetch(x):\n", "kind changed: static method → method"),
+    ("    @classmethod\n    def fetch(cls, x):\n", "    @staticmethod\n    def fetch(x):\n", "kind changed: class method → static method"),
+    ("    @property\n    def fetch(self):\n", "    def fetch(self):\n", "kind changed: property → method"),
+    ("    @property\n    def fetch(self):\n", "    @functools.cached_property\n    def fetch(self):\n", "kind changed: property → cached property"),
+    ("    @property\n    def fetch(self):\n        pass\n\n    @fetch.setter\n    def fetch(self, value):\n", "    @property\n    def fetch(self):\n", "property setter removed"),
+])
+def test_api_names_a_change_in_how_a_method_is_reached(repo, before, after, reason):
+    repo.write("app/mod.py", f"class API:\n{before}        pass\n")
+    repo.commit()
+    repo.write("app/mod.py", f"class API:\n{after}        pass\n")
+    changed = repo.query("api", "--base", "HEAD")["changed"]
+    assert [row["name"] for row in changed] == ["API.fetch"] and reason in changed[0]["breaking"]
+
+
+def test_api_sees_an_unchanged_property_with_a_setter_as_unchanged(repo):
+    repo.write("app/mod.py", "class API:\n    @property\n    def size(self):\n        return 1\n\n    @size.setter\n    def size(self, value):\n        pass\n")
+    repo.commit()
+    repo.write("app/mod.py", "class API:\n    @property\n    def size(self):\n        return 2\n\n    @size.setter\n    def size(self, value):\n        print(value)\n")
+    data = repo.query("api", "--base", "HEAD")
+    assert data["changed"] == [] and data["removed"] == []
+
+
+OVERLOADED = "from typing import overload\n\n\n@overload\ndef fetch(x: int) -> int: ...\n@overload\ndef fetch(x: str) -> str: ...\ndef fetch(x):\n    return x\n"
+
+
+def test_api_keeps_each_python_overload(repo):
+    repo.write("app/mod.py", OVERLOADED)
+    repo.commit()
+    repo.write("app/mod.py", OVERLOADED.replace("@overload\ndef fetch(x: str) -> str: ...\n", ""))
+    data = repo.query("api", "--base", "HEAD")
+    assert [row["name"] for row in data["removed"]] == ["fetch(x: str) -> str"] and data["changed"] == []
+    first, second = "@overload\ndef fetch(x: int) -> int: ...\n", "@overload\ndef fetch(x: str) -> str: ...\n"
+    repo.write("app/mod.py", OVERLOADED.replace(first + second, second + first))
+    data = repo.query("api", "--base", "HEAD")
+    assert data["removed"] == [] and data["changed"] == [] and data["added"] == []
+    assert sorted(row["signature"] for row in repo.query("api", "app/mod.py")["rows"]) == ["(x)", "(x: int) -> int", "(x: str) -> str"]
+
+
+def test_api_reads_a_tools_folder_inside_a_package(repo):
+    paths = ("src/mypkg/tools/api.py", "tools/build.py", "src/scripts/run.py")
+    for path in paths:
+        repo.write(path, "def f(a, b):\n    pass\n")
+    repo.commit()
+    for path in paths:
+        repo.write(path, "def f(a):\n    pass\n")
+    data = repo.query("api", "--base", "HEAD")
+    assert [row["where"] for row in data["changed"]] == ["src/mypkg/tools/api.py:1"] and data["left_as_private"] == 2
 
 
 def test_api_reports_removed_names_and_deleted_modules(repo):

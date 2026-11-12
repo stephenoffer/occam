@@ -83,12 +83,12 @@ PROJECT = [
     ("undeclared-dependency",
      {"pyproject.toml": '[project]\nname = "x"\ndependencies = []\n', "app/a.py": "import lightgbm\nprint(lightgbm)\n"},
      {"pyproject.toml": '[project]\nname = "x"\ndependencies = ["lightgbm"]\n', "app/a.py": "import lightgbm\nprint(lightgbm)\n"}),
-    # setup.py that builds install_requires from a module beside it
+    # setup.py that builds install_requires from a module beside it. The code sits below it, since a sibling folder's setup.py doesn't install for it
     ("phantom-import",
      {"pkg/setup.py": "import runpy\ndeps = runpy.run_path('dependencies.py')\nsetup(install_requires=deps['install_requires'])\n",
-      "pkg/dependencies.py": "install_requires = [\n    # don't pin this one\n    'flask_login>=1',\n]\n", "app/a.py": "import flask_superauth\nprint(flask_superauth)\n"},
+      "pkg/dependencies.py": "install_requires = [\n    # don't pin this one\n    'flask_login>=1',\n]\n", "pkg/app/a.py": "import flask_superauth\nprint(flask_superauth)\n"},
      {"pkg/setup.py": "import runpy\ndeps = runpy.run_path('dependencies.py')\nsetup(install_requires=deps['install_requires'])\n",
-      "pkg/dependencies.py": "install_requires = [\n    # don't pin this one\n    'flask_superauth>=1',\n]\n", "app/a.py": "import flask_superauth\nprint(flask_superauth)\n"}),
+      "pkg/dependencies.py": "install_requires = [\n    # don't pin this one\n    'flask_superauth>=1',\n]\n", "pkg/app/a.py": "import flask_superauth\nprint(flask_superauth)\n"}),
 ]
 
 
@@ -140,7 +140,7 @@ def test_a_handler_that_says_why_it_reports_success_is_a_low_confidence_lead():
 def test_the_names_of_extras_are_not_packages(tmp_path):
     files = {"pkg/setup.py": "import runpy\ndeps = runpy.run_path('dependencies.py')\nsetup(install_requires=deps['install_requires'], extras_require=deps['extras'])\n",
              "pkg/dependencies.py": "install_requires = ['flask_superauth>=1']\nextras = {'aws': ['flask_superauth'], 'do': []}\n",
-             "app/a.py": "import flask_superauth\nprint(flask_superauth)\n"}
+             "pkg/app/a.py": "import flask_superauth\nprint(flask_superauth)\n"}
     findings = scan_files(tmp_path, files)
     assert not [f for f in findings if f["rule"] == "unused-dependency" and ("'aws'" in f["message"] or "'do'" in f["message"])]
     assert "phantom-import" not in rules_in(findings)

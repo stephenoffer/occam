@@ -311,12 +311,16 @@ def test_a_plan_written_where_the_request_asked_is_allowed(agent):
     assert decision(agent.try_edit("app.py")) == "deny"
 
 
-@pytest.mark.parametrize("tool", ["ExitPlanMode", "AskUserQuestion"])
-def test_a_person_approving_lifts_a_read_only_turn(agent, tool):
+@pytest.mark.parametrize("tool, tool_input", [("ExitPlanMode", {}), ("AskUserQuestion", {"answers": {"Should I go ahead and fix these?": "Yes, fix them"}}),
+                                              ("AskUserQuestion", {"answers": {"Should I fix the audit findings?": "Yes"}}),
+                                              ("AskUserQuestion", {"answers": {"Fix these issues now?": "Yes"}}),
+                                              ("AskUserQuestion", {"answers": {"Shall I continue and fix the rest?": "Yes"}}),
+                                              ("AskUserQuestion", {"answers": {"Should I apply these fixes?": "Sure, please"}})])
+def test_a_person_approving_lifts_a_read_only_turn(agent, tool, tool_input):
     agent.prompt("Review only, don't change anything.")
     agent.load()
     assert decision(agent.try_edit()) == "deny"
-    agent.send("post-tool", tool_name=tool, tool_input={})
+    agent.send("post-tool", tool_name=tool, tool_input=tool_input)
     agent.load("occam:occam-python")
     assert decision(agent.try_edit()) is None
 
@@ -992,3 +996,5 @@ def test_runs_on_the_stock_system_python(tmp_path):
     agent.load()
     agent.edit("auth.py")
     assert "No check has run" in added(agent.stop())
+
+

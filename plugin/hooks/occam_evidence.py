@@ -237,7 +237,27 @@ def drops_data(sql: str) -> bool:
     """A drop or truncate, or a DELETE or UPDATE statement with no WHERE, judged a statement at a time.
     Quoted text and comments are blanked first, so a `;` or `WHERE` inside them neither splits a statement nor stands in for its condition."""
     plain = _SQL_TEXT_AND_COMMENTS.sub(lambda match: match.group(0)[0] * 2 if match.group(0)[0] in "'\"" else " ", sql)
-    return bool(DROPS_DATA.search(plain)) or any(_CHANGES_ROWS.search(statement) and not re.search(r"\bwhere\b", statement, re.I) for statement in plain.split(";"))
+    return bool(DROPS_DATA.search(plain)) or any(_changes_every_row(statement) for statement in plain.split(";"))
+
+
+def _changes_every_row(statement: str) -> bool:
+    """An UPDATE or DELETE, the outer one or one inside a CTE, with no WHERE of its own: one at its depth before its parentheses close.
+    A subquery's or another CTE's WHERE can't stand in for it."""
+    for change in _CHANGES_ROWS.finditer(statement):
+        depth, own = 0, False
+        for token in re.finditer(r"[()]|\bwhere\b", statement[change.end():], re.I):
+            if token.group(0) == "(":
+                depth += 1
+            elif token.group(0) == ")":
+                if depth == 0:
+                    break  # its own parentheses closed
+                depth -= 1
+            elif depth == 0:
+                own = True
+                break
+        if not own:
+            return True
+    return False
 
 
 def _own_settings(words: list[str]) -> dict[str, str]:

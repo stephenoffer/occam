@@ -36,7 +36,7 @@ def state(tmp_path, monkeypatch):
 
 def cached_rows(state_dir: Path) -> int:
     import sqlite3
-    connection = sqlite3.connect(str(state_dir / "cache.db"))
+    connection = sqlite3.connect(str(next(state_dir.rglob("cache.db"))))  # OCCAM_STATE_DIR holds one folder per repository
     try:
         return connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
     finally:
@@ -497,7 +497,7 @@ def test_a_cache_past_its_limit_loses_its_oldest_half_and_keeps_working(tmp_path
     scanner.run_scan(repo, workers=1)
     assert cached_rows(state) == 12
     monkeypatch.setattr(scanner, "_MAX_CACHE_BYTES", 1)
-    scanner.Cache(state).close()
+    scanner.Cache(next(state.rglob("cache.db")).parent).close()  # the repository's folder under OCCAM_STATE_DIR
     assert cached_rows(state) == 6
     monkeypatch.setattr(scanner, "_MAX_CACHE_BYTES", 2_000_000_000)
     assert scanner.run_scan(repo, workers=1).stats["analyzed"] == 12

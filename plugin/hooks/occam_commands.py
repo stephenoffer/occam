@@ -52,6 +52,14 @@ SUBCOMMAND_CHECKS = {"coverage": {"run"}, "pre-commit": {"run"}, "mkdocs": {"bui
                      "pants": {"test", "check", "lint"}, "tach": {"check", "test"}, "mutmut": {"run"}, "dotnet": {"test", "build", "run"},
                      "deno": {"test", "run", "check", "lint"}, "mix": {"test", "compile", "run"}, "zig": {"build", "test", "run"}}
 NOT_CHECK_PROGRAMS = {"pip", "venv", "virtualenv", "ensurepip", "pydoc", "echo", "ls", "cat", "which", "printenv"}
+# Make targets and package scripts that tidy, install or format, which check nothing about behavior: `make clean`, `npm run format`.
+HOUSEKEEPING = {"clean", "distclean", "mrproper", "install", "uninstall", "format", "fmt", "prettier", "setup", "deps", "bootstrap", "init", "help"}
+DATABASE_SHELLS = {"psql": ("-c", "--command"), "mysql": ("-e", "--execute"), "sqlite3": ()}
+# `select 1`, `select version()`: literals and a few built-ins, so no code is checked. A call like `select check_invariants()` runs stored code.
+# Aliases are dropped first, since `as \w+` and the digits beside it could match the same text two ways and backtrack on a long one.
+_BUILTINS = r"(?:version|now|pg_backend_pid|current_(?:date|time|timestamp|user|database|schema|role|catalog|setting))"  # listed, so no two ways to read one
+_CONSTANT_QUERY = re.compile(rf"select\b(?:\s|\d|[.,+*/%-]|'[^']*'|\"[^\"]*\"|{_BUILTINS}\b(?:\s*\(\s*\))?)*;?", re.I)  # `select 1`, `select version()`: no table, so no code is checked
+_NO_OP_CODE = re.compile(r"(?:pass|None|\.\.\.|\d+)?[ \t]*;?")  # matched whole against stripped code, since \s* runs side by side backtrack on long blanks
 RUFF_NOT_CHECKS = {"rule", "config", "linter", "version", "clean", "server", "analyze"}
 # These ask a tool about itself or list a suite, so they aren't checks and aren't meant to write.
 INFO_FLAGS = {"--version", "--help", "--collect-only", "--co", "--markers", "--fixtures", "--fixtures-per-test"}
@@ -425,8 +433,38 @@ def _runs_a_program(program: str, args: list[str]) -> bool:
     return not (program in ("perl", "ruby") and rewrites_in_place(program, args))
 
 
+_MAKE_VALUE_FLAGS = {"-C", "-f", "-I", "-o", "-W", "--directory", "--file", "--makefile", "--include-dir", "--old-file", "--what-if"}
+
+
+def _housekeeping_only(targets: list[str]) -> bool:
+    named = [target for index, target in enumerate(targets) if not target.startswith("-") and "=" not in target and (index == 0 or targets[index - 1] not in _MAKE_VALUE_FLAGS)]
+    return bool(named) and all(target.split(":")[0] in HOUSEKEEPING for target in named)
+
+
+def _only_probes_a_database(program: str, args: list[str]) -> bool:
+    """`psql -c 'select 1'` asks whether the database answers, which runs none of this code. A query file or a table read might."""
+    if "-f" in args or "--file" in args or any(arg.startswith("--file=") for arg in args):
+        return False
+    flags = DATABASE_SHELLS[program]
+    inline = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in flags] if flags else _past_options(args)[1:]
+    return bool(inline) and all(_CONSTANT_QUERY.fullmatch(re.sub(r"\bas\s+\w+", " ", unquote(query)).strip()) for query in inline)
+
+
+def _runs_nothing(name: str, args: list[str]) -> bool:
+    """Tidying, installing or formatting targets, a database ping, and a Python one-liner that does nothing."""
+    first = args[0] if args else ""
+    if name == "make":
+        return _housekeeping_only(args)
+    if name in DATABASE_SHELLS:
+        return _only_probes_a_database(name, args)
+    if name in ("npm", "yarn", "pnpm", "bun"):
+        return first == "run" and _housekeeping_only(args[1:2])
+    return bool(PYTHON.fullmatch(name)) and first == "-c" and bool(_NO_OP_CODE.fullmatch((unquote(args[1]) if len(args) > 1 else "").strip()))
+
+
 def is_check(words: list[str]) -> bool:
-    """Does this simple command run tests, a build, a checker, or the code itself?"""
+    """Does this simple command run tests, a build, a checker, or the code itself? Tidying, installing, formatting, a database
+    ping and a Python one-liner that does nothing aren't any of those."""
     name, args = head(words)
     first = args[0] if args else ""
     program, program_args = run_by(words)
@@ -452,6 +490,8 @@ def is_check(words: list[str]) -> bool:
         return "--execute" in program_args or program_args[:1] == ["execute"]
     if program != name:
         return program not in NOT_CHECK_PROGRAMS
+    if _runs_nothing(name, args):
+        return False
     if name in CHECK_TOOLS or name in ("npx", "bunx", "pnpx") and first:
         return True
     if name in ("uv", "poetry", "pipenv", "hatch", "pdm"):

@@ -10,6 +10,7 @@ import urllib.parse
 import urllib.request
 
 from . import files as filesystem, manifests, scan as scanner
+from .query import printable
 from .report import partial_note
 
 USER_AGENT = "occam-deps/2 (dependency existence check)"
@@ -19,9 +20,12 @@ _REGISTRIES = {
     "crates": "https://crates.io/api/v1/crates/{name}",
     "go": "https://proxy.golang.org/{name}/@latest",
 }
+# A pinned version, by its own URL. The Go proxy's @v/list leaves out pseudo-versions such as v0.0.0-20240101000000-abcdef123456, and .info answers for both.
+_GO_VERSION = "https://proxy.golang.org/{name}/@v/{version}.info"
+_BY_LANGUAGE = {"python": "pypi", "notebook": "pypi", "javascript": "npm", "typescript": "npm", "rust": "crates", "go": "go"}
 _NAME = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9._/@-]{0,200}$")
 _YOUNG_DAYS = 90
-_WITH_VERSION = re.compile(r"^(?P<name>.+?)(?:==|@(?=\d))(?P<version>[\w.+-]+)$")
+_WITH_VERSION = re.compile(r"^(?P<name>.+?)(?:==|@(?=v?\d))(?P<version>[\w.+-]+)$")
 
 
 def _fetch(url: str) -> tuple[int, dict]:
@@ -44,32 +48,46 @@ def _parse_time(text: str | None) -> dt.datetime | None:
         return None
 
 
+def _go_path(path: str) -> str:
+    """The proxy's spelling of a module path or version: each capital letter becomes ! and its lowercase, as the Go module protocol requires."""
+    return re.sub(r"[A-Z]", lambda capital: "!" + capital.group(0).lower(), path)
+
+
 def _url(registry: str, name: str) -> str:
-    """The Go proxy spells each capital as `!` and the lower-case letter, and answers 404 to `github.com/Azure/...` as written."""
-    path = re.sub(r"[A-Z]", lambda capital: "!" + capital.group(0).lower(), name) if registry == "go" else name
-    return _REGISTRIES[registry].format(name=urllib.parse.quote(path, safe="@/!"))
+    return _REGISTRIES[registry].format(name=urllib.parse.quote(_go_path(name) if registry == "go" else name, safe="@/!"))
 
 
-def _known_versions(registry: str, document: dict) -> set | None:
-    if registry == "pypi":
-        return set(document.get("releases", {}))
-    if registry == "npm":
-        return set(document.get("versions", {}))
-    if registry == "crates":
-        return {item.get("num") for item in document.get("versions", [])}
-    return None  # the Go proxy's latest answer doesn't list them
+def _has_version(registry: str, name: str, version: str, document: dict) -> bool | None:
+    """Whether the release exists, or None if that couldn't be told. The name's own document lists the releases, except on the Go proxy."""
+    if registry == "go":
+        code, _ = _fetch(_GO_VERSION.format(name=urllib.parse.quote(_go_path(name), safe="/!"), version=urllib.parse.quote(_go_path(version), safe="!")))
+        return True if code == 200 else False if code in (404, 410) else None
+    listed = document.get("releases" if registry == "pypi" else "versions")
+    if registry == "crates" and isinstance(listed, list):
+        return _has_release(registry, version, {item.get("num") for item in listed if isinstance(item, dict)})
+    return _has_release(registry, version, set(listed)) if isinstance(listed, dict) else None
 
 
 def check_package(registry: str, spec: str) -> dict:
-    """Is this name real, is that version if one is given (`name==1.2`, `name@1.2`), and does it look established? Sends only the name. Never installs anything."""
+    """Is this name real, is that version if one is given (`name==1.2`, `name@1.2`, `path@v1.2.3`), and does it look established? Sends only the name
+    and version. Never installs anything. A Go package path is checked as the module holding it."""
     pinned = _WITH_VERSION.match(spec)
     name, version = (pinned.group("name"), pinned.group("version")) if pinned else (spec, None)
-    result = _check_name(registry, name)
-    if version and result.get("status") == "exists":
-        code, document = _fetch(_url(registry, name))
-        known = _known_versions(registry, document) if code == 200 else None
-        if known is not None and not _has_release(registry, version, known):
-            result.update(status="not found", warning=f"{name} exists, and it has no release {version}. Agents often invent version numbers.")
+    result, document = _check_name(registry, name)
+    above = name
+    for _ in range(max(0, name.count("/") - 1)) if registry == "go" else ():  # an import path names a package; its module is the path or a folder above it
+        above = above.rpartition("/")[0]
+        if result["status"] != "not found" or "/" not in above:
+            break
+        found, found_document = _check_name(registry, above)
+        if found["status"] != "not found":
+            result, document = found, found_document
+    if version and result["status"] == "exists":
+        known = _has_version(registry, result["name"], version, document)
+        if known is False:
+            result.update(status="not found", warning=f"{result['name']} exists, and it has no release {version}. Agents often invent version numbers.")
+        elif known is None:
+            result["unverified"] = f"version {version} not verified"
     return result
 
 
@@ -92,34 +110,38 @@ def _padded(version: str) -> tuple:
     return (tuple(numbers), match.group(2))
 
 
-def _check_name(registry: str, name: str) -> dict:
-    if registry not in _REGISTRIES or not _NAME.match(name):
-        return {"registry": registry, "name": name, "status": "invalid request"}
-    code, document = _fetch(_url(registry, name))
-    if code == 404:
-        return {"registry": registry, "name": name, "status": "not found", "warning": "No such package. This may be a hallucinated name, and it could be registered later by someone malicious."}
-    if code != 200:
-        return {"registry": registry, "name": name, "status": "unknown", "warning": f"Registry check failed (HTTP {code or 'error'}). Not verified."}
-    first, latest, summary, repository, versions = None, None, "", "", 0
+def verified(result: dict) -> bool:
+    """Whether the registry answered the whole question: the name, and the version if one was given."""
+    return result["status"] in ("exists", "not found") and not result.get("unverified")
+
+
+def _described(registry: str, document: dict) -> tuple:
+    """First and latest release, summary, source repository and number of versions, as each registry spells them."""
     if registry == "pypi":
         info = document.get("info", {})
-        summary = info.get("summary") or ""
-        repository = (info.get("project_urls") or {}).get("Source") or info.get("home_page") or ""
         releases = [file["upload_time_iso_8601"] for files in document.get("releases", {}).values() for file in files if file.get("upload_time_iso_8601")]
-        versions = len(document.get("releases", {}))
         first, latest = (min(releases), max(releases)) if releases else (None, None)
-    elif registry == "npm":
+        return first, latest, info.get("summary") or "", (info.get("project_urls") or {}).get("Source") or info.get("home_page") or "", len(document.get("releases", {}))
+    if registry == "npm":
         times = document.get("time", {})
-        summary = document.get("description") or ""
         repository = (document.get("repository") or {}).get("url", "") if isinstance(document.get("repository"), dict) else ""
-        first, latest, versions = times.get("created"), times.get("modified"), len(document.get("versions", {}))
-    elif registry == "crates":
+        return times.get("created"), times.get("modified"), document.get("description") or "", repository, len(document.get("versions", {}))
+    if registry == "crates":
         crate = document.get("crate", {})
-        summary, repository = crate.get("description") or "", crate.get("repository") or ""
-        first, latest = crate.get("created_at"), crate.get("updated_at")
-        versions = len(document.get("versions", []))
-    else:
-        latest = document.get("Time")
+        return crate.get("created_at"), crate.get("updated_at"), crate.get("description") or "", crate.get("repository") or "", len(document.get("versions", []))
+    return None, document.get("Time"), "", "", 0
+
+
+def _check_name(registry: str, name: str) -> tuple[dict, dict]:
+    if registry not in _REGISTRIES or not _NAME.match(name):
+        known = ", ".join(_REGISTRIES)
+        return {"registry": registry, "name": name, "status": "invalid request", "warning": f"Not a name this registry accepts, or not one of {known}. Not verified."}, {}
+    code, document = _fetch(_url(registry, name))
+    if code == 404 or (registry == "go" and code == 410):  # the Go proxy answers 410 Gone for a module it can't find
+        return {"registry": registry, "name": name, "status": "not found", "warning": "No such package. This may be a hallucinated name, and it could be registered later by someone malicious."}, {}
+    if code != 200:
+        return {"registry": registry, "name": name, "status": "unknown", "warning": f"Registry check failed (HTTP {code or 'error'}). Not verified."}, {}
+    first, latest, summary, repository, versions = _described(registry, document)
     result = {"registry": registry, "name": name, "status": "exists", "summary": summary[:160], "repository": repository, "first_release": first, "latest_release": latest, "versions": versions}
     warnings = []
     created = _parse_time(first)
@@ -131,24 +153,27 @@ def _check_name(registry: str, name: str) -> dict:
         warnings.append("No source repository listed.")
     if warnings:
         result["warning"] = " ".join(warnings)
-    return result
+    return result, document
 
 
 def report(root, online: bool = False, names: list[str] | None = None, seconds: int | None = None) -> tuple[str, int]:
+    """Exit 1 if a name or version doesn't exist, else 2 if one couldn't be checked, so a script never reads an unanswered check as a pass."""
     lines: list[str] = []
-    exit_code = 0
+    missing = unchecked = 0
     for spec in names or []:
         registry, _, name = spec.partition(":")
         if not name:
-            lines.append(f"{spec}: use the form pypi:name, npm:name, crates:name or go:path")
-            exit_code = 2
+            lines.append(f"{spec}: use the form pypi:name, npm:name, crates:name or go:path. Not verified.")
+            unchecked += 1
             continue
         result = check_package(registry, name)
         lines.append(_render(result))
-        if result["status"] == "not found":
-            exit_code = 1
+        missing += result["status"] == "not found"
+        unchecked += not verified(result)
     if names:
-        return "\n".join(lines), exit_code
+        if unchecked:
+            lines.append(f"{unchecked} not verified: the registry didn't answer, or couldn't be asked. Check again before relying on them.")
+        return "\n".join(lines), 1 if missing else 2 if unchecked else 0
     # Every rule asked for here needs the whole repository, so if that's too much to read, reading part of it would only cost time.
     result = scanner.run_scan(root, seconds=seconds, focus=[])
     lines += partial_note(result.stats)
@@ -162,19 +187,24 @@ def report(root, online: bool = False, names: list[str] | None = None, seconds: 
         if group:
             lines += ["", f"{rule} ({len(group)}):"]
             lines += [f"  {f['path']}:{f['line']}  {f['message']}" for f in group[:25]]
-    phantoms = sorted({m.group(1) for f in findings if f["rule"] == "phantom-import" for m in [re.search(r"'([^']+)'", f["message"])] if m})
+    # Each name goes to the registry of the language importing it: a Go module to the Go proxy, a crate to crates.io.
+    phantoms = sorted({(result.project.languages.get(f["path"]) or "", m.group(1)) for f in findings if f["rule"] == "phantom-import" for m in [re.search(r"'([^']+)'", f["message"])] if m})
+    code = 0
     if online and phantoms:
         lines += ["", "Registry check for phantom imports (package names only are sent):"]
-        for name in phantoms[:25]:
-            registry = "pypi" if any(f["path"].endswith((".py", ".ipynb")) and name in f["message"] for f in findings) else "npm"
-            lines.append("  " + _render(check_package(registry, name)))
+        for language, name in phantoms[:25]:
+            registry = _BY_LANGUAGE.get(language)
+            checked = check_package(registry, name) if registry else None
+            lines.append("  " + (_render(checked) if checked else f"{name}: not checked, since occam knows no registry for {language or 'this language'}."))
+            # as for --name: 1 if a registry says a name doesn't exist, else 2 if one couldn't be answered, so no script reads it as a pass
+            code = 1 if checked and checked["status"] == "not found" else code or (0 if checked and verified(checked) else 2)
     elif phantoms:
         lines += ["", "Add --online to check whether these exist on the registries. Don't install a guessed name to find out."]
-    return "\n".join(lines), exit_code
+    return "\n".join(lines), code
 
 
 def _render(result: dict) -> str:
-    head = f"{result['registry']}:{result['name']}: {result['status']}"
+    head = f"{result['registry']}:{result['name']}: {result['status']}" + (f"; {result['unverified']}" if result.get("unverified") else "")
     if result["status"] == "exists":
         when = (result.get("latest_release") or "")[:10]
         first = (result.get("first_release") or "")[:10]
@@ -185,4 +215,4 @@ def _render(result: dict) -> str:
             head += f". {result['summary']}"
     if result.get("warning"):
         head += f"  WARNING: {result['warning']}"
-    return head
+    return printable(head)  # a registry's summary and repository URL come from the network, and a terminal acts on control codes

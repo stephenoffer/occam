@@ -60,16 +60,16 @@ import scan_notes
 import stop_checks
 import skill_switches
 from classify import (REVIEWER, OWN_AGENTS, SECURITY_CRITICAL, MONEY, AUDIT_REQUEST, DEPENDENCY_MANIFEST, DEPENDENCY_PROMPT, HIGH_CONSEQUENCE, LANGUAGE_RISKS, LANGUAGE_SKILLS, NOT_FROM_THE_USER,
-                      PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, declines, is_code,
-                      command_read_only, reads_as_read_only, visible_prompt, BUILD_REQUEST, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_PATH, names_consequential_work)
+                      PERFORMANCE_PROMPT, PYTHON_PROMPT, REVIEW_OR_PLAN, SECURITY_PROMPT, TEST_PATH, ASKS_FOR_A_DOCUMENT, NOT_A_WORK_REPORT, WORK_REPORT_NAME, asks_to_act, asks_to_change, declines, is_code,
+                      command_read_only, reads_as_read_only, visible_prompt, BUILD_REQUEST, CONSEQUENTIAL_REQUEST, CONSEQUENTIAL_PATH, CONTINUES, approves, asked_for_this_document, names_consequential_work)
 from occam_commands import head, is_check, never_started, output_text, run_by, shows_no_pass
 from printed_secrets import FIXTURE_FOLDER, SECRET_FILE
 from python_notes import edit_notes, prompt_facts, say_once, shell_notes
-from session_state import Session, record, state_file
+from session_state import Session, note_failure, prune, record, with_failures_told
 from shell_reading import expand_variables, parse_shell, without_heredoc_bodies
 from shell_writes import (absolute_path, runs_unchecked_downloads, viewed_files, project_root, check_identity, checked_files, checks_elsewhere, could_lose_work, deleted_paths, destructive_git,
                           diffs_shown, downloads, in_project, is_diff, needs_a_person, relative_path, shell_edits, shell_steps,
-                          side_effects, step_edits)
+                          side_effects, step_edits, may_have_skipped, note_targets, written_anyway)
 
 REPORT_SUFFIXES = {".md", ".markdown", ".txt", ".rst"}  # where a review or plan gets written, as data named in the request is not
 MAX_HOLDS = 2
@@ -194,13 +194,7 @@ def failing_streak_note(event: dict, succeeded: bool) -> dict | None:
 # ---------------------------------------------------------------- handlers
 
 def session_start(event: dict) -> dict | None:
-    folder = state_file(event.get("session_id")).parent
-    for old in [*folder.glob("*.jsonl"), *folder.glob("*.card")]:
-        try:
-            if time.time() - old.stat().st_mtime > STATE_RETENTION_SECONDS:
-                old.unlink()
-        except OSError:
-            continue
+    prune(event, STATE_RETENTION_SECONDS)
     if event.get("source") in ("compact", "clear"):
         record(event, kind="compacted")  # what was said before is gone from context
         rule_card.marker(event).unlink(missing_ok=True)
@@ -229,11 +223,13 @@ def user_prompt(event: dict) -> dict | None:
     if NOT_FROM_THE_USER.match(prompt):
         return None
     words = visible_prompt(prompt)
-    # The last stop of the previous turn: a "no" to "Shall I implement it?" holds edits like "review only" does.
-    stops = [entry for entry in Session(event).turn if entry.get("kind") == "stopped"]
-    declined = declines(words, bool(stops and stops[-1].get("asked")))
+    # The last stop of the previous turn: a "no" to "Shall I implement it?" holds edits like "review only" does. A "continue" after anything else keeps the previous hold.
+    before = Session(event)
+    stops = [entry for entry in before.turn if entry.get("kind") == "stopped"]
+    asked = bool(stops and stops[-1].get("asked"))
+    declined = declines(words, asked)
     by_command = command_read_only(prompt)
-    read_only = (reads_as_read_only(words) if by_command is None else by_command) or declined
+    read_only = (reads_as_read_only(words) if by_command is None else by_command) or declined or bool(CONTINUES.match(words) and not (stops and stops[-1].get("changing")) and before.read_only)
     record(event, kind="prompt", text=evidence.redact(prompt)[:4000], read_only=read_only, declined=declined, at=time.time(), not_small=bool(scale_notes.NOT_SMALL_PROMPT.search(scale_notes.without_pasted(prompt))),
            named=bool(CONSEQUENTIAL_REQUEST.search(scale_notes.without_pasted(prompt))))  # judged whole, before storing cuts it short
     # A skill typed by name. `/occam:razor` and the other commands aren't the core skill, so the name must end there.
@@ -246,11 +242,11 @@ def user_prompt(event: dict) -> dict | None:
     elif read_only:
         notes.append("This request reads as review-only or plan-only, so edits to project files are held for this turn.")
     reviewing = (read_only and not declined) or REVIEW_OR_PLAN.search(words)  # a bare "no" isn't a review
-    if not typed and not Session(event).has("skill", CORE_SKILL) and reviewing:
+    if not typed and not before.has("skill", CORE_SKILL) and reviewing:  # nothing recorded since `before` was read changes this
         notes.append("The `occam:occam` skill covers code review and planning, and has not been loaded yet.")
     elif asks_for_the_core(event, prompt, words, typed):
         notes.append("This request names security or money work, which the `occam:occam` skill covers, so load it before editing.")
-    if AUDIT_REQUEST.search(words) and not Session(event).has("skill", "occam-audit") and not (typed and typed.group(1) == "occam-audit"):
+    if AUDIT_REQUEST.search(words) and not before.has("skill", "occam-audit") and not (typed and typed.group(1) == "occam-audit"):
         notes.append("The `occam:occam-audit` skill covers auditing and repairing existing code at any size, with tools.")
     armed = skill_switches.prompt_switches(words, read_only, bool(BUILD_REQUEST.search(words)) and not read_only)
     if armed:
@@ -268,7 +264,7 @@ def user_prompt(event: dict) -> dict | None:
             notes.append(language_notes.note(due))
     if PYTHON_PROMPT.search(prompt) or python_project(event):
         notes += say_once(Session(event), lambda key: record(event, kind="mentioned", name=key), prompt_facts(words, reference_path))
-    if evidence.PUSHBACK.search(words) and (Session(event).has("check") or Session(event).has("edit")):
+    if evidence.PUSHBACK.search(words) and (before.has("check") or before.has("edit")):
         notes.append("occam: if this disputes a fact or a result, rather than saying what's wanted, it is a claim to test. Recheck "
                      "against the evidence first. Change the answer for what the recheck shows or for new evidence, and say "
                      "which. If neither moves it, keep the answer and show why.")
@@ -314,9 +310,9 @@ DECLINED_REASON = ("occam: you asked whether to go ahead with this work, and the
                    "this turn. Answer them without making the change. If they want it later, they can say so, for example with \"go ahead\".")
 
 
-def read_only_hold(known: list[str], unknown_path: bool, session: Session) -> dict | None:
+def read_only_hold(known: list[str], unknown_path: bool, session: Session, event: dict, new: bool = False) -> dict | None:
     """Denied, unless it is a plan or review written where the request asked for it, which isn't a source edit."""
-    requested = all(Path(path).suffix.lower() in REPORT_SUFFIXES and os.path.basename(path).lower() in session.prompt.lower() for path in known)
+    requested = all(asked_for_this_document(path, os.path.join(project_root(event), path), session.prompt, new, REPORT_SUFFIXES) for path in known)
     if known and not unknown_path and requested:
         return None
     if session.prompt_entry.get("declined"):
@@ -345,11 +341,12 @@ def hold_a_work_report(event: dict, session: Session, relative: str) -> dict | N
 def hold_a_shell_edit(command: str, event: dict, session: Session) -> dict | None:
     """Two shell writes are held: a deleted test, and on a read-only turn anything that could change what's already there."""
     edits = shell_edits(command, event)
+    note_targets(event, edits)
     if not edits or event.get("permission_mode") == "plan":
         return None
     known = [relative_path(path, event) for path in edits if path]
     if session.read_only and could_lose_work(edits, command, event):
-        return read_only_hold(known, "" in edits or bool(deleted_paths(command, event)), session)
+        return read_only_hold(known, "" in edits or bool(deleted_paths(command, event)), session, event)
     code = [path for path in known if is_code(path)]
     weakened = weakens_a_check(event.get("tool_name", ""), event.get("tool_input") or {}, event, session, code)
     return hold_a_weakened_check(event, session, *weakened) if weakened else None
@@ -504,9 +501,9 @@ def before_edit(event: dict, tool_input: dict, session: Session) -> dict | None:
         return None
 
     known = [relative_path(edit_path, event)] if edit_path else []
+    created = name == "Write" and bool(known) and not os.path.lexists(os.path.join(event.get("cwd") or "", edit_path))
     if session.read_only:
-        return read_only_hold(known, not edit_path, session)
-    created = name == "Write" and bool(known) and not os.path.exists(os.path.join(event.get("cwd") or "", edit_path))
+        return read_only_hold(known, not edit_path, session, event, new=created)
     held = hold_a_work_report(event, session, known[0]) if created and level() != GUARD and not event.get("agent_id") else None
     if held:  # once written again it goes on through the checks below, the secret hold among them
         return held
@@ -654,7 +651,7 @@ def scan_note(event: dict, file_path: str, relative: str) -> dict | None:
     fresh = [finding for finding in found if finding["id"] not in already]
     if not fresh:
         return None
-    record(event, kind="scan-noted", ids=[finding["id"] for finding in fresh])
+    record(event, kind="scan-noted", ids=scan_notes.ids_of(fresh))
     return context("PostToolUse", "occam scan of this edit: " + scan_notes.describe(fresh) + ". These are leads. If one is real, this is the moment to fix it, and if it isn't, carry on.")
 
 
@@ -810,8 +807,8 @@ def after_agent(event: dict, tool_input: dict, succeeded: bool) -> dict | None:
 
 
 def after_approval(event: dict, tool_input: dict, succeeded: bool) -> None:
-    # A person answered, or approved a plan. That can lift a read-only turn without a new prompt.
-    if succeeded and not event.get("agent_id"):
+    # A person approved a plan, or said yes to doing the work. That lifts a read-only turn without a new prompt.
+    if succeeded and not event.get("agent_id") and approves(event.get("tool_name", ""), tool_input, event.get("tool_response")):
         record(event, kind="approved")
 
 
@@ -828,8 +825,8 @@ def record_shell_edits(event: dict, command: str, steps: list, succeeded: bool) 
     # A check's failure says nothing about whether an edit before it ran, so only a command with no check needs to succeed.
     elif succeeded or any(step.words and is_check(step.words) for step in steps):
         paths = [edit for step in steps for edit in step_edits(step, event, command)]
-    else:
-        paths = []
+    else:  # a failed command may still have written before it failed, which the files' state before it shows
+        paths = written_anyway(event, [edit for step in steps for edit in step_edits(step, event, command)])
     for path in paths:
         record_shell_edit(event, path)
 
@@ -838,7 +835,7 @@ def checks_that_ran(event: dict, tool_input: dict, command: str, steps: list) ->
     """The steps that count as having checked this code."""
     # Launching a command in the background isn't having run it, and neither is being interrupted.
     # So is an edit made by inline Python, which would otherwise count as having checked itself.
-    checks = [step for step in steps if step.words and is_check(step.words) and not (step.code is not None and step_edits(step, event, command))]
+    checks = [step for step in steps if step.words and is_check(step.words) and not (step.code is not None and step_edits(step, event, command)) and not may_have_skipped(step, steps, event)]
     return [] if tool_input.get("run_in_background") or event.get("is_interrupt") else checks
 
 
@@ -939,7 +936,7 @@ def post_failure(event: dict) -> dict | None:
 def stop(event: dict) -> dict | None:
     # Recorded at every level: if this asks permission and the user says no, the next turn's edits are held, which guard keeps.
     if not event.get("agent_id"):
-        record(event, kind="stopped", asked=asks_to_act(event.get("last_assistant_message") or ""))
+        record(event, kind="stopped", asked=asks_to_act(event.get("last_assistant_message") or ""), changing=asks_to_change(event.get("last_assistant_message") or ""))
     # Delegated work still underway will report back, and this runs again then. A dev server doesn't count.
     if level() == GUARD or event.get("agent_id") or any(task.get("type") in FOREGROUND_BLOCKING_TASKS for task in event.get("background_tasks") or []):
         return None
@@ -967,19 +964,22 @@ def _out_of_time(*_) -> None:
 def guard_only(result: dict | None) -> dict | None:
     """At OCCAM_HOOKS=guard, only a decision gets through: an ask or a denial that protects work, secrets or a read-only request."""
     output = (result or {}).get("hookSpecificOutput") or {}
-    return result if output.get("permissionDecision") in ("ask", "deny") else None
+    if output.get("permissionDecision") in ("ask", "deny"):
+        return result
+    return {"systemMessage": result["systemMessage"]} if (result or {}).get("systemMessage") else None  # for the person, not the agent
 
 
 def main(argv: list[str]) -> int:
     if level() in ("off", "0", "false") or len(argv) != 2 or argv[1] not in HANDLERS:
         return 0
-    timed = hasattr(signal, "setitimer")
+    timed, event = hasattr(signal, "setitimer"), {}
     try:
         if timed:  # the host kills a hook at its timeout, and giving up first means failing open on purpose. Repeats in case one lands in cleanup.
             signal.signal(signal.SIGALRM, _out_of_time)
             signal.setitimer(signal.ITIMER_REAL, HOOK_SECONDS, 1)
         event = json.loads(sys.stdin.read() or "{}")
-        result = HANDLERS[argv[1]](event if isinstance(event, dict) else {})
+        event = event if isinstance(event, dict) else {}
+        result = with_failures_told(event, HANDLERS[argv[1]](event)) if argv[1] == "session-start" else HANDLERS[argv[1]](event)
         if level() == GUARD:
             result = guard_only(result)
         if timed:
@@ -990,6 +990,7 @@ def main(argv: list[str]) -> int:
         if timed:
             signal.setitimer(signal.ITIMER_REAL, 0)
         print(f"occam hook failed open: {type(error).__name__}: {error}", file=sys.stderr)
+        note_failure(event, argv[1], error)
     return 0
 
 

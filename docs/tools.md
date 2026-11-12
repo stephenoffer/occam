@@ -78,7 +78,7 @@ bash ~/occam/plugin/skills/occam/scripts/occam.sh find handle_payment
 
 `scan`, `map`, `gate`, `deps` and `partition` stop reading after about 75 seconds and say PARTIAL. `--max-seconds N` changes the limit, and 0 removes it. `gate --strict`, and `scan` with `--fail-on`, `--new-only`, `--baseline` or `--format sarif`, have no limit by default, since something else decides on those. `baseline write` reads everything.
 
-If you set a limit on one of those, what went unread counts against it: `scan --fail-on` fails if files in its scope went unread, and `gate --strict` fails if changed files did. A scope read in full can still pass, labeled PARTIAL.
+What wasn't checked counts against a pass. `scan --fail-on` fails, saying INCOMPLETE and why, if files in its scope went unread, a code file couldn't be read (too large, too slow, binary or a link; a large lockfile or data file doesn't count), a notebook didn't parse, or a time limit stopped the rules that need the whole repository. An unknown `--rule` exits 2 instead of scanning nothing. `gate --strict` fails if changed files went unread, git was told not to watch a file, or the goal shows drift or a check that couldn't run. A scope read in full can still pass, labeled PARTIAL.
 
 A time-limited command that still can't finish, usually because git is very slow, stops at its limit plus 35 seconds (110 by default), says nothing was checked and exits 2.
 

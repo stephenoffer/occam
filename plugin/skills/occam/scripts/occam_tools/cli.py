@@ -10,6 +10,7 @@ import re
 import signal
 import sqlite3
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -81,17 +82,34 @@ def _raise_out_of_time(*_) -> None:
 
 
 def _save_last(root: Path, findings: list[dict], stats: dict) -> str | None:
-    from .files import state_dir
+    """The full results, with what made them, so a saved file says which version, commit and command it describes."""
+    from .files import run_git, state_dir
     try:
         path = state_dir(root) / "last-scan.json"
-        path.write_text(json.dumps({"stats": stats, "findings": findings}))
+        made = {"occam": VERSION, "made": int(time.time()), "head": (run_git(root, "rev-parse", "HEAD") or "").strip() or None, "command": sys.argv[1:]}
+        path.write_text(json.dumps({**made, "stats": stats, "findings": findings}))
         return str(path)
     except OSError:
         return None
 
 
+def _unknown_rules(names: list[str] | None) -> str:
+    """A misspelled --rule would select nothing, and a clean result from nothing passes CI."""
+    import difflib
+    from .catalog import BY_ID
+    unknown = [name for name in names or [] if name not in BY_ID]
+    if not unknown:
+        return ""
+    guesses = {name: difflib.get_close_matches(name, list(BY_ID), 3) for name in unknown}
+    return "No such rule: " + "; ".join(name + (f" (did you mean {', '.join(close)}?)" if close else "") for name, close in guesses.items()) + ". `occam rules` lists them. Nothing was scanned."
+
+
 def cmd_scan(args) -> int:
     from . import baseline, report, scan
+    unknown = _unknown_rules(args.rule)
+    if unknown:
+        print(unknown, file=sys.stderr)
+        return 2
     if args.stdin:
         name = args.name or {"python": "snippet.py", "javascript": "snippet.js", "typescript": "snippet.ts", "go": "snippet.go", "rust": "snippet.rs", "java": "Snippet.java",
                              "shell": "snippet.sh", "sql": "snippet.sql", "c": "snippet.c", "cpp": "snippet.cpp"}.get(args.lang or "python", "snippet.txt")
@@ -99,6 +117,10 @@ def cmd_scan(args) -> int:
         root = None
     else:
         root = _root(args)
+        from .catalog import BY_ID
+        from .files import config_warnings
+        for warning in config_warnings(root, BY_ID):
+            print(warning, file=sys.stderr)
         result = scan.run_scan(root, args.paths or None, changed_only=args.changed, base=args.diff, use_cache=not args.no_cache, workers=args.workers, isolated=args.isolated, seconds=_time_limit(args))
         if result.stats.get("partial") and args.format in ("json", "sarif"):  # json has it in stats, but sarif has nowhere to put it, and either can reach a person's terminal
             print("\n".join(report.partial_note(result.stats)), file=sys.stderr)
@@ -113,7 +135,7 @@ def cmd_scan(args) -> int:
     if args.format == "json":
         print(report.render_json(visible, result.stats))
     elif args.format == "sarif":
-        print(report.render_sarif(visible))
+        print(report.render_sarif(visible, result.stats))
     elif args.format == "md":
         print(report.render_markdown(visible, result.stats))
     else:
@@ -121,8 +143,11 @@ def cmd_scan(args) -> int:
     if args.fail_on:
         order = ("low", "medium", "high", "critical")
         cut = order.index(args.fail_on)
-        # What wasn't read can't be called clean, so a limit that left files unread fails the gate it was asked to pass.
-        return 1 if any(order.index(f["severity"]) >= cut for f in visible) or report.left_unread(result.stats) else 0
+        # What wasn't read can't be called clean, so analysis left incomplete fails the gate it was asked to pass, and says why.
+        gaps = report.incomplete(result.stats)
+        if gaps:
+            print("INCOMPLETE, so this can't pass: " + "; ".join(gaps) + ".", file=sys.stderr)
+        return 1 if any(order.index(f["severity"]) >= cut for f in visible) or gaps else 0
     return 0
 
 
@@ -160,11 +185,23 @@ def _give_up(seconds: int) -> None:
 
 
 def _end_now(status: int) -> None:
-    """Takes what this started with it: a git blocked on a FIFO a repository named would outlive the process, and only the process that started it may stop it."""
+    """Takes what this started with it: a git blocked on a FIFO a repository named would outlive the process, and only the process that started it may stop it.
+
+    A test, check or bench command leads a process group of its own, which goes whole, and os._exit skips the cleanup that would remove a copy `mutate` made.
+    """
     if os.getpid() == _MAIN_PROCESS[0]:
         for child in multiprocessing.active_children():
             child.terminate()
+        from .files import _running
+        for process in list(_running):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)  # a group's id is its leader's pid, and git leads none, so git is left to the next line
+            except (AttributeError, OSError):
+                pass
         stop_running_git()
+        import shutil
+        for folder in list(getattr(sys.modules.get(f"{__package__}.verify"), "COPIES", ())):
+            shutil.rmtree(folder, ignore_errors=True)
     os._exit(status)
 
 
@@ -225,8 +262,7 @@ def cmd_partition(args) -> int:
 def cmd_tools(args) -> int:
     from . import toolrun
     root = _root(args)
-    print(toolrun.run_tools(root, execute=args.run, allow_exec=args.allow_exec, only=args.only, paths=args.paths or None))
-    return 0
+    return _emit(toolrun.run_tools(root, execute=args.run, allow_exec=args.allow_exec, only=args.only, paths=args.paths or None))
 
 
 def cmd_deps(args) -> int:

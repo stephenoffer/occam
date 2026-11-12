@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import hashlib
@@ -11,9 +12,11 @@ import shlex
 import sqlite3
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 from . import files as filesystem, manifests, query_code
+from .source import language_of
 from .zero_tests import ran_no_tests
 
 # Limits `goal constrain --no` can check itself, beside a path that mustn't change.
@@ -27,12 +30,21 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
-def database(root: Path) -> sqlite3.Connection:
-    """Shared by every command and agent on this machine for this repository. Explicit transactions, with a long wait for the lock."""
-    connection = sqlite3.connect(str(filesystem.state_dir(root) / "occam.db"), timeout=30, isolation_level=None)
-    connection.execute("PRAGMA busy_timeout = 30000")
-    connection.executescript(_SCHEMA)
-    return connection
+@contextlib.contextmanager
+def database(root: Path, shared: bool = False) -> Iterator[sqlite3.Connection]:
+    """Shared by every command and agent on this machine for this worktree, or with `shared` for the whole repository. Explicit transactions,
+    with a long wait for the lock. Closed on leaving, with a transaction left open by a failure rolled back."""
+    connection = sqlite3.connect(str(filesystem.state_dir(root, shared) / "occam.db"), timeout=30, isolation_level=None)
+    try:
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.executescript(_SCHEMA)
+        yield connection
+    except BaseException:
+        if connection.in_transaction:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 # ---------------------------------------------------------------- coordination
@@ -40,7 +52,7 @@ def database(root: Path) -> sqlite3.Connection:
 
 def active_claims(root: Path) -> dict[str, str]:
     try:
-        with database(root) as db:
+        with database(root, shared=True) as db:
             now = time.time()
             db.execute("DELETE FROM claims WHERE expires <= ?", (now,))
             return {path: owner for path, owner in db.execute("SELECT path, owner FROM claims")}
@@ -64,7 +76,7 @@ def coord(root: Path, action: str, paths: list[str], owner: str | None, ttl: int
     if action == "claim":
         return _claim(root, relative, owner, ttl)
     if action == "release":
-        with database(root) as db:
+        with database(root, shared=True) as db:
             if relative:
                 db.executemany("DELETE FROM claims WHERE path = ? AND owner = ?", [(path, owner) for path in relative])
             else:
@@ -86,7 +98,7 @@ def _claim(root: Path, paths: list[str], owner: str, ttl: int) -> tuple[str, int
     if not paths:
         return "Name the paths to claim.", 2
     now = time.time()
-    with database(root) as db:
+    with database(root, shared=True) as db:
         db.execute("BEGIN IMMEDIATE")
         held = {path: who for path, who, expires in db.execute("SELECT path, owner, expires FROM claims") if expires > now and who != owner}
         conflict = [f"{path} (held by {claim_holder(held, path)})" for path in paths if claim_holder(held, path)]
@@ -187,24 +199,51 @@ def _change_goal(root: Path, change) -> dict | None:
     return state
 
 
-def _tree_state(root: Path, paths: list[str] | None = None) -> str:
-    """A cheap identity for the working tree's contents, so old evidence can be recognized as stale."""
+def _start_goal(root: Path, text: str, **extra) -> dict | None:
+    """Create the goal unless one exists, in one transaction, so two agents starting at once can't both think they did. Limits read from a
+    request that nobody has added requirements to yet carry over. Returns the goal already there, if it stays."""
+    with database(root) as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT value FROM kv WHERE key = 'goal'").fetchone()
+        state = json.loads(row[0]) if row else None
+        kept = state["constraints"] if state is not None and state.get("from_request") and not state["requirements"] else None
+        if state is not None and kept is None:
+            db.execute("ROLLBACK")
+            return state
+        db.execute("INSERT OR REPLACE INTO kv VALUES ('goal', ?)", (json.dumps({**_new_goal(root, text), **({"constraints": kept} if kept else {}), **extra}),))
+        db.execute("COMMIT")
+    return None
+
+
+def _tree_state(root: Path, paths: list[str] | None = None, tracked_only: bool = False) -> str:
+    """A cheap identity for the working tree's contents, so old evidence can be recognized as stale. `tracked_only` leaves out what git
+    doesn't track (outside git, what isn't code), which is where a check's own reports go: junit.xml, .coverage, htmlcov/."""
     digest = hashlib.sha1()
     head = filesystem.run_git(root, "rev-parse", "HEAD")
     if head is not None:
         digest.update(head.encode())
-        digest.update((filesystem.run_git(root, "status", "--porcelain=v1") or "").encode())
-        for name in filesystem.dirty_paths(root):
+        # What a check leaves behind, __pycache__ and the like where git doesn't ignore it, isn't a change to the code it checked.
+        status = [line for line in (filesystem.run_git(root, "status", "--porcelain=v1") or "").split("\n") if not filesystem.is_generated_output(line[3:].strip('"'))]
+        # A new module not yet added is code all the same; a report a check writes (junit.xml, .coverage, htmlcov/) isn't.
+        report = lambda name: language_of(name) in (None, "html") or bool(re.search(r"(?:^|/)(?:coverage|htmlcov|lcov-report|\.nyc_output|test-results)/", name))  # noqa: E731
+        untracked = tuple(line[3:].strip('"') for line in status if line.startswith("??"))
+        status = [line for line in status if not (tracked_only and line.startswith("??") and report(line[3:].strip('"')))]
+        digest.update("\n".join(status).encode())
+        for name in [*filesystem.dirty_paths(root), *filesystem.marked_unchanged(root)]:  # git hides an edit to the second from status
+            if filesystem.is_generated_output(name) or (tracked_only and report(name) and any(name == u or (u.endswith("/") and name.startswith(u)) for u in untracked)):
+                continue
             path = root / name
             try:  # a link's own text is what git tracks, and following one to a FIFO would wait forever
                 digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes() if filesystem.is_plain_file(path) else b"")
             except OSError:
                 continue
         return digest.hexdigest()[:16]
-    for name in filesystem.list_files(root, paths, filesystem.load_config(root))[:20000]:
-        try:
+    for name in filesystem.list_files(root, paths, filesystem.load_config(root)):
+        if tracked_only and not language_of(name):
+            continue
+        try:  # ctime too: a tool that puts the modification time back can't put that back, so a same-size edit still shows
             stat = (root / name).stat()
-            digest.update(f"{name}\0{stat.st_size}\0{stat.st_mtime_ns}".encode())
+            digest.update(f"{name}\0{stat.st_size}\0{stat.st_mtime_ns}\0{stat.st_ctime_ns}".encode())
         except OSError:
             continue
     return digest.hexdigest()[:16]
@@ -262,7 +301,7 @@ def record_stated_limits(root: Path, request: str, session: str = "") -> list[st
     if not stated:
         return []
     if state is None:
-        _save(root, {**_new_goal(root, request.strip().split("\n")[0][:200]), "from_request": True, "session": session})
+        _start_goal(root, request.strip().split("\n")[0][:200], from_request=True, session=session)  # if another got there first, its goal gains the limits
     added: list[str] = []
 
     def add(current: dict) -> None:
@@ -286,10 +325,9 @@ def goal(root: Path, args) -> tuple[str, int]:
     if args.action == "init":
         if not text:
             return "State the goal: the observable outcome, not the steps.", 2
-        kept = state["constraints"] if state is not None and state.get("from_request") and not state["requirements"] else None
-        if state is not None and kept is None:  # agents share this store, so starting over silently would throw away someone's requirements
-            return f"A goal is already recorded: {state['goal']}\n`occam goal clear` first if it's really finished with.", 2
-        _save(root, {**_new_goal(root, text), **({"constraints": kept} if kept else {})})  # limits read from the request carry over
+        existing = _start_goal(root, text)
+        if existing is not None:  # agents share this store, so starting over silently would throw away someone's requirements
+            return f"A goal is already recorded: {existing['goal']}\n`occam goal clear` first if it's really finished with.", 2
         return f"Goal set: {text}\nAdd what must be true with `occam goal add \"...\" --check \"command\"`, and limits with `occam goal constrain`.", 0
     if args.action == "clear":
         _clear_goal(root)
@@ -306,6 +344,8 @@ def goal(root: Path, args) -> tuple[str, int]:
             current["requirements"].append({"id": len(current["requirements"]) + 1, "text": text, "check": args.check, "status": "not run", "tree": None, "detail": ""})
 
         state = _change_goal(root, add)
+        if state is None:
+            return "No goal any more: it was cleared meanwhile, so nothing was added.", 2
         return f"R{len(state['requirements'])}: {text}" + ("" if args.check else "  (no check yet, so report it unverified until there is one)"), 0
     if args.action == "constrain":
         limit = getattr(args, "no", None)
@@ -378,13 +418,20 @@ def _run_check(root: Path, command: str, timeout: int) -> tuple[bool, str]:
     return done.returncode == 0, f"exit {done.returncode}: {tail}"
 
 
+SNAPSHOT_FILES = 50000
+_TRUNCATED = "\0truncated"
+
+
 def _snapshot(root: Path) -> dict[str, str]:
     """Outside git there's no history to compare with, so a goal records what the files were when it began."""
     found = {}
-    for name in filesystem.list_files(root, None, {})[:50000]:
+    listed = filesystem.list_files(root, None, {})
+    for name in listed[:SNAPSHOT_FILES]:
         if filesystem.is_plain_file(root / name):
             stat = (root / name).stat()
             found[name] = f"{stat.st_size}:{stat.st_mtime_ns}"
+    if len(listed) > SNAPSHOT_FILES:
+        found[_TRUNCATED] = str(len(listed))  # so what lies past the limit is reported unchecked, not unchanged
     return found
 
 
@@ -393,25 +440,40 @@ def _changed_files(root: Path, state: dict, base: str | None) -> list[str]:
     changed = filesystem.changed_lines(root, base or state.get("base"))
     if changed is None:
         before, now = state.get("snapshot") or {}, _snapshot(root)
-        return sorted(name for name in {*before, *now} if before.get(name) != now.get(name))
+        return sorted(name for name in {*before, *now} if before.get(name) != now.get(name) and name != _TRUNCATED)
     deleted, renamed = filesystem.removed_and_renamed(root, base or state.get("base"))
     return sorted({*changed, *deleted, *renamed.values()})
 
 
 def _verify(root: Path, state: dict, args) -> tuple[str, int]:
     lines = [f"Goal: {state['goal']}"]
-    tree = _tree_state(root)
+    before = _tree_state(root, tracked_only=True)
     results: dict[int, dict] = {}
     for requirement in state["requirements"]:
         passed, detail = _run_check(root, requirement["check"], args.timeout) if requirement.get("check") else (False, "no check given")
         status = "verified" if passed else "failed" if requirement.get("check") else "not run"
-        results[requirement["id"]] = {"status": status, "detail": detail, "tree": tree if requirement.get("check") else None}
+        results[requirement["id"]] = {"status": status, "detail": detail, "tree": None, "check": requirement.get("check")}
+    tree = _tree_state(root)  # the receipt is for the tree as the checks left it, their own reports included
+    for result in results.values():
+        result["tree"] = tree if result["check"] else None
+    if _tree_state(root, tracked_only=True) != before:  # a check, or someone else, changed the code while the checks ran, so no pass is about the code there now
+        for result in results.values():
+            if result["status"] == "verified":
+                result.update(status="stale", detail="the files changed while the checks ran, by a check or someone else, so run verify again")
+    started = state.get("created")
 
     def record(current: dict) -> None:  # merged rather than overwritten, because checks take time and others may add requirements meanwhile
+        if current.get("created") != started:
+            return  # cleared and started again meanwhile: an old R1 isn't the new R1
         for requirement in current["requirements"]:
-            requirement.update(results.get(requirement["id"], {}))
+            result = results.get(requirement["id"])
+            if result and result["check"] == requirement.get("check"):
+                requirement.update({key: value for key, value in result.items() if key != "check"})
 
     state = _change_goal(root, record)
+    if state is None or state.get("created") != started:
+        lines.append("NOT DONE: the goal was cleared or replaced while its checks ran, so these results weren't recorded. Run verify again.")
+        return "\n".join(lines), 1
     failed = 0
     for requirement in state["requirements"]:
         unverified = requirement["status"] != "verified" or requirement["id"] not in results
@@ -448,22 +510,21 @@ def _project_pattern(root: Path, pattern: str) -> str:
 
 
 def new_dependencies(root: Path, base: str, changed: list[str], gone: list[str] | tuple = ()) -> list[str]:
-    """Packages a changed manifest declares that no manifest declared at `base`, as "name (manifest)". A manifest this change didn't touch reads
-    the same at base, so its declarations were already there, and a deleted one's are read at base, so a dependency moved between them isn't new."""
-    renamed = filesystem.removed_and_renamed(root, base)[1]
-
+    """Packages the manifests declare now that none declared at `base`, as "name (manifest)". Every manifest is read on both sides, through
+    its includes and setup helpers, so a dependency added only in `-r base.txt` or a setup.py's helper module counts, and one moved between
+    manifests doesn't."""
     def at_base(name: str) -> str:
-        text = filesystem.file_at(root, base, renamed.get(name, name))
+        text = filesystem.file_at(root, base, name)
         if text is None:
             raise FileNotFoundError(name)
         return text
 
-    touched = {*changed, *gone, *renamed.values()}
+    then = [path for path in (filesystem.run_git(root, "ls-tree", "-r", "--name-only", "-z", base) or "").split("\0") if path and manifests.DEPENDENCY_FILE.search(path)]
     listed = filesystem.run_git(root, "ls-files", "-z") or ""
-    untouched = [path for path in listed.split("\0") if path and path not in touched and manifests.DEPENDENCY_FILE.search(path)]
-    before, elsewhere, now = manifests.read_manifests(root, sorted(touched), at_base), manifests.read_manifests(root, untouched), manifests.read_manifests(root, changed)
-    return sorted(f"{name} ({now[ecosystem][name]})" for ecosystem in ("python", "node", "rust", "go") for name in now[ecosystem]
-                  if name not in before[ecosystem] and name not in elsewhere[ecosystem])
+    current = sorted({*(path for path in listed.split("\0") if path and manifests.DEPENDENCY_FILE.search(path)),
+                      *(path for path in changed if manifests.DEPENDENCY_FILE.search(path) and (root / path).is_file())} - set(gone))
+    before, now = manifests.read_manifests(root, then, at_base), manifests.read_manifests(root, current)
+    return sorted(f"{name} ({now[ecosystem][name]})" for ecosystem in ("python", "node", "rust", "go") for name in now[ecosystem] if name not in before[ecosystem])
 
 
 def _moved_here(root: Path, base: str, new: set[str]) -> set[str]:
@@ -485,6 +546,9 @@ def _untracked(root: Path) -> list[str]:
     return sorted(name for name in listed.split("\0") if name)
 
 
+_NO_API = {"shell", "sql", "html", "css", "scss", "markdown", "yaml", "json", "toml", "xml", "dockerfile", "makefile", "notebook", "terraform", "hcl", "text"}
+
+
 def _broken_limit(root: Path, base: str, limit: str, changed: list[str], already_untracked: list[str]) -> tuple[list[str], list[str]]:
     """What in this change breaks one of LIMITS, compared with what the base held, and what couldn't be compared."""
     base = filesystem.fork_point(root, base)  # what this branch did, not what the base has done since, as the diff of changed files reads it
@@ -500,7 +564,10 @@ def _broken_limit(root: Path, base: str, limit: str, changed: list[str], already
     found = query_code.api(root, None, base, top=50)
     broken = [f"{row['where']} {row['name']} removed" for row in found["removed"]]
     broken += [f"{row['where']} {row['name']}: {'; '.join(row['breaking'] + row.get('defaults', []))}" for row in found["changed"] if row["breaking"] or row.get("defaults")]
-    return broken, found["unread"]
+    # Changed files whose API this can't read, and exports built at runtime, are open, not kept.
+    unread = [*found["unread"], *(f"{count} changed {language} files, whose API isn't compared" for language, count in found.get("outside", []) if language not in _NO_API),
+              *(f"{path} (its __all__ is built at runtime)" for path in found.get("computed", []))]
+    return broken, unread
 
 
 def _listed(hit: list[str]) -> str:
@@ -525,6 +592,9 @@ def scope_problems(root: Path, state: dict, base: str | None, costly: bool = Tru
     """What breaks the goal's constraints and scope. Without `costly`, the public API isn't compared, since that reads every module."""
     changed = _changed_files(root, state, base)
     problems = [problem for constraint in state["constraints"] for problem in _constraint_problems(root, state, base, changed, constraint, costly)]
+    beyond = (state.get("snapshot") or {}).get(_TRUNCATED)
+    if beyond and (state["constraints"] or state["scope"]):
+        problems.append(f"NOT CHECKED: outside git only the first {SNAPSHOT_FILES:,} of {int(beyond):,} files are compared, so a change past them can't be seen.")
     if state["scope"]:
         scope = [_project_pattern(root, s) for s in state["scope"]]
         outside = [path for path in changed if not any(fnmatch.fnmatch(path, s) or path == s or path.startswith(s.rstrip("/") + "/") for s in scope)]

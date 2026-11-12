@@ -229,6 +229,79 @@ def test_a_go_module_with_capitals_is_asked_for_as_the_proxy_spells_it(monkeypat
     assert asked == ["https://proxy.golang.org/github.com/!azure/azure-sdk-for-go/@latest", "https://pypi.org/pypi/Flask/json"]
 
 
+def fake_registry(monkeypatch, answers):
+    """Each URL gets the answer of the first fragment it contains, and every URL asked for is kept, so no test reaches the network."""
+    asked = []
+
+    def fetch(url):
+        asked.append(url)
+        return next((answer for fragment, answer in answers if fragment in url), (404, {}))
+    monkeypatch.setattr(depcheck, "_fetch", fetch)
+    return asked
+
+
+@pytest.mark.parametrize("spec, answers, code", [
+    ("pypi:flask", [("pypi", (0, {}))], 2), ("pypi:flask", [("pypi", (503, {}))], 2), ("pypi:bad name!", [], 2), ("maven:junit", [], 2),
+    ("pypi:flask_superauth", [("pypi", (404, {}))], 1), ("pypi:flask", [("pypi", (200, {"info": {}, "releases": {"2.0.0": []}}))], 0),
+])
+def test_a_package_that_couldnt_be_checked_is_not_verified(monkeypatch, tmp_path, spec, answers, code):
+    fake_registry(monkeypatch, answers)
+    text, exit_code = depcheck.report(tmp_path, names=[spec])
+    assert exit_code == code
+    assert ("not verified" in text.lower()) == (code == 2)
+
+
+def test_a_found_name_wins_the_exit_code_over_an_unchecked_one(monkeypatch, tmp_path):
+    fake_registry(monkeypatch, [("flask_superauth", (404, {})), ("pypi", (0, {}))])
+    assert depcheck.report(tmp_path, names=["pypi:flask", "pypi:flask_superauth"])[1] == 1
+
+
+def test_a_version_that_couldnt_be_checked_is_not_verified(monkeypatch, tmp_path):
+    fake_registry(monkeypatch, [("/@v/", (503, {})), ("proxy.golang.org", (200, {"Version": "v1.3.0", "Time": "2024-01-01T00:00:00Z"}))])
+    result = depcheck.check_package("go", "github.com/x/y@v1.2.3")
+    assert result["status"] == "exists" and result["name"] == "github.com/x/y" and "version v1.2.3 not verified" in depcheck._render(result)
+    text, exit_code = depcheck.report(tmp_path, names=["go:github.com/x/y@v1.2.3"])
+    assert exit_code == 2 and "exists; version v1.2.3 not verified" in text
+    fake_registry(monkeypatch, [("pypi", (200, {"info": {}}))])  # no release list to check against isn't proof there's no such release
+    assert depcheck.check_package("pypi", "flask==2.0.0").get("unverified") == "version 2.0.0 not verified"
+
+
+@pytest.mark.parametrize("version_answer, status", [((200, {"Version": "v1.2.3"}), "exists"), ((404, {}), "not found"), ((410, {}), "not found")])
+def test_a_go_pin_is_checked_against_the_proxy(monkeypatch, version_answer, status):
+    asked = fake_registry(monkeypatch, [("/@v/", version_answer), ("@latest", (200, {"Version": "v1.3.0"}))])
+    assert depcheck.check_package("go", "github.com/Azure/go-y@v1.2.3")["status"] == status
+    assert asked[0] == "https://proxy.golang.org/github.com/!azure/go-y/@latest"
+    assert asked[1] == "https://proxy.golang.org/github.com/!azure/go-y/@v/v1.2.3.info"
+
+
+def test_a_go_package_path_is_checked_as_its_module(monkeypatch):
+    asked = fake_registry(monkeypatch, [("github.com/x/y/@latest", (200, {"Version": "v1.0.0"}))])
+    result = depcheck.check_package("go", "github.com/x/y/sub/pkg")
+    assert result["status"] == "exists" and result["name"] == "github.com/x/y"
+    assert asked == [f"https://proxy.golang.org/{path}/@latest" for path in ("github.com/x/y/sub/pkg", "github.com/x/y/sub", "github.com/x/y")]
+
+
+def test_online_phantom_checks_ask_the_registry_of_the_importing_language(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "r"
+    write(root, {"go.mod": "module ex.com/app\nrequire github.com/a/b v1.0.0\n", "a.go": 'package a\nimport "github.com/z/y"\n',
+                 "Cargo.toml": '[package]\nname = "demo"\n[dependencies]\nserde = "1"\n', "src/a.rs": "use made_up_crate::x;\n",
+                 "pyproject.toml": '[project]\nname = "x"\ndependencies = ["requests"]\n', "app/a.py": "import flask_superauth\nprint(flask_superauth)\n"})
+    asked = fake_registry(monkeypatch, [])
+    text, _ = depcheck.report(root, online=True)
+    assert "https://proxy.golang.org/github.com/z/y/@latest" in asked and "https://crates.io/api/v1/crates/made_up_crate" in asked
+    assert "https://pypi.org/pypi/flask_superauth/json" in asked and not [url for url in asked if "npmjs" in url]
+    assert "go:github.com/z/y: not found" in text and "crates:made_up_crate: not found" in text
+
+
+def test_a_setup_helper_is_read_at_the_revision_being_compared(tmp_path):
+    from occam_tools import workflow
+    setup = "import runpy\ndeps = runpy.run_path('dependencies.py')\nsetup(install_requires=deps['install_requires'])\n"
+    root = repository(tmp_path / "r", {"pkg/setup.py": setup, "pkg/dependencies.py": "install_requires = ['requests']\n"})
+    write(root, {"pkg/setup.py": setup + "# touched\n", "pkg/dependencies.py": "install_requires = ['requests', 'flask_superauth']\n"})
+    assert workflow.new_dependencies(root, "HEAD", ["pkg/dependencies.py", "pkg/setup.py"]) == ["flask-superauth (pkg/dependencies.py)"]
+
+
 def test_a_partial_read_names_what_it_couldnt_check(tmp_path):
     root = repository(tmp_path / "r", {"a.py": "x = 1\n"})
     write(root, {"a.py": "x = 2\n"})

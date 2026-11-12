@@ -22,7 +22,7 @@ claude plugin install occam@occam
 - Everything needs Python 3.9 or later and uses only the standard library.
 - The hooks make no network calls. They run `git` and Python, and keep session state in `$CLAUDE_PLUGIN_DATA` or a temporary folder.
 - The command line doesn't import or run the code it reads. `golden`, `mutate`, `bench` and `goal verify` run commands you give them. `tools --allow-exec` and `docs --allow-exec` run code from the repository.
-- `deps --online` and `deps --name` ask pypi.org, registry.npmjs.org, crates.io or proxy.golang.org whether a package exists, sending only its name.
+- `deps --online` and `deps --name` ask pypi.org, registry.npmjs.org, crates.io or proxy.golang.org whether a package exists, sending only its name, and for a pinned Go module its version.
 - `tools --run` starts analyzers you've installed, and some of those go online: semgrep fetches its rules, and `npm audit`, cargo-audit and osv-scanner send package names to their vulnerability databases.
 
 ## Switching it off

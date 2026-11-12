@@ -529,16 +529,16 @@ def _lint(linter: Path, text: str, root: Path, register: str | None) -> dict | s
     """The result, or why there isn't one. Text goes on stdin so both sides of a comparison pick up the same .humanvoicerc, which is JSON and can't run anything."""
     command = [sys.executable, "-I", str(linter), "--json", *(["--register", register] if register else []), "-"]
     try:
-        done = subprocess.run(command, cwd=str(root), input=text, capture_output=True, encoding="utf-8", errors="replace", timeout=_LINT_SECONDS)
+        done = filesystem.run_bounded(command, root, _LINT_SECONDS, input=text.encode("utf-8", "replace"))  # at the limit, what it started stops too
     except subprocess.TimeoutExpired:
         return f"timed out after {_LINT_SECONDS}s"
     except OSError as error:
         return f"couldn't start ({error})"
     if done.returncode:
-        reason = (done.stderr.strip().splitlines() or ["no error message"])[-1]
+        reason = (done.stderr.decode("utf-8", "replace").strip().splitlines() or ["no error message"])[-1]
         return f"exit {done.returncode}: {reason[:200]}"
     try:
-        payload = json.loads(done.stdout)
+        payload = json.loads(done.stdout.decode("utf-8", "replace"))
     except (ValueError, RecursionError):
         return "printed something that isn't JSON"
     return payload if isinstance(payload, dict) and "score" in payload else "printed JSON with no score"

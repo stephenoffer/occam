@@ -10,7 +10,7 @@ import test_tools
 repo = test_tools.repo  # the shared fixture
 sys.path.insert(0, str(test_tools.ROOT / "plugin" / "skills" / "occam" / "scripts"))
 
-from occam_tools import files, manifests, verify, workflow  # noqa: E402
+from occam_tools import files, manifests, measure, verify, workflow  # noqa: E402
 from occam_tools.zero_tests import ran_no_tests  # noqa: E402
 
 PYTHON = sys.executable
@@ -154,6 +154,67 @@ def test_golden_warns_when_a_command_prints_nothing(repo):
     assert "prints nothing" in repo.occam("golden", "record", "t", "--", "true").stdout
 
 
+def test_golden_tells_an_invalid_byte_from_its_escaped_text(repo, tmp_path):
+    output = tmp_path / "output"
+    assert repo.occam("golden", "record", "t", "--", *bytes_command(output, b"a\xff\n")).returncode == 0
+    output.write_bytes(b"a\\xff\n")
+    done = repo.occam("golden", "check", "t")
+    assert done.returncode == 1 and "CHANGED" in done.stdout
+    assert "b'a\\xff\\n' became b'a\\\\xff\\n'" in done.stdout
+
+
+def test_golden_names_that_used_to_share_a_file_keep_their_own(repo, tmp_path):
+    names = ["a b", "a_b", "a/b", "a:b"]
+    for index, name in enumerate(names):
+        assert repo.occam("golden", "record", name, "--", *bytes_command(tmp_path / f"out{index}", f"{name}\n".encode())).returncode == 0
+    (tmp_path / "out0").write_bytes(b"different\n")
+    assert repo.occam("golden", "check", "a b").returncode == 1
+    for name in names[1:]:
+        assert repo.occam("golden", "check", name).returncode == 0, name
+
+
+def golden_files(tmp_path):
+    return list((tmp_path / "state").rglob("golden/*.json"))
+
+
+@pytest.mark.parametrize("content", [b"not json", b"[]", b'{"command": [], "result": {"exit": 0}}', b'{"command": ["true"], "result": {"exit": "0", "stdout": "", "stderr": ""}}',
+                                     b'{"format": 2, "name": "t", "command": ["true"], "patterns": [], "result": {"exit": 0, "stdout": "!!", "stderr": ""}}',
+                                     b'{"format": 2, "name": "other", "command": ["true"], "patterns": [], "result": {"exit": 0, "stdout": "", "stderr": ""}}'])
+def test_a_damaged_recording_is_a_plain_refusal(repo, tmp_path, content):
+    assert repo.occam("golden", "record", "t", "--", "true").returncode == 0
+    [recording] = golden_files(tmp_path)
+    recording.write_bytes(content)
+    done = repo.occam("golden", "check", "t")
+    assert done.returncode == 2 and "damaged" in done.stdout and "Traceback" not in done.stderr
+
+
+def test_a_recording_cut_short_leaves_the_last_one_whole(repo, tmp_path, monkeypatch):
+    from occam_tools import measure
+    monkeypatch.setenv("OCCAM_STATE_DIR", str(tmp_path / "state"))
+    assert measure.golden_record(repo.path, "t", ["echo", "first"], 30, [])[1] == 0
+    [recording] = golden_files(tmp_path)
+    before = recording.read_bytes()
+
+    def interrupted(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(measure.os, "replace", interrupted)
+    text, code = measure.golden_record(repo.path, "t", ["echo", "second"], 30, [])
+    assert code == 2 and "disk full" in text
+    assert recording.read_bytes() == before and golden_files(tmp_path) == [recording]
+    assert not [path for path in recording.parent.iterdir() if path != recording]
+
+
+def test_a_recording_made_by_an_older_occam_still_checks(repo, tmp_path):
+    assert repo.occam("golden", "record", "probe", "--", "true").returncode == 0
+    [made] = golden_files(tmp_path)
+    (made.parent / "old.json").write_text('{"command": ["echo", "hi"], "patterns": [], "result": {"exit": 0, "stdout": "hi\\n", "stderr": ""}}')
+    done = repo.occam("golden", "check", "old")
+    assert done.returncode == 0 and "older occam" in done.stdout, done.stdout
+    (made.parent / "old.json").write_text('{"command": ["echo", "bye"], "patterns": [], "result": {"exit": 0, "stdout": "hi\\n", "stderr": ""}}')
+    assert repo.occam("golden", "check", "old").returncode == 1
+
+
 # ---- mutate
 
 
@@ -163,9 +224,11 @@ def test_mutate_wont_score_tests_that_only_fail_on_their_second_run(repo):
     repo.git("add", "-A")
     repo.git("commit", "-qm", "add")
     done = repo.occam("mutate", "app/add.py", "--cmd", f"{PYTHON} -m pytest -q tests/test_add.py")
-    assert done.returncode == 2, done.stdout
-    assert "were caught" not in done.stdout
-    assert "Nothing was measured" in done.stdout
+    # What each run leaves behind is removed before the next, so the folder the test makes can't fail a later run and pass for a caught
+    # breakage. It used to be refused for that; now it's measured, and the test, which checks nothing, catches nothing.
+    assert done.stdout.startswith("0 of "), done.stdout
+    assert "return None instead" in done.stdout  # the breakage the leftover folder used to pass off as caught
+    assert done.returncode == 1, done.stdout
 
 
 def test_mutate_refuses_a_test_command_written_as_shell(repo):
@@ -191,6 +254,164 @@ def test_mutate_changed_still_covers_a_new_untracked_file(repo):
     assert "were caught" in done.stdout, done.stdout
 
 
+PYTEST = f"{PYTHON} -m pytest -q -p no:cacheprovider tests"
+
+
+def mutate_with_outcomes(repo, monkeypatch, outcomes, used=True):
+    """mutate on a small file, with each breakage's test run giving the next of these outcomes."""
+    repo.write("app/three.py", "def f(x):\n    return x + 1\n")
+    repo.commit("three")
+    monkeypatch.setattr(verify, "_tests_really_use", lambda *args: used)
+    given = iter(outcomes)
+    monkeypatch.setattr(verify, "_try_mutant", lambda *args: next(given))
+    return verify.mutate(repo.path, f"{PYTHON} -c pass", [str(repo.path / "app/three.py")], False, None, 3, 30)
+
+
+def test_mutate_counts_only_a_failing_run_as_caught(repo, monkeypatch):
+    text, code = mutate_with_outcomes(repo, monkeypatch, ["timeout", "failed", "passed"])
+    assert "1 of 3 deliberate breakages were caught" in text and "timed out" in text
+    assert code == 1
+
+
+@pytest.mark.parametrize("outcome", ["error", "something new"])
+def test_mutate_calls_a_run_with_an_error_incomplete(repo, monkeypatch, outcome):
+    text, code = mutate_with_outcomes(repo, monkeypatch, ["failed", outcome, "failed"])
+    assert "2 of 3" in text and "INCOMPLETE" in text
+    assert code == 2
+
+
+def test_a_test_command_that_cant_start_is_an_error_not_a_failure(tmp_path):
+    assert verify._run_tests("no-such-program-here-at-all", tmp_path, 5)[0] == "error"
+
+
+def test_an_import_canary_that_times_out_doesnt_say_the_tests_use_the_file(tmp_path, monkeypatch):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    monkeypatch.setattr(verify, "_run_tests", lambda *args: ("timeout", ""))
+    assert verify._tests_really_use(tmp_path, "a.py", "true", 1) is not True
+    assert (tmp_path / "a.py").read_text() == "x = 1\n"
+
+
+def test_mutate_doesnt_measure_a_file_whose_canary_timed_out(repo, monkeypatch):
+    text, code = mutate_with_outcomes(repo, monkeypatch, [], used=None)
+    assert "were caught" not in text and "timed out" in text and "app/three.py" in text
+    assert code == 2
+
+
+def test_a_mutant_that_isnt_valid_python_is_never_run(tmp_path):
+    (tmp_path / "a.py").write_text("x = 0x0\n")
+    marker = tmp_path / "ran"
+    mutant = {"line": 1, "start": 4, "old": "0", "new": "1", "what": "0 to 1", "source": "x = 0x0"}
+    assert verify._try_mutant(tmp_path, "a.py", mutant, f"touch {marker}", 30) == "invalid"
+    assert not marker.exists() and (tmp_path / "a.py").read_text() == "x = 0x0\n"
+
+
+def test_mutate_doesnt_count_a_literal_it_would_break_as_caught(repo):
+    repo.write("app/masks.py", "MASKS = (0x0, 0b1)\n\n\ndef ident(x):\n    return x\n")
+    repo.write("tests/test_masks.py", "from app.masks import ident\n\n\ndef test_ident():\n    assert ident(2) == 2\n")
+    repo.commit("masks")
+    done = repo.occam("mutate", "app/masks.py", "--cmd", PYTEST)
+    assert "1 of 1 deliberate breakages were caught" in done.stdout, done.stdout
+
+
+def test_mutate_breaks_line_one_of_a_file_that_starts_with_a_bom(repo):
+    (repo.path / "app/flag.py").write_bytes(b"\xef\xbb\xbfFLAG = True\n\n\ndef ident(x):\n    return x\n")
+    repo.write("tests/test_flag.py", "from app.flag import ident\n\n\ndef test_ident():\n    assert ident(2) == 2\n")
+    repo.commit("bom")
+    done = repo.occam("mutate", "app/flag.py", "--cmd", PYTEST)
+    assert "app/flag.py:1  True to False" in done.stdout, done.stdout
+    assert done.returncode == 1
+
+
+def test_mutate_copies_a_link_as_a_link(repo, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not the project's\n")
+    (repo.path / "data.txt").symlink_to(outside)
+    repo.write("app/ident.py", "def ident(x):\n    return x\n")
+    repo.write("tests/test_link.py", "import os\nfrom app.ident import ident\n\n\ndef test_link():\n    assert os.path.islink('data.txt')\n    assert ident(2) == 2\n")
+    repo.commit("link")
+    done = repo.occam("mutate", "app/ident.py", "--cmd", PYTEST)
+    assert "1 of 1 deliberate breakages were caught" in done.stdout, done.stdout
+
+
+LEAVES_BEHIND = {
+    "a new file": ("assert not os.path.exists('leftover')", "open('leftover', 'w').close()"),
+    "a changed file": ("assert open('state.txt').read() == 'clean'", "open('state.txt', 'w').write('dirty')"),
+}
+
+
+@pytest.mark.parametrize("kind", LEAVES_BEHIND)
+def test_what_one_breakage_leaves_behind_doesnt_catch_the_next(repo, kind):
+    check, leave = LEAVES_BEHIND[kind]
+    repo.write("state.txt", "clean")
+    repo.write("app/two.py", "def ident(x):\n    return x\n\n\ndef other(x):\n    return x\n")
+    repo.write("tests/test_two.py", f"import os\nfrom app.two import ident, other\n\n\ndef test_ident():\n    {check}\n    try:\n        assert ident(2) == 2\n"
+                                    f"    except AssertionError:\n        {leave}\n        raise\n")
+    repo.commit("two")
+    done = repo.occam("mutate", "app/two.py", "--cmd", PYTEST)
+    assert "1 of 2 deliberate breakages were caught" in done.stdout, done.stdout
+    assert "app/two.py:6" in done.stdout and done.returncode == 1
+
+
+def test_mutate_reads_only_as_many_files_as_it_needs(repo, monkeypatch):
+    for folder in ("a", "z"):
+        for index in range(20):
+            repo.write(f"{folder}/m{index}.py", "def f(x, y):\n    return x + y > 0 and x - y < 1\n")
+    repo.commit("many")
+    read = []
+    real = verify._mutants
+
+    def counting(text, lines):
+        read.append(text)
+        return real(text, lines)
+
+    monkeypatch.setattr(verify, "_mutants", counting)
+    chosen = verify._choose_mutants(repo.path, [str(repo.path / "a"), str(repo.path / "z")], False, None, 2)[0]
+    assert len(chosen) >= 2 and len(read) < 10
+    assert {path.split("/")[0] for path, _ in chosen} == {"a", "z"}
+
+
+def test_a_survivor_that_holds_a_secret_is_withheld(repo):
+    secret = "sk-" + "0123456789abcdef" * 2  # built at run time, so no token-shaped literal is in the file for push protection to stop
+    repo.write("app/key.py", f'def check(key):\n    return key == "{secret}"\n')
+    repo.write("tests/test_key.py", "from app.key import check\n\n\ndef test_check():\n    check('x')\n")
+    repo.commit("key")
+    done = repo.occam("mutate", "app/key.py", "--cmd", PYTEST)
+    assert "app/key.py:2" in done.stdout and secret not in done.stdout
+
+
+def test_sigterm_stops_what_mutate_started_and_removes_its_copy(repo, tmp_path):
+    import signal
+    import subprocess
+
+    started, marker, temporary = tmp_path / "started", tmp_path / "grandchild-ran", tmp_path / "tmp"
+    temporary.mkdir()
+    slow = tmp_path / "slow.py"
+    slow.write_text(f"import subprocess, time\nsubprocess.Popen(['sh', '-c', 'sleep 2; touch {marker}'])\nopen({str(started)!r}, 'w').close()\ntime.sleep(60)\n")
+    process = subprocess.Popen([PYTHON, str(test_tools.OCCAM), "mutate", "app/core.py", "--cmd", f"{PYTHON} {slow}"], cwd=repo.path,
+                               env={**repo.env, "TMPDIR": str(temporary)}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.time() + 30
+    while not started.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert started.exists()
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=10) == 143
+    time.sleep(2.5)
+    assert not marker.exists()
+    assert not list(temporary.glob("occam-mutate-*"))
+
+
+def test_run_bounded_keeps_the_start_and_end_of_endless_output(tmp_path):
+    done = files.run_bounded([PYTHON, "-c", "import sys; sys.stdout.write('a' * 1000 + 'MIDDLE' + 'b' * 1000)"], tmp_path, 30, keep=200)
+    assert done.stdout.startswith(b"a" * 100) and done.stdout.endswith(b"b" * 100)
+    assert b"MIDDLE" not in done.stdout and b"cut" in done.stdout
+    huge = files.run_bounded([PYTHON, "-c", "import sys; sys.stdout.write('x' * (20 << 20))"], tmp_path, 60)
+    assert len(huge.stdout) < 9 << 20
+
+
+def test_run_bounded_feeds_input(tmp_path):
+    assert files.run_bounded([PYTHON, "-c", "import sys; print(sys.stdin.read().upper())"], tmp_path, 30, input=b"hi").stdout.strip() == b"HI"
+
+
 # ---- bench
 
 
@@ -203,11 +424,54 @@ def test_mutate_changed_still_covers_a_new_untracked_file(repo):
 ])
 def test_growth_fits_with_or_without_a_startup_cost(ys, low, high):
     sizes = [1, 2, 4, 8][:len(ys)]
-    assert low <= verify._slope(sizes, ys) <= high
+    assert low <= measure._slope(sizes, ys) <= high
 
 
 def test_too_little_signal_still_says_so():
-    assert verify._slope([1, 2, 4], [0.03, 0.03, 0.04]) is None
+    assert measure._slope([1, 2, 4], [0.03, 0.03, 0.04]) is None
+
+
+def rows(sizes, seconds):
+    return [(size, value, 0.0, 10.0, "ok") for size, value in zip(sizes, seconds)]
+
+
+@pytest.mark.parametrize("sizes, seconds", [
+    ([1, 2], [1, 4]),  # two points fit any curve
+    ([1, 2, 4, 8], [1, 5, 2, 9]),  # a larger size ran faster
+    ([1, 2, 4, 8], [1, 1.1, 10, 10.5]),  # a step, which no single power fits
+])
+def test_growth_that_cant_be_trusted_is_inconclusive(sizes, seconds):
+    line, worse = measure._growth_line(rows(sizes, seconds))
+    assert "inconclusive" in line and "n^" not in line and not worse
+
+
+def test_flat_time_is_still_read_as_flat():
+    line, worse = measure._growth_line(rows([1000, 2000, 4000, 8000], [2.0, 2.05, 1.98, 2.03]))
+    assert "linear or better" in line and not worse
+
+
+def test_bench_without_wait4_measures_time_and_says_memory_wasnt(monkeypatch):
+    monkeypatch.delattr(measure.os, "wait4", raising=False)
+    text, code = measure.bench(f"{PYTHON} -c pass {{n}}", [1, 2], 1, None, 30)
+    assert code == 0 and "isn't measured" in text, text
+
+
+def test_bench_runs_shell_syntax_through_a_shell(repo, tmp_path):
+    marker = tmp_path / "marker"
+    done = repo.occam("bench", "--cmd", f"echo {{n}} > {marker}", "--sizes", "7", "--repeat", "1")
+    assert marker.read_text().strip() == "7", done.stdout
+    assert "sh -c" in done.stdout
+
+
+def test_a_bench_timeout_stops_what_the_command_started(repo, tmp_path):
+    marker = tmp_path / "marker"
+    script = tmp_path / "slow.sh"
+    script.write_text(f"#!/bin/sh\n(sleep 2; touch {marker}) &\nwait\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    done = repo.occam("bench", "--cmd", f"{script} {{n}}", "--sizes", "1", "--repeat", "1", "--timeout", "1")
+    assert "timed out" in done.stdout
+    time.sleep(2.5)
+    assert not marker.exists()
 
 
 # ---- gate
@@ -415,7 +679,7 @@ def scan_rules(repo, name):
 @pytest.mark.parametrize("code, rule, reported", [
     ("import hashlib\n\n\ndef store(pwd):\n    return hashlib.md5(pwd.encode()).hexdigest()\n", "weak-password-hash", True),
     ("import hashlib\n\n\ndef cwd_key(pwd):\n    return hashlib.sha1(pwd.encode()).hexdigest()\n", "weak-password-hash", False),
-    ('CLIENT = make("sk-0123456789abcdef0123456789abcdef")\n', "hardcoded-secret", True),
+    ('CLIENT = make("sk-' + "0123456789abcdef" * 2 + '")\n', "hardcoded-secret", True),
     ('client_secret = "Abc123.Def456"\n', "hardcoded-secret", True),
     ('REDIS_PASSWORD = "ADMIN_2024"\n', "hardcoded-secret", True),
     ('DB_PASSWORD = "Password123!"\n', "hardcoded-secret", True),
@@ -472,9 +736,12 @@ def test_a_committed_config_doesnt_block(repo):
 @pytest.mark.parametrize("name", ["Pipfile", "setup.cfg", "environment.yml", "requirements-dev.in", "constraints.txt", "requirements/base.txt"])
 def test_gate_notices_a_dependency_added_in_any_manifest_it_reads(repo, name):
     """The gate's own list of manifest names had drifted from the reader's, so these changed without a word."""
-    repo.write(name, "[options]\ninstall_requires =\n    attrs\n" if name == "setup.cfg" else "attrs\n")
+    # A Pipfile is TOML with a [packages] table; bare names were read only while any line there counted as a package.
+    before = {"setup.cfg": "[options]\ninstall_requires =\n    attrs\n", "Pipfile": '[packages]\nattrs = "*"\n'}
+    after = {"setup.cfg": "[options]\ninstall_requires =\n    attrs\n    leftpad\n", "Pipfile": '[packages]\nattrs = "*"\nleftpad = "*"\n'}
+    repo.write(name, before.get(name, "attrs\n"))
     repo.commit("manifest")
-    repo.write(name, "[options]\ninstall_requires =\n    attrs\n    leftpad\n" if name == "setup.cfg" else "attrs\nleftpad\n")
+    repo.write(name, after.get(name, "attrs\nleftpad\n"))
     assert "This adds leftpad" in repo.occam("gate").stdout  # the gate's note, not the scanner's unused-dependency rule
 
 

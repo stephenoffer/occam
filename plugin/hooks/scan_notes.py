@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import stat
 import sys
 import time
 from pathlib import Path
@@ -68,8 +69,10 @@ def _is_serious(finding: dict) -> bool:
 
 
 def _read(path: Path) -> str | None:
+    """A regular file small enough to scan in a hook. A FIFO or device named like code would wait forever, or read without end."""
     try:
-        if path.stat().st_size > MAX_BYTES:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
             return None
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -82,16 +85,25 @@ def identities(path: Path, relative: str) -> list[str] | None:
         return []
     try:
         text = _read(path)
-        return [finding["id"] for finding in _scan(relative, text)] if text is not None else None
+        return ids_of(_scan(relative, text)) if text is not None else None
     except (Exception, _TooSlow):  # occam: ignore[swallowed-exception] a broken scan must not take the hook down
         return None
 
 
-def within_budget(paths: list, most: int = MAX_FILES_AT_STOP) -> Iterator:
-    """Iterate while time remains, so several large files can't push a hook past its limit."""
+def ids_of(findings: list[dict]) -> list[str]:
+    """Every id the findings answer to, so one already there is known after a copy of it is added or removed (scan.ids_of)."""
+    from occam_tools import scan
+
+    return scan.ids_of(findings)
+
+
+def within_budget(paths: list, most: int = MAX_FILES_AT_STOP, left: list | None = None) -> Iterator:
+    """Iterate while time remains, so several large files can't push a hook past its limit. What it didn't reach goes in `left`."""
     started = time.monotonic()
-    for path in paths[:most]:
-        if time.monotonic() - started > STOP_SECONDS:
+    for index, path in enumerate(paths):
+        if index >= most or time.monotonic() - started > STOP_SECONDS:
+            if left is not None:
+                left.extend(paths[index:])
             return
         yield path
 
@@ -102,7 +114,7 @@ def committed_identities(root: Path, relative: str) -> list[str] | None:
         from occam_tools.files import run_git  # a repository's own config can name programs for plain git to run
 
         committed = run_git(root, "show", f"HEAD:./{relative}", timeout=5)
-        return [finding["id"] for finding in _scan(relative, committed)] if committed is not None else None
+        return ids_of(_scan(relative, committed)) if committed is not None else None
     except Exception:  # occam: ignore[swallowed-exception] fails open, like identities
         return None
 

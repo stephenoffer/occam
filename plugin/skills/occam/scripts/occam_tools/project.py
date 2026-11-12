@@ -9,7 +9,7 @@ from typing import NamedTuple
 
 from functools import partial
 
-from . import clones, imports, manifests
+from . import clones, files as filesystem, imports, manifests
 from .source import is_script_path, is_test_path
 
 Finding = dict
@@ -130,6 +130,11 @@ def _module_names(path: str) -> list[str]:
     return [".".join(parts[i:]) for i in range(len(parts))]
 
 
+def _ECOSYSTEM_OF(name: str) -> str:
+    base = name.rsplit("/", 1)[-1]
+    return "node" if base == "package.json" else "rust" if base == "Cargo.toml" else "go" if base == "go.mod" else "" if base in ("tsconfig.json", "jsconfig.json") else "python"
+
+
 class Project:
     """Everything known about the repository after each file has been analyzed."""
 
@@ -144,6 +149,7 @@ class Project:
         self.clone_index = clones.CloneIndex()
         self.findings: list[Finding] = []
         self.pulled_up: set[tuple[str, int]] = set()  # methods pull-up-method already reports, so clone-function doesn't say it again
+        self.notes: list[str] = []  # checks that couldn't run, said where the results are shown, since silence would read as a clean result
 
     def add_file(self, path: str, record: dict) -> None:
         facts = record.get("facts") or {}
@@ -226,11 +232,37 @@ class Project:
 
     # ------------------------------------------------------------ imports
 
-    def _manifests(self) -> dict:
+    def _manifests(self, path: str | None = None) -> dict:
+        """What the manifests declare. For one file, only those in its folder and the folders above it count, since another package's
+        dependencies aren't installed with it, unless none for its ecosystem are, when the repository's count. With no file, every manifest."""
         if not hasattr(self, "_manifest_cache"):
-            self._manifest_cache = manifests.read_manifests(self.root, self.files) if self.root else {
-                "python": {}, "python_locked": set(), "node": {}, "rust": {}, "go": {}, "go_own": set(), "aliases": set(), "files": []}
-        return self._manifest_cache
+            parts = manifests.read_each(self.root, self.files) if self.root else {}
+            self._manifest_owners: dict[str, list[dict]] = defaultdict(list)
+            for name, part in parts.items():
+                self._manifest_owners[manifests.owner(name)].append(part)
+            self._manifest_cache: dict = {None: manifests.merge(parts.values())}
+            self._manifest_chains: dict[tuple, dict] = {}
+        folder = None if path is None else path.rpartition("/")[0]
+        if folder not in self._manifest_cache:
+            chain = [folder]
+            while chain[-1]:
+                chain.append(chain[-1].rpartition("/")[0])
+            owners = tuple(above for above in reversed(chain) if above in self._manifest_owners)  # root first, so the nearest manifest's Python floor wins
+            if owners not in self._manifest_chains:
+                self._manifest_chains[owners] = self._with_the_rest(manifests.merge(part for above in owners for part in self._manifest_owners[above]))
+            self._manifest_cache[folder] = self._manifest_chains[owners]
+        return self._manifest_cache[folder]
+
+    def _with_the_rest(self, chain: dict) -> dict:
+        """For an ecosystem no manifest above a file declares, as for Python code beside docker/requirements.txt or binder/environment.yml
+        under a root that holds only package.json, the repository's manifests for it are the file's."""
+        whole, merged = self._manifest_cache[None], dict(chain)
+        kinds = {_ECOSYSTEM_OF(name) for name in chain.get("files") or []}  # a manifest that declares nothing still says what this code may use
+        for kind, group in (("python", ("python", "python_runtime", "python_local", "python_locked")), ("node", ("node", "node_runtime")), ("rust", ("rust",)), ("go", ("go", "go_own"))):
+            if kind not in kinds:
+                merged.update({key: whole.get(key) for key in group if key in whole})
+                merged["files"] = [*(merged.get("files") or []), *(name for name in whole.get("files") or [] if _ECOSYSTEM_OF(name) == kind)]  # so it's read as declared
+        return merged
 
     def _python_paths(self) -> list[str]:
         return [p for p, language in self.languages.items() if language in ("python", "notebook")]
@@ -622,18 +654,22 @@ class Project:
         manifest = self._manifests()
         declared = manifest["python"]
         imported: set[str] = set()
+        modules: set[str] = set()
+        namespaces: set[str] = set()  # only a shared namespace like azure matches by prefix, as in imports._declares
         for path in self._python_paths():
             for item in (self.facts.get(path) or {}).get("imports", []):
                 if not item.get("level"):
                     top = item["module"].split(".")[0]
-                    imported.add(manifests.normalize_dist(manifests.IMPORT_TO_DIST.get(top, top)))
-                    imported.add(manifests.normalize_dist(top))
+                    imported |= imports._dists_for(top)
+                    modules.add(item["module"])
+                    if top in manifests.NAMESPACE_ROOTS:
+                        namespaces.add(manifests.normalize_dist(top) + "-")
         python_files = [p for p in self.files if p.endswith(".py")]
         if declared and python_files:
             tooling = re.compile(r"^(?:pytest|ruff|black|isort|mypy|pyright|flake8|pylint|coverage|tox|nox|pre-commit|sphinx|mkdocs|setuptools|wheel|hatchling|hatch|poetry|build|twine|pip|uv|types-|gunicorn|uvicorn|alembic|ipython|jupyter|bandit|semgrep|hypothesis)")
             frozen = {where for where in set(declared.values()) if manifests.looks_frozen(self.root, where)}
             for name, where in sorted(declared.items()):
-                if tooling.match(name) or name in imported or any(i.startswith(name + "-") or name.startswith(i + "-") for i in imported):
+                if tooling.match(name) or name in imported or name.startswith(tuple(namespaces)) or any(imports.dist_matches(name, module) for module in modules):
                     continue
                 if self.identifier_counts.get(name.replace("-", "_"), 0) > 0 or where in frozen:
                     continue
@@ -646,12 +682,9 @@ class Project:
                 self.add("competing-dependencies", where, 1, f"{label}: {', '.join(present)}.")
 
     def _manifest_line(self, where: str, name: str) -> int:
-        try:
-            for number, line in enumerate((self.root / where).read_text(errors="replace").split("\n"), start=1):
-                if name in manifests.normalize_dist(line):
-                    return number
-        except OSError:
-            pass
+        for number, line in enumerate((filesystem.read_text(self.root / where) or "").split("\n"), start=1):  # not through a symlink, and not past the size cap
+            if name in manifests.normalize_dist(line):
+                return number
         return 1
 
     def _settings(self) -> None:
