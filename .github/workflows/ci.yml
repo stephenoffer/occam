@@ -68,8 +68,9 @@ jobs:
           persist-credentials: false
       # Deliberately not setup-python: the hooks run on the python3 macOS ships, so test that one.
       - run: /usr/bin/python3 --version
-      - run: /usr/bin/python3 -m venv "$RUNNER_TEMP/venv"
-      - run: echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      # Not $RUNNER_TEMP, which is in the home folder: the grader's sandbox denies reading that, so its own Python couldn't start.
+      - run: /usr/bin/python3 -m venv /tmp/occam-venv
+      - run: echo "/tmp/occam-venv/bin" >> "$GITHUB_PATH"
       - run: python -m pip install --upgrade pip
       - run: python -m pip install --group dev --group cases ruff==0.15.12 pylint
       - run: python -m pytest tests/ -q -rs

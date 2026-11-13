@@ -873,11 +873,13 @@ def test_git_too_old_to_blank_drivers_means_treating_it_as_a_plain_folder(tmp_pa
 
 
 def test_old_git_is_fine_when_the_repository_names_no_drivers(repo, tmp_path):
+    """The host's own git config is left out: with git-lfs installed it names a filter, as on GitHub's runners, and old git can't blank that one either."""
     shim = tmp_path / "bin"
     shim.mkdir()
     (shim / "git").write_text(f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version 2.30.1"; exit 0; fi\nexec {GIT} "$@"\n')
     (shim / "git").chmod(0o755)
-    assert repo.sh("history", env={**repo.env, "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}"}).returncode == 0
+    env = {**repo.env, "PATH": f"{shim}{os.pathsep}{os.environ['PATH']}", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    assert repo.sh("history", env=env).returncode == 0
 
 
 def test_works_with_no_python_on_the_host(repo, tmp_path, bash):
