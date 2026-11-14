@@ -125,6 +125,8 @@ def option_value(args: list[str], flags: tuple[str, ...]) -> str:
 
 def _program(word: str) -> str:
     """What this word runs. `\\rm`, `"rm"` and `r''m` skip an alias or look different, and they are all still rm."""
+    if "'" not in word and '"' not in word and "/" not in word and "\\" not in word:  # most words: nothing to take off, and this runs for every word of every step
+        return word
     return os.path.basename(re.sub(r"""\$?['"]""", "", word)).lstrip("\\")
 
 
